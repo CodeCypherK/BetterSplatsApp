@@ -1,0 +1,32 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    uses: ./.github/workflows/ios-app.yml
+
+  publish:
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Download IPA
+        uses: actions/download-artifact@v4
+        with:
+          name: BetterSplats-ipa
+          path: dist
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/*.ipa \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "BetterSplats $GITHUB_REF_NAME" \
+            --generate-notes

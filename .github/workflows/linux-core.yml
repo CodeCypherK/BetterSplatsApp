@@ -1,0 +1,74 @@
+name: core-linux
+
+on:
+  push:
+  workflow_dispatch:
+  schedule:
+    # Weekly sanitizer sweep (Monday 06:00 UTC)
+    - cron: "0 6 * * 1"
+
+jobs:
+  test:
+    name: build + test (release)
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ccache
+          key: ccache-linux-rel-${{ github.sha }}
+          restore-keys: ccache-linux-rel-
+
+      - name: Install dependencies
+        run: sudo scripts/ci_linux.sh deps
+
+      - name: Build
+        run: scripts/ci_linux.sh build
+
+      - name: Test
+        run: scripts/ci_linux.sh test
+
+      - name: Validate reconstruction pipeline
+        run: |
+          pip install --quiet pycolmap numpy || echo "pycolmap unavailable; validator degrades gracefully"
+          scripts/ci_linux.sh validate
+
+      - name: Upload failure artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-test-logs-${{ github.run_number }}
+          path: |
+            build/linux-rel/Testing/**/*.log
+          if-no-files-found: ignore
+          retention-days: 7
+
+  asan:
+    name: build + test (asan/ubsan)
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      PRESET: linux-asan
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ccache
+          key: ccache-linux-asan-${{ github.sha }}
+          restore-keys: ccache-linux-asan-
+
+      - name: Install dependencies
+        run: sudo scripts/ci_linux.sh deps
+
+      - name: Build
+        run: scripts/ci_linux.sh build
+
+      - name: Test
+        run: scripts/ci_linux.sh test

@@ -1,0 +1,71 @@
+name: ios-app
+
+on:
+  push:
+    paths:
+      - "core/**"
+      - "ios/**"
+      - "scripts/**"
+      - "third_party/**"
+      - "CMakeLists.txt"
+      - "CMakePresets.json"
+      - ".github/workflows/ios-app.yml"
+  workflow_dispatch:
+  workflow_call:
+
+jobs:
+  ipa:
+    name: build unsigned IPA
+    runs-on: macos-15
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache iOS third-party deps
+        id: deps-cache
+        uses: actions/cache@v4
+        with:
+          path: ios-deps
+          key: ios-deps-v1-${{ hashFiles('scripts/ios/versions.lock', 'scripts/ios/build_deps.sh') }}
+
+      - name: Build iOS dependencies (OpenCV, Eigen, Ceres)
+        run: scripts/ios/build_deps.sh
+
+      - name: Build engine static library (iOS arm64)
+        run: |
+          cmake --preset ios-rel
+          cmake --build --preset ios-rel
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: cd ios && xcodegen generate
+
+      - name: Build app (unsigned)
+        run: |
+          cd ios
+          xcodebuild \
+            -project BetterSplats.xcodeproj \
+            -scheme BetterSplats \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath ../build/DerivedData \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY= \
+            build
+
+      - name: Package IPA
+        run: |
+          SHORT_SHA="${GITHUB_SHA:0:7}"
+          scripts/package_ipa.sh \
+            "build/DerivedData/Build/Products/Release-iphoneos/BetterSplats.app" \
+            "dist/BetterSplats-${SHORT_SHA}.ipa"
+
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: BetterSplats-ipa
+          path: dist/*.ipa
+          retention-days: 30

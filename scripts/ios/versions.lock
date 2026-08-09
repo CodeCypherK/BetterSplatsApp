@@ -1,0 +1,17 @@
+# Pinned third-party versions for the iOS dependency build.
+# This file is sourced by build_deps.sh and its hash keys the CI cache —
+# changing anything here triggers a full rebuild of ios-deps/.
+
+OPENCV_VERSION="4.12.0"
+OPENCV_URL="https://github.com/opencv/opencv/releases/download/4.12.0/opencv-4.12.0-ios-framework.zip"
+# Filled in from the checksum printed by the first CI run; empty means
+# trust-on-first-use with a loud warning in the build log.
+OPENCV_SHA256=""
+
+CERES_REPO="https://github.com/ceres-solver/ceres-solver.git"
+CERES_TAG="2.2.0"
+
+EIGEN_REPO="https://gitlab.com/libeigen/eigen.git"
+EIGEN_TAG="3.4.0"
+
+IOS_DEPLOYMENT_TARGET="17.0"

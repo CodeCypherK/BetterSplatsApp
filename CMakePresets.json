@@ -1,0 +1,62 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": { "major": 3, "minor": 24, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "linux-rel",
+      "displayName": "Linux Release (engine + tools + tests)",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/linux-rel",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "BS_BUILD_TESTS": "ON",
+        "BS_BUILD_TOOLS": "ON"
+      }
+    },
+    {
+      "name": "linux-asan",
+      "displayName": "Linux ASan/UBSan (engine + tools + tests)",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/linux-asan",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "BS_BUILD_TESTS": "ON",
+        "BS_BUILD_TOOLS": "ON",
+        "BS_SANITIZE": "ON"
+      }
+    },
+    {
+      "name": "ios-rel",
+      "displayName": "iOS arm64 Release (static engine library only)",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/ios-rel",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_SYSTEM_NAME": "iOS",
+        "CMAKE_OSX_ARCHITECTURES": "arm64",
+        "CMAKE_OSX_SYSROOT": "iphoneos",
+        "CMAKE_OSX_DEPLOYMENT_TARGET": "17.0",
+        "BS_BUILD_TESTS": "OFF",
+        "BS_BUILD_TOOLS": "OFF",
+        "BS_IOS_DEPS_DIR": "${sourceDir}/ios-deps"
+      }
+    }
+  ],
+  "buildPresets": [
+    { "name": "linux-rel", "configurePreset": "linux-rel" },
+    { "name": "linux-asan", "configurePreset": "linux-asan" },
+    { "name": "ios-rel", "configurePreset": "ios-rel" }
+  ],
+  "testPresets": [
+    {
+      "name": "linux-rel",
+      "configurePreset": "linux-rel",
+      "output": { "outputOnFailure": true }
+    },
+    {
+      "name": "linux-asan",
+      "configurePreset": "linux-asan",
+      "output": { "outputOnFailure": true }
+    }
+  ]
+}

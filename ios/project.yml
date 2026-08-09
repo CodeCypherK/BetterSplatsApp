@@ -1,0 +1,76 @@
+# XcodeGen spec — the Xcode project is generated in CI (and never committed):
+#   cd ios && xcodegen generate
+# This is what makes Mac-less development possible: the project definition
+# lives in this reviewable file.
+name: BetterSplats
+
+options:
+  bundleIdPrefix: com.codecypherk
+  deploymentTarget:
+    iOS: "17.0"
+  createIntermediateGroups: true
+
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    CLANG_CXX_LANGUAGE_STANDARD: c++17
+    IPHONEOS_DEPLOYMENT_TARGET: "17.0"
+    ENABLE_BITCODE: "NO"
+
+targets:
+  BetterSplats:
+    type: application
+    platform: iOS
+    sources:
+      - path: Sources
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.codecypherk.bettersplats
+        PRODUCT_NAME: BetterSplats
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        TARGETED_DEVICE_FAMILY: "1"
+        SWIFT_OBJC_BRIDGING_HEADER: Sources/Bridge/Bridging-Header.h
+        HEADER_SEARCH_PATHS:
+          - "$(SRCROOT)/../core/include"
+        LIBRARY_SEARCH_PATHS:
+          - "$(SRCROOT)/../build/ios-rel/core"
+          - "$(SRCROOT)/../ios-deps/lib"
+        OTHER_LDFLAGS:
+          - "-lbscore"
+          - "-lceres"
+          - "-lc++"
+        SUPPORTS_MACCATALYST: "NO"
+        INFOPLIST_KEY_UIRequiresFullScreen: "YES"
+    info:
+      path: Info.plist
+      properties:
+        CFBundleDisplayName: BetterSplats
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+        UIRequiredDeviceCapabilities:
+          - arm64
+        NSCameraUsageDescription: >-
+          BetterSplats uses the camera and LiDAR sensor to capture 3D scans of
+          your environment.
+        NSMotionUsageDescription: >-
+          Motion data helps the tracker follow fast camera movement. It is
+          never used to compute camera poses.
+        UIFileSharingEnabled: true
+        LSSupportsOpeningDocumentsInPlace: true
+        ITSAppUsesNonExemptEncryption: false
+    dependencies:
+      - framework: ../ios-deps/opencv2.xcframework
+        embed: false
+      - sdk: Accelerate.framework
+      - sdk: AVFoundation.framework
+      - sdk: CoreGraphics.framework
+      - sdk: CoreImage.framework
+      - sdk: CoreMedia.framework
+      - sdk: CoreMotion.framework
+      - sdk: CoreVideo.framework
+      - sdk: Metal.framework
+      - sdk: MetalKit.framework
+      - sdk: QuartzCore.framework
+      - sdk: UIKit.framework

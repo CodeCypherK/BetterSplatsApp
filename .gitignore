@@ -1,0 +1,25 @@
+# Build outputs
+build/
+ios-deps/
+*.ipa
+*.xcarchive
+
+# Generated Xcode project (produced by `xcodegen generate`)
+ios/BetterSplats.xcodeproj/
+ios/Info.plist
+
+# Xcode / macOS
+DerivedData/
+xcuserdata/
+*.xcuserstate
+.DS_Store
+
+# Caches
+.ccache/
+__pycache__/
+*.pyc
+.venv/
+
+# Editors
+.vscode/
+.idea/

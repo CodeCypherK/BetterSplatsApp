@@ -81,8 +81,13 @@ echo "Eigen -> ios-deps/include/eigen3"
 # ----------------------------------------------------------------- 3. Ceres
 echo "--- Ceres $CERES_TAG (iOS arm64 static, miniglog)"
 git clone --quiet --depth 1 --branch "$CERES_TAG" "$CERES_REPO" "$DEPS/src/ceres"
+# Ceres's CMakeLists has a legacy iOS block that validates IOS_PLATFORM and
+# IOS_DEPLOYMENT_TARGET (variables its old bundled toolchain used to set);
+# satisfy it explicitly while modern CMake handles the actual cross-compile.
 cmake -S "$DEPS/src/ceres" -B "$DEPS/src/ceres-build" \
   -DCMAKE_SYSTEM_NAME=iOS \
+  -DIOS_PLATFORM=OS \
+  -DIOS_DEPLOYMENT_TARGET="$IOS_DEPLOYMENT_TARGET" \
   -DCMAKE_OSX_ARCHITECTURES=arm64 \
   -DCMAKE_OSX_SYSROOT=iphoneos \
   -DCMAKE_OSX_DEPLOYMENT_TARGET="$IOS_DEPLOYMENT_TARGET" \

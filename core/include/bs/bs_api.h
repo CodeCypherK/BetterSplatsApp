@@ -58,6 +58,16 @@ const char* bs_last_error(const bs_engine* e);
  * to prove the dependency chain links and runs on every platform. */
 bs_result bs_selftest(char* buf, size_t buf_len);
 
+/* ------------------------------------------------------- depth container */
+
+/* Encodes a float16 depth map into the BSDP container (docs/FORMATS.md),
+ * LZ4-compressed when that shrinks it. Stateless; used by the Swift
+ * SessionWriter so device-written files are byte-identical to the C++
+ * codec. Returns NULL on invalid input; release with bs_buffer_release. */
+const uint8_t* bs_depth_encode(const uint16_t* f16, int32_t width,
+                               int32_t height, size_t* out_len);
+void bs_buffer_release(const uint8_t* buf);
+
 /* ------------------------------------------------------------ live input */
 
 /* One synchronized RGB+depth observation. All buffers are borrowed for the

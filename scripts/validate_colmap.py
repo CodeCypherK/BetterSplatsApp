@@ -13,6 +13,7 @@ is safe to wire into CI from M0.
 import argparse
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 
@@ -47,8 +48,48 @@ def main() -> int:
             print(f"ERROR: {exe.name} selftest failed", file=sys.stderr)
             return 1
 
-    print("SKIP: synthetic end-to-end validation activates in M1+ "
-          "(session generation not yet implemented)")
+    # M1: synth session -> reader/replay round trip.
+    with tempfile.TemporaryDirectory(prefix="bs_validate_") as tmp:
+        session = Path(tmp) / "session"
+        frames = 12
+        out = subprocess.run(
+            [str(synth), str(session), "--frames", str(frames), "--width", "640",
+             "--height", "480", "--seed", "3"],
+            capture_output=True, text=True, timeout=600,
+        )
+        if out.returncode != 0:
+            print(f"ERROR: bs_synth failed:\n{out.stdout}{out.stderr}",
+                  file=sys.stderr)
+            return 1
+
+        frame_dirs = sorted((session / "frames").iterdir())
+        if len(frame_dirs) != frames:
+            print(f"ERROR: expected {frames} frame dirs, found {len(frame_dirs)}",
+                  file=sys.stderr)
+            return 1
+        for d in frame_dirs:
+            for name in ("image.jpg", "lidar.depth", "meta.json"):
+                if not (d / name).is_file():
+                    print(f"ERROR: missing {d / name}", file=sys.stderr)
+                    return 1
+        if not (session / "ground_truth" / "poses.json").is_file():
+            print("ERROR: missing ground truth", file=sys.stderr)
+            return 1
+
+        out = subprocess.run(
+            [str(replay), str(session), "--info", "--live"],
+            capture_output=True, text=True, timeout=600,
+        )
+        print(out.stdout.strip())
+        if out.returncode != 0:
+            print(f"ERROR: bs_replay failed:\n{out.stderr}", file=sys.stderr)
+            return 1
+        if f"fed {frames} frames" not in out.stdout:
+            print("ERROR: replay did not feed all frames", file=sys.stderr)
+            return 1
+
+    print("OK: synth -> reader -> live-replay round trip")
+    print("SKIP: final-solve + pycolmap validation activates in M6/M7")
     return 0
 
 

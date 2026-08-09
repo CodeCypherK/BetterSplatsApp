@@ -11,6 +11,10 @@ add_library(bscore STATIC
   src/engine/api.cpp
   src/engine/engine_impl.cpp
   src/engine/selftest.cpp
+  src/io/depth_codec.cpp
+  src/io/session_schema.cpp
+  src/io/session_reader.cpp
+  src/io/session_writer.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../third_party/lz4/lz4.c
 )
 

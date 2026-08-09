@@ -33,4 +33,29 @@ final class CoreEngine: @unchecked Sendable {
         let result = bs_selftest(&buf, buf.count)
         return (result == BS_OK, String(cString: buf))
     }
+
+    // MARK: - Live session
+
+    @discardableResult
+    func liveBegin(sessionDir: String) -> bs_result {
+        bs_live_begin(handle, sessionDir)
+    }
+
+    /// Feeds one frame. `frame` must be fully populated with pointers that
+    /// stay valid for the duration of the call (the engine copies).
+    @discardableResult
+    func liveFeed(_ frame: inout bs_frame_in) -> bs_result {
+        bs_live_feed(handle, &frame)
+    }
+
+    func livePollStatus() -> bs_live_status {
+        var status = bs_live_status()
+        _ = bs_live_poll_status(handle, &status)
+        return status
+    }
+
+    @discardableResult
+    func liveEnd() -> bs_result {
+        bs_live_end(handle)
+    }
 }

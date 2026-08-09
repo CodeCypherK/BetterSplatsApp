@@ -2,10 +2,12 @@
 // null-safe — the app must never be able to crash the process through this
 // boundary with bad handles.
 
+#include <cstring>
 #include <new>
 
 #include "bs/bs_api.h"
 #include "engine/engine_impl.h"
+#include "io/depth_codec.h"
 
 struct bs_engine {
   bs::Engine impl;
@@ -83,5 +85,26 @@ bs_result bs_region_rename(bs_engine* e, uint32_t region_id, const char* utf8_na
   if (e == nullptr) return BS_ERR_INVALID_ARGUMENT;
   return e->impl.RegionRename(region_id, utf8_name);
 }
+
+const uint8_t* bs_depth_encode(const uint16_t* f16, int32_t width,
+                               int32_t height, size_t* out_len) {
+  if (f16 == nullptr || width <= 0 || height <= 0 || width > 0xFFFF ||
+      height > 0xFFFF || out_len == nullptr) {
+    return nullptr;
+  }
+  bs::DepthImage depth;
+  depth.width = width;
+  depth.height = height;
+  depth.f16.assign(f16, f16 + static_cast<size_t>(width) * height);
+  const std::vector<uint8_t> encoded = bs::EncodeDepth(depth, /*compress=*/true);
+
+  uint8_t* buf = new (std::nothrow) uint8_t[encoded.size()];
+  if (buf == nullptr) return nullptr;
+  std::memcpy(buf, encoded.data(), encoded.size());
+  *out_len = encoded.size();
+  return buf;
+}
+
+void bs_buffer_release(const uint8_t* buf) { delete[] buf; }
 
 }  // extern "C"

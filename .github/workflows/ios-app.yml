@@ -28,6 +28,9 @@ jobs:
           path: ios-deps
           key: ios-deps-v1-${{ hashFiles('scripts/ios/versions.lock', 'scripts/ios/build_deps.sh') }}
 
+      - name: Install build tools
+        run: brew install ninja xcodegen
+
       - name: Build iOS dependencies (OpenCV, Eigen, Ceres)
         run: scripts/ios/build_deps.sh
 
@@ -35,9 +38,6 @@ jobs:
         run: |
           cmake --preset ios-rel
           cmake --build --preset ios-rel
-
-      - name: Install XcodeGen
-        run: brew install xcodegen
 
       - name: Generate Xcode project
         run: cd ios && xcodegen generate

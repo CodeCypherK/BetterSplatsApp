@@ -4,9 +4,7 @@
 
 OPENCV_VERSION="4.12.0"
 OPENCV_URL="https://github.com/opencv/opencv/releases/download/4.12.0/opencv-4.12.0-ios-framework.zip"
-# Filled in from the checksum printed by the first CI run; empty means
-# trust-on-first-use with a loud warning in the build log.
-OPENCV_SHA256=""
+OPENCV_SHA256="86b42c9f141cd9169b91be2fc380b0e556a88a95c98ccc8e7aef8349ab74cf70"
 
 CERES_REPO="https://github.com/ceres-solver/ceres-solver.git"
 CERES_TAG="2.2.0"

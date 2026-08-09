@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Builds/collects the third-party binaries needed to cross-compile the engine
 # for iOS into ios-deps/:
-#   opencv2.xcframework/           prebuilt official OpenCV (device + sim)
-#   include/opencv2/               extracted device-slice headers for CMake
+#   opencv2.framework/             prebuilt official OpenCV (device slice)
+#   include/opencv2/               extracted headers for CMake
 #   include/eigen3/, share/eigen3/ Eigen headers + CMake config
 #   include/ceres/, lib/libceres.a Ceres built for iOS arm64 with miniglog
 #
@@ -43,19 +43,30 @@ if [[ -z "$OPENCV_SHA256" ]]; then
   echo "  OPENCV_SHA256=\"$actual_sha\""
 fi
 unzip -q "$DEPS/src/opencv.zip" -d "$DEPS/src/opencv"
-xcf="$(find "$DEPS/src/opencv" -maxdepth 3 -type d -name 'opencv2.xcframework' | head -1)"
-if [[ -z "$xcf" ]]; then
-  echo "ERROR: opencv2.xcframework not found in archive"; exit 1
+
+# The release archive layout has changed across versions: some ship
+# opencv2.xcframework, some a bare (fat) opencv2.framework. Normalize both
+# to $DEPS/opencv2.framework — a device-linkable static framework.
+framework=""
+xcf="$(find "$DEPS/src/opencv" -type d -name 'opencv2.xcframework' | head -1)"
+if [[ -n "$xcf" ]]; then
+  framework="$(find "$xcf" -type d -path '*ios-arm64*/opencv2.framework' \
+    | grep -v -i simulator | grep -v -i macos | head -1)"
+else
+  framework="$(find "$DEPS/src/opencv" -type d -name 'opencv2.framework' \
+    | grep -v -i simulator | grep -v -i macos | head -1)"
 fi
-mv "$xcf" "$DEPS/opencv2.xcframework"
-device_headers="$(find "$DEPS/opencv2.xcframework" -type d -path '*ios-arm64*/opencv2.framework/Headers' \
-  | grep -v -i simulator | grep -v -i macos | head -1)"
-if [[ -z "$device_headers" ]]; then
-  echo "ERROR: device-slice headers not found in opencv2.xcframework"; exit 1
+if [[ -z "$framework" ]]; then
+  echo "ERROR: no opencv2 framework found in archive; contents:"
+  find "$DEPS/src/opencv" -maxdepth 4 | head -50
+  exit 1
 fi
+rm -rf "$DEPS/opencv2.framework"
+cp -R "$framework" "$DEPS/opencv2.framework"
+
 rm -rf "$DEPS/include/opencv2"
-cp -R "$device_headers" "$DEPS/include/opencv2"
-echo "OpenCV headers -> ios-deps/include/opencv2"
+cp -R "$DEPS/opencv2.framework/Headers" "$DEPS/include/opencv2"
+echo "OpenCV -> ios-deps/opencv2.framework (headers in ios-deps/include/opencv2)"
 
 # ----------------------------------------------------------------- 2. Eigen
 echo "--- Eigen $EIGEN_TAG (headers + CMake config)"

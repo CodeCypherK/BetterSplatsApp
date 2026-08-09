@@ -61,7 +61,7 @@ targets:
         LSSupportsOpeningDocumentsInPlace: true
         ITSAppUsesNonExemptEncryption: false
     dependencies:
-      - framework: ../ios-deps/opencv2.xcframework
+      - framework: ../ios-deps/opencv2.framework
         embed: false
       - sdk: Accelerate.framework
       - sdk: AVFoundation.framework

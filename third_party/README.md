@@ -12,6 +12,6 @@ Larger dependencies are NOT vendored:
 
 - **Eigen 3.4** — apt on Linux; headers installed into `ios-deps/` by
   `scripts/ios/build_deps.sh` for iOS.
-- **OpenCV** — apt on Linux; official prebuilt `opencv2.xcframework` on iOS.
+- **OpenCV** — apt on Linux; official prebuilt `opencv2.framework` on iOS.
 - **Ceres 2.2** — apt on Linux; built for iOS arm64 by
   `scripts/ios/build_deps.sh` (miniglog, no suitesparse).

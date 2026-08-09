@@ -5,8 +5,12 @@ add_executable(bs_tests
   test_api.cpp
   test_config.cpp
   test_depth_codec.cpp
+  test_lut_fit.cpp
+  test_matching.cpp
   test_session_io.cpp
   test_synth.cpp
+  test_triangulation.cpp
+  test_two_view.cpp
 )
 
 target_link_libraries(bs_tests PRIVATE bscore synthlib GTest::gtest

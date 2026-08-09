@@ -5,6 +5,7 @@
 // same engine binary logic that runs on the phone — live pipeline first, then
 // the final solve. No Mac or device required to reproduce engine behavior.
 
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <string>
@@ -14,17 +15,27 @@
 #include <opencv2/imgproc.hpp>
 
 #include "bs/bs_api.h"
+#include "common/geometry.h"
+#include "geometry/triangulation.h"
+#include "geometry/two_view.h"
 #include "io/session_reader.h"
+#include "vision/features.h"
+#include "vision/matching.h"
 
 namespace {
 
 void PrintUsage() {
   std::fprintf(stderr,
                "usage: bs_replay <session_dir> [--info] [--live] [--config J]\n"
+               "                 [--two-view [gap]] [--check]\n"
                "       bs_replay --version | --selftest\n"
-               "  --info    print session summary and exit\n"
-               "  --live    feed all frames through the live pipeline\n"
-               "  --config  engine config JSON string (default {})\n");
+               "  --info      print session summary and exit\n"
+               "  --live      feed all frames through the live pipeline\n"
+               "  --two-view  match frame pairs (gap apart, default 4), estimate\n"
+               "              relative pose + triangulate; compares to ground\n"
+               "              truth when present\n"
+               "  --check     exit nonzero if two-view errors exceed bounds\n"
+               "  --config    engine config JSON string (default {})\n");
 }
 
 int RunInfo(const bs::SessionReader& session) {
@@ -62,6 +73,141 @@ int RunInfo(const bs::SessionReader& session) {
       std::printf("frame %06u  depth %dx%d, %.1f%% valid\n", first, depth->width,
                   depth->height,
                   100.0 * valid / (depth->width * depth->height));
+    }
+  }
+  return 0;
+}
+
+// Runs feature detection + matching + relative pose + triangulation on
+// frame pairs `gap` apart. With ground truth (synthetic sessions) reports
+// pose error statistics; with --check, enforces bounds.
+int RunTwoView(const bs::SessionReader& session, int gap, bool check) {
+  const auto& ids = session.frame_ids();
+  if (ids.size() < static_cast<size_t>(gap + 1)) {
+    std::fprintf(stderr, "not enough frames for gap %d\n", gap);
+    return 1;
+  }
+  const auto gt = session.ReadGroundTruth();
+
+  auto gt_pose = [&](uint32_t frame_id) -> std::optional<bs::SE3> {
+    if (!gt) return std::nullopt;
+    for (const auto& p : gt->poses) {
+      if (p.frame_id == frame_id) {
+        bs::SE3 pose;
+        pose.q = Eigen::Quaterniond(p.q[0], p.q[1], p.q[2], p.q[3]);
+        pose.t = Eigen::Vector3d(p.t[0], p.t[1], p.t[2]);
+        return pose;
+      }
+    }
+    return std::nullopt;
+  };
+
+  double worst_rot = 0, worst_tdir = 0;
+  int pairs = 0, failures = 0;
+
+  for (size_t i = 0; i + gap < ids.size(); i += gap) {
+    const uint32_t id_a = ids[i];
+    const uint32_t id_b = ids[i + gap];
+
+    const auto meta_a = session.ReadMeta(id_a);
+    const auto jpeg_a = session.ReadImageBytes(id_a);
+    const auto jpeg_b = session.ReadImageBytes(id_b);
+    if (!meta_a || !jpeg_a || !jpeg_b) continue;
+    const cv::Mat gray_a = cv::imdecode(*jpeg_a, cv::IMREAD_GRAYSCALE);
+    const cv::Mat gray_b = cv::imdecode(*jpeg_b, cv::IMREAD_GRAYSCALE);
+    if (gray_a.empty() || gray_b.empty()) continue;
+
+    const bs::FeatureSet fa = bs::DetectOrb(gray_a, {});
+    const bs::FeatureSet fb = bs::DetectOrb(gray_b, {});
+    const std::vector<bs::Match> matches = bs::MatchFeatures(fa, fb, {});
+
+    std::vector<cv::Point2f> pts_a, pts_b;
+    for (const auto& m : matches) {
+      pts_a.push_back(fa.keypoints[m.idx_a].pt);
+      pts_b.push_back(fb.keypoints[m.idx_b].pt);
+    }
+
+    bs::Intrinsics K;
+    K.fx = meta_a->intrinsics.fx;
+    K.fy = meta_a->intrinsics.fy;
+    K.cx = meta_a->intrinsics.cx;
+    K.cy = meta_a->intrinsics.cy;
+    K.width = meta_a->intrinsics.ref_w;
+    K.height = meta_a->intrinsics.ref_h;
+
+    const bs::TwoViewResult result =
+        bs::EstimateRelativePose(pts_a, pts_b, K, {});
+    ++pairs;
+    if (!result.ok()) {
+      ++failures;
+      std::printf("pair %06u->%06u: FAILED (%d) matches=%zu\n", id_a, id_b,
+                  static_cast<int>(result.failure), matches.size());
+      continue;
+    }
+
+    // Triangulate inliers, count well-conditioned points.
+    int good_points = 0;
+    double err_sum = 0;
+    int err_count = 0;
+    const bs::SE3 identity = bs::SE3::Identity();
+    for (size_t m = 0; m < pts_a.size(); ++m) {
+      if (m >= result.inlier_mask.size() || result.inlier_mask[m] == 0) continue;
+      const auto tri = bs::TriangulateTwoView(identity, result.rel_pose, K,
+                                              pts_a[m], pts_b[m]);
+      if (!tri || !tri->InFrontOfAll()) continue;
+      if (tri->max_angle_deg >= 1.0 && tri->max_reproj_error_px <= 4.0) {
+        ++good_points;
+        err_sum += tri->mean_reproj_error_px;
+        ++err_count;
+      }
+    }
+
+    std::string gt_report;
+    if (const auto pose_a = gt_pose(id_a), pose_b = gt_pose(id_b);
+        pose_a && pose_b) {
+      const bs::SE3 rel_gt = *pose_b * pose_a->Inverse();
+      const double rot_err =
+          bs::RadToDeg(bs::AngularDistance(result.rel_pose.q, rel_gt.q));
+      const double cosang = std::clamp(
+          result.rel_pose.t.normalized().dot(rel_gt.t.normalized()), -1.0, 1.0);
+      const double tdir_err = bs::RadToDeg(std::acos(cosang));
+      // Planar-ambiguous pairs may sit on the conjugate-plane branch; they
+      // are excluded from bootstrap by design, so exclude them from the
+      // accuracy bounds too (still printed for inspection).
+      if (!result.planar_ambiguous) {
+        worst_rot = std::max(worst_rot, rot_err);
+        worst_tdir = std::max(worst_tdir, tdir_err);
+      }
+      char buf[96];
+      std::snprintf(buf, sizeof(buf), "  rot_err=%.3fdeg tdir_err=%.2fdeg",
+                    rot_err, tdir_err);
+      gt_report = buf;
+    }
+
+    std::printf(
+        "pair %06u->%06u: matches=%zu E-inl=%d H-inl=%d%s points=%d "
+        "mean_err=%.2fpx%s\n",
+        id_a, id_b, matches.size(), result.inliers_e, result.inliers_h,
+        result.planar_ambiguous ? " (planar)" : "", good_points,
+        err_count ? err_sum / err_count : 0.0, gt_report.c_str());
+  }
+
+  std::printf("two-view summary: %d pairs, %d failures", pairs, failures);
+  if (gt) std::printf(", worst rot_err=%.3fdeg tdir_err=%.2fdeg", worst_rot,
+                      worst_tdir);
+  std::printf("\n");
+
+  if (check) {
+    if (failures > pairs / 4) {
+      std::fprintf(stderr, "CHECK FAILED: %d/%d pairs failed\n", failures, pairs);
+      return 1;
+    }
+    if (gt && (worst_rot > 1.0 || worst_tdir > 6.0)) {
+      std::fprintf(stderr,
+                   "CHECK FAILED: pose errors exceed bounds "
+                   "(rot %.3f > 1.0 deg or tdir %.2f > 6.0 deg)\n",
+                   worst_rot, worst_tdir);
+      return 1;
     }
   }
   return 0;
@@ -162,19 +308,27 @@ int main(int argc, char** argv) {
   const std::string session_dir = argv[1];
   bool do_info = false;
   bool do_live = false;
+  bool do_two_view = false;
+  bool check = false;
+  int gap = 4;
   std::string config = "{}";
   for (int i = 2; i < argc; ++i) {
     const std::string arg = argv[i];
     if (arg == "--info") do_info = true;
     else if (arg == "--live") do_live = true;
-    else if (arg == "--config" && i + 1 < argc) config = argv[++i];
-    else {
+    else if (arg == "--check") check = true;
+    else if (arg == "--two-view") {
+      do_two_view = true;
+      if (i + 1 < argc && argv[i + 1][0] != '-') gap = std::atoi(argv[++i]);
+    } else if (arg == "--config" && i + 1 < argc) {
+      config = argv[++i];
+    } else {
       std::fprintf(stderr, "unknown option: %s\n", arg.c_str());
       PrintUsage();
       return 2;
     }
   }
-  if (!do_info && !do_live) do_info = true;
+  if (!do_info && !do_live && !do_two_view) do_info = true;
 
   auto session = bs::SessionReader::Open(session_dir);
   if (!session) {
@@ -184,6 +338,10 @@ int main(int argc, char** argv) {
 
   if (do_info) {
     const int rc = RunInfo(*session);
+    if (rc != 0 || (!do_live && !do_two_view)) return rc;
+  }
+  if (do_two_view) {
+    const int rc = RunTwoView(*session, std::max(1, gap), check);
     if (rc != 0 || !do_live) return rc;
   }
   return RunLive(*session, config);

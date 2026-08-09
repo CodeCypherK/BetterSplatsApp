@@ -16,6 +16,7 @@ struct GenerateOptions {
   uint32_t seed = 7;
   bool blank_wall = true;
   double depth_noise_scale = 1.0;  // 0 disables depth noise/dropouts
+  double sweep_deg = 140.0;        // total orbit arc over the sequence
   int keyframe_every = 5;
   int jpeg_quality = 88;
 };

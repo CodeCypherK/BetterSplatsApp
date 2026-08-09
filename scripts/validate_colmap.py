@@ -48,13 +48,14 @@ def main() -> int:
             print(f"ERROR: {exe.name} selftest failed", file=sys.stderr)
             return 1
 
-    # M1: synth session -> reader/replay round trip.
+    # M1: synth session -> reader/replay round trip. 30 frames over a 60 deg
+    # sweep keeps per-pair viewpoint change realistic (~4 deg at gap 2).
     with tempfile.TemporaryDirectory(prefix="bs_validate_") as tmp:
         session = Path(tmp) / "session"
-        frames = 12
+        frames = 30
         out = subprocess.run(
             [str(synth), str(session), "--frames", str(frames), "--width", "640",
-             "--height", "480", "--seed", "3"],
+             "--height", "480", "--seed", "3", "--sweep", "60"],
             capture_output=True, text=True, timeout=600,
         )
         if out.returncode != 0:
@@ -88,7 +89,18 @@ def main() -> int:
             print("ERROR: replay did not feed all frames", file=sys.stderr)
             return 1
 
-    print("OK: synth -> reader -> live-replay round trip")
+        # M2: two-view relative pose on the synthetic session, checked
+        # against ground truth (bounds enforced by --check).
+        out = subprocess.run(
+            [str(replay), str(session), "--two-view", "2", "--check"],
+            capture_output=True, text=True, timeout=900,
+        )
+        print(out.stdout.strip())
+        if out.returncode != 0:
+            print(f"ERROR: two-view check failed:\n{out.stderr}", file=sys.stderr)
+            return 1
+
+    print("OK: synth -> reader -> live-replay -> two-view ground-truth check")
     print("SKIP: final-solve + pycolmap validation activates in M6/M7")
     return 0
 

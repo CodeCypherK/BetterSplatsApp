@@ -7,14 +7,19 @@ find_package(Eigen3 3.4 REQUIRED)
 find_package(Ceres REQUIRED)
 
 add_library(bscore STATIC
+  src/calib/lut_fit.cpp
   src/common/config.cpp
   src/engine/api.cpp
   src/engine/engine_impl.cpp
   src/engine/selftest.cpp
+  src/geometry/triangulation.cpp
+  src/geometry/two_view.cpp
   src/io/depth_codec.cpp
   src/io/session_schema.cpp
   src/io/session_reader.cpp
   src/io/session_writer.cpp
+  src/vision/features.cpp
+  src/vision/matching.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../third_party/lz4/lz4.c
 )
 

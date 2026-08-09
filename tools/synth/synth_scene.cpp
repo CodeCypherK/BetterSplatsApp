@@ -250,7 +250,8 @@ DepthImage RenderDepth(const Scene& scene, const SE3& pose, const Intrinsics& K,
 }
 
 std::vector<SE3> OrbitTrajectory(int frame_count, double radius_x, double radius_z,
-                                 double eye_height, uint32_t seed) {
+                                 double eye_height, uint32_t seed,
+                                 double sweep_deg) {
   std::vector<SE3> poses;
   poses.reserve(frame_count);
   std::mt19937 rng(seed);
@@ -261,17 +262,17 @@ std::vector<SE3> OrbitTrajectory(int frame_count, double radius_x, double radius
 
   for (int i = 0; i < frame_count; ++i) {
     const double s = static_cast<double>(i) / std::max(1, frame_count - 1);
-    const double angle = 2.0 * M_PI * 0.85 * s;  // 85% of a full orbit
+    const double angle = DegToRad(sweep_deg) * s;
     jitter_y = 0.97 * jitter_y + 0.004 * gauss(rng);
-    jitter_heading = 0.97 * jitter_heading + 0.006 * gauss(rng);
+    jitter_heading = 0.97 * jitter_heading + 0.003 * gauss(rng);
 
     const Eigen::Vector3d position(radius_x * std::sin(angle),
                                    eye_height + jitter_y,
                                    radius_z * std::cos(angle));
     // Look outward past the room center for wall coverage, with heading jitter.
-    Eigen::Vector3d target(1.8 * radius_x * std::sin(angle + 0.35 + jitter_heading),
+    Eigen::Vector3d target(1.8 * radius_x * std::sin(angle + 0.15 + jitter_heading),
                            eye_height * 0.75,
-                           1.8 * radius_z * std::cos(angle + 0.35 + jitter_heading));
+                           1.8 * radius_z * std::cos(angle + 0.15 + jitter_heading));
 
     const Eigen::Vector3d forward = (target - position).normalized();
     const Eigen::Vector3d world_up(0, 1, 0);

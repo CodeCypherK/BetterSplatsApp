@@ -64,8 +64,8 @@ bool GenerateSession(const GenerateOptions& o) {
   if (!SessionWriter::Create(o.out_dir, info, calib, writer)) return false;
 
   const Scene scene = MakeRoomScene(o.seed, o.blank_wall);
-  const std::vector<SE3> poses =
-      OrbitTrajectory(o.frame_count, 1.6, 2.2, 1.5, o.seed ^ 0x7777u);
+  const std::vector<SE3> poses = OrbitTrajectory(
+      o.frame_count, 1.6, 2.2, 1.5, o.seed ^ 0x7777u, o.sweep_deg);
 
   DepthNoise noise;
   noise.sigma_base_m *= o.depth_noise_scale;

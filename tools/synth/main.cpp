@@ -63,6 +63,7 @@ int main(int argc, char** argv) {
     else if (arg == "--height") options.image_height = std::atoi(next("--height"));
     else if (arg == "--seed") options.seed = static_cast<uint32_t>(std::atoi(next("--seed")));
     else if (arg == "--no-blank-wall") options.blank_wall = false;
+    else if (arg == "--sweep") options.sweep_deg = std::atof(next("--sweep"));
     else if (arg == "--depth-noise") options.depth_noise_scale = std::atof(next("--depth-noise"));
     else if (arg == "--jpeg-quality") options.jpeg_quality = std::atoi(next("--jpeg-quality"));
     else {

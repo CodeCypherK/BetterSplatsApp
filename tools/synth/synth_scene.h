@@ -62,9 +62,13 @@ DepthImage RenderDepth(const Scene& scene, const SE3& pose, const Intrinsics& K,
                        const DepthNoise& noise, uint32_t seed);
 
 // Smooth orbit inside the room: positions on an ellipse at eye height,
-// looking toward the room interior, with mild height/heading variation.
-// Returns world-to-camera poses.
+// looking outward, with mild handheld-style height/heading jitter.
+// `sweep_deg` is the total orbit arc across the whole sequence — keep the
+// per-frame angular change realistic (a phone at 30 fps moves well under
+// 1 deg/frame; stored-frame sequences a few deg/frame). Returns
+// world-to-camera poses.
 std::vector<SE3> OrbitTrajectory(int frame_count, double radius_x, double radius_z,
-                                 double eye_height, uint32_t seed);
+                                 double eye_height, uint32_t seed,
+                                 double sweep_deg = 140.0);
 
 }  // namespace bs::synth

@@ -94,6 +94,8 @@ cmake -S "$DEPS/src/ceres" -B "$DEPS/src/ceres-build" \
   -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_INSTALL_PREFIX="$DEPS" \
   -DCMAKE_PREFIX_PATH="$DEPS" \
+  -DCMAKE_FIND_ROOT_PATH="$DEPS" \
+  -DEigen3_DIR="$DEPS/share/eigen3/cmake" \
   -DMINIGLOG=ON \
   -DGFLAGS=OFF \
   -DSUITESPARSE=OFF \

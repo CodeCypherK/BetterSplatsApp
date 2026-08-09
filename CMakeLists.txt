@@ -24,6 +24,9 @@ if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
     message(FATAL_ERROR "BS_IOS_DEPS_DIR must point at the ios-deps prefix for iOS builds")
   endif()
   list(APPEND CMAKE_PREFIX_PATH "${BS_IOS_DEPS_DIR}")
+  # CMAKE_SYSTEM_NAME=iOS activates find-root isolation: host prefix paths
+  # are ignored unless also present in the find root path.
+  list(APPEND CMAKE_FIND_ROOT_PATH "${BS_IOS_DEPS_DIR}")
 endif()
 
 add_subdirectory(core)

@@ -12,8 +12,11 @@ add_library(bscore STATIC
   src/engine/api.cpp
   src/engine/engine_impl.cpp
   src/engine/selftest.cpp
+  src/fusion/residuals.cpp
+  src/fusion/scale.cpp
   src/geometry/triangulation.cpp
   src/geometry/two_view.cpp
+  src/lidar/depth_processing.cpp
   src/io/depth_codec.cpp
   src/io/session_schema.cpp
   src/io/session_reader.cpp

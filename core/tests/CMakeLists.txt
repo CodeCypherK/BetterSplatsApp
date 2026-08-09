@@ -5,6 +5,8 @@ add_executable(bs_tests
   test_api.cpp
   test_config.cpp
   test_depth_codec.cpp
+  test_fusion.cpp
+  test_lidar.cpp
   test_lut_fit.cpp
   test_matching.cpp
   test_session_io.cpp

@@ -229,6 +229,9 @@ bs_result Engine::SnapshotAcquire(bs_snapshot& out) {
   }
   if (live_) {
     live_->FillSnapshot(storage->points, storage->cameras);
+    live_->readiness().FillSnapshot(storage->patches, storage->regions,
+                                    storage->weak_areas,
+                                    live_->region_name().c_str());
   }
 
   out._h = storage;
@@ -237,11 +240,11 @@ bs_result Engine::SnapshotAcquire(bs_snapshot& out) {
   out.cameras = storage->cameras.data();
   out.camera_count = static_cast<uint32_t>(storage->cameras.size());
   out.patches = storage->patches.data();
-  out.patch_count = 0;
+  out.patch_count = static_cast<uint32_t>(storage->patches.size());
   out.regions = storage->regions.data();
-  out.region_count = 0;
+  out.region_count = static_cast<uint32_t>(storage->regions.size());
   out.weak_areas = storage->weak_areas.data();
-  out.weak_area_count = 0;
+  out.weak_area_count = static_cast<uint32_t>(storage->weak_areas.size());
 
   float lo[3] = {1e9f, 1e9f, 1e9f};
   float hi[3] = {-1e9f, -1e9f, -1e9f};
@@ -292,11 +295,19 @@ bs_result Engine::ThermalHint(int32_t level) {
 
 bs_result Engine::RegionRename(uint32_t region_id, const char* utf8_name) {
   std::lock_guard<std::mutex> lock(mutex_);
-  if (utf8_name == nullptr) {
-    return Fail(BS_ERR_INVALID_ARGUMENT, "RegionRename: null name");
+  if (utf8_name == nullptr || utf8_name[0] == '\0') {
+    return Fail(BS_ERR_INVALID_ARGUMENT, "RegionRename: empty name");
   }
-  (void)region_id;
-  return Fail(BS_ERR_NOT_IMPLEMENTED, "RegionRename: regions land in M5");
+  if (!live_) {
+    return Fail(BS_ERR_INVALID_STATE, "RegionRename: no live session");
+  }
+  if (region_id != 1) {
+    return Fail(BS_ERR_INVALID_ARGUMENT,
+                "RegionRename: unknown region id (auto-clustering into "
+                "multiple regions is a later milestone)");
+  }
+  live_->RenameRegion(utf8_name);
+  return BS_OK;
 }
 
 }  // namespace bs

@@ -24,6 +24,7 @@ add_library(bscore STATIC
   src/live/live_map.cpp
   src/live/live_mapper.cpp
   src/live/live_system.cpp
+  src/readiness/patch_grid.cpp
   src/vision/features.cpp
   src/vision/matching.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../third_party/lz4/lz4.c

@@ -12,6 +12,7 @@
 #include "common/geometry.h"
 #include "io/depth_codec.h"
 #include "live/live_map.h"
+#include "readiness/patch_grid.h"
 
 namespace bs {
 
@@ -61,6 +62,10 @@ class LiveSystem {
   void FillSnapshot(std::vector<bs_snap_point>& points,
                     std::vector<bs_snap_camera>& cameras) const;
 
+  const PatchGrid& readiness() const { return readiness_; }
+  void RenameRegion(const std::string& name) { region_name_ = name; }
+  const std::string& region_name() const { return region_name_; }
+
   // Flushes live/poses.jsonl + summary; returns false on IO failure.
   bool End();
 
@@ -97,6 +102,10 @@ class LiveSystem {
   void InsertKeyframe(const LiveFrameInput& input, FrameFeatures features,
                       const std::vector<std::pair<int32_t, int>>& matches);
   void TriangulateNewPoints(Keyframe& kf);
+  // Visual loop closure: revisited areas are recognized by appearance and
+  // linked by associating current features to the old map points, creating
+  // covisibility that the next local BA uses to pull accumulated drift.
+  void TryLoopLink(Keyframe& kf);
   void LocalBundleAdjustment(uint32_t center_kf_id);
   void CullPoints();
 
@@ -150,6 +159,10 @@ class LiveSystem {
   // instead of a fixed number.
   std::deque<double> recent_lap_vars_;
   double BlurThreshold(double fraction) const;
+
+  PatchGrid readiness_;
+  std::string region_name_ = "Room 1";
+  uint32_t loop_links_ = 0;
 };
 
 }  // namespace bs

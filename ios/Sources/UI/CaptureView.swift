@@ -43,11 +43,33 @@ struct CaptureView: View {
                 Label("\(model.framesStored)", systemImage: "internaldrive")
                 Label(String(format: "%.0f MB", model.megabytesWritten),
                       systemImage: "externaldrive.badge.timemachine")
+                if model.readinessOverall > 0 {
+                    Label("\(Int(model.readinessOverall))%",
+                          systemImage: "checkmark.seal")
+                        .foregroundStyle(
+                            model.readinessOverall >= 85 ? .green
+                            : (model.readinessOverall >= 60 ? .orange : .red))
+                }
             }
             .font(.caption.monospacedDigit())
             .padding(.horizontal, 12)
             .padding(.vertical, 5)
             .background(.ultraThinMaterial, in: Capsule())
+
+            HStack(spacing: 10) {
+                NavigationLink {
+                    ReadinessDashboardView(model: model)
+                } label: {
+                    Label("Readiness", systemImage: "chart.bar.fill")
+                }
+                NavigationLink {
+                    MapView(model: model)
+                } label: {
+                    Label("3D Map", systemImage: "cube.transparent")
+                }
+            }
+            .font(.caption)
+            .buttonStyle(.bordered)
         }
     }
 

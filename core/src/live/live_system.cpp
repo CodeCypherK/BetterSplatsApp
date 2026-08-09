@@ -752,6 +752,7 @@ void LiveSystem::FillStatus(bs_live_status& out) const {
   out.guidance = guidance_;
   out.scale_locked = scale_locked_ ? 1 : 0;
   out.blur_metric = static_cast<float>(last_lap_var_);
+  out.readiness_overall = readiness_.OverallScore();
   out.inlier_ratio =
       last_matches_ > 0
           ? static_cast<float>(last_inliers_) / static_cast<float>(last_matches_)

@@ -178,12 +178,16 @@ final class CaptureViewModel {
     private(set) var framesSeen: UInt32 = 0
     private(set) var framesStored: UInt32 = 0
     private(set) var megabytesWritten: Double = 0
+    private(set) var readinessOverall: Float = 0
+    private(set) var snapshot = CoreEngine.Snapshot()
 
     private let manager = CaptureManager()
     private var context: FrameFeedContext?
     private var pollTask: Task<Void, Never>?
+    private var snapshotTick = 0
 
     let previewRenderer = VideoPreviewRenderer()
+    let mapRenderer = MapRenderer()
 
     var isCapturing: Bool { state == .capturing }
 
@@ -253,11 +257,26 @@ final class CaptureViewModel {
                 let status = CoreEngine.shared.livePollStatus()
                 self.framesSeen = status.frames_fed
                 self.guidance = Self.guidanceText(for: status)
+                self.readinessOverall = status.readiness_overall
                 self.framesStored = await context.store.storedFrames
                 self.megabytesWritten =
                     Double(await context.store.storedBytes) / 1_048_576.0
+                self.snapshotTick += 1
+                if self.snapshotTick % 5 == 0 {  // ~2 Hz snapshot refresh
+                    self.refreshSnapshot()
+                }
             }
         }
+    }
+
+    func refreshSnapshot() {
+        snapshot = CoreEngine.shared.snapshot()
+        mapRenderer.update(with: snapshot)
+    }
+
+    func renameRegion(name: String) {
+        _ = CoreEngine.shared.renameRegion(id: 1, name: name)
+        refreshSnapshot()
     }
 
     private static func guidanceText(for status: bs_live_status) -> String {

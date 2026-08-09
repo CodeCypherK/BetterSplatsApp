@@ -114,8 +114,15 @@ void LiveSystem::InsertKeyframe(
   EmitDirective(added.frame_id, BS_STORE_KEYFRAME, true);
 
   TriangulateNewPoints(added);
+  TryLoopLink(added);
   LocalBundleAdjustment(added.kf_id);
   CullPoints();
+
+  ReadinessOptions readiness_options;
+  readiness_options.patch_size_m = config_.patch_size_m;
+  readiness_options.weak_threshold = config_.readiness_weak_threshold;
+  readiness_ = PatchGrid(readiness_options);
+  readiness_.Build(map_);
 
   // LIVE-layer caps: the map is disposable, so bounded memory wins over
   // completeness (the final solve re-derives everything from RAW).
@@ -248,6 +255,83 @@ void LiveSystem::TriangulateNewPoints(Keyframe& kf) {
   }
   BS_LOGD("live", "kf %u: %d new points, %d track extensions (%zu total)",
           kf.kf_id, created, extended, map_.points().size());
+}
+
+void LiveSystem::TryLoopLink(Keyframe& kf) {
+  // Candidates: keyframes spatially near the new one, excluded from the
+  // recent window, with no covisibility (i.e., the map doesn't yet know
+  // they see the same place).
+  const auto covisible = map_.Covisible(kf.kf_id, 1);
+  auto is_covisible = [&](uint32_t id) {
+    for (const auto& [cid, _] : covisible) {
+      if (cid == id) return true;
+    }
+    return false;
+  };
+
+  const auto& kfs = map_.keyframes();
+  const int recent_cutoff =
+      static_cast<int>(kfs.size()) - config_.loop_exclude_recent;
+  const Eigen::Vector3d center = kf.pose.CameraCenter();
+
+  for (int i = 0; i < recent_cutoff; ++i) {
+    const Keyframe& candidate = kfs[i];
+    if (is_covisible(candidate.kf_id)) continue;
+    if ((candidate.pose.CameraCenter() - center).norm() >
+        config_.loop_search_radius_m) {
+      continue;
+    }
+
+    // Appearance check against the candidate's associated features.
+    FeatureSet assoc;
+    assoc.type = FeatureType::kOrb;
+    std::vector<int32_t> pids;
+    std::vector<int> rows;
+    for (size_t f = 0; f < candidate.point_ids.size(); ++f) {
+      if (candidate.point_ids[f] >= 0) {
+        pids.push_back(candidate.point_ids[f]);
+        rows.push_back(static_cast<int>(f));
+      }
+    }
+    if (static_cast<int>(pids.size()) < config_.loop_min_inliers) continue;
+    assoc.descriptors.create(static_cast<int>(rows.size()), 32, CV_8U);
+    for (size_t r = 0; r < rows.size(); ++r) {
+      candidate.features.descriptors.row(rows[r])
+          .copyTo(assoc.descriptors.row(static_cast<int>(r)));
+    }
+    assoc.keypoints.resize(rows.size());
+
+    MatchOptions options;
+    options.ratio = 0.75f;
+    options.cross_check = true;
+    options.max_distance = 55.0f;
+    const std::vector<Match> matches =
+        MatchFeatures(assoc, kf.features, options);
+    if (static_cast<int>(matches.size()) < config_.loop_min_inliers) continue;
+
+    // Geometric verification: the old points must reproject consistently
+    // into the new view under its current pose (drift-widened gate).
+    int linked = 0;
+    for (const auto& m : matches) {
+      MapPoint* mp = map_.FindPoint(pids[m.idx_a]);
+      if (mp == nullptr) continue;
+      if (kf.point_ids[m.idx_b] >= 0) continue;
+      const Eigen::Vector3d xc = kf.pose.Apply(mp->X);
+      if (xc.z() <= 0.05) continue;
+      const Eigen::Vector2d proj = kf.K.Project(xc);
+      const cv::Point2f& obs = kf.undistorted[m.idx_b];
+      if (std::hypot(proj.x() - obs.x, proj.y() - obs.y) > 12.0) continue;
+      kf.point_ids[m.idx_b] = mp->id;
+      mp->observations.emplace_back(kf.kf_id, m.idx_b);
+      ++linked;
+    }
+    if (linked >= config_.loop_min_inliers / 2) {
+      loop_links_ += linked;
+      BS_LOGI("live", "loop link: kf %u <-> kf %u (%d points joined)",
+              kf.kf_id, candidate.kf_id, linked);
+      // The follow-up local BA (window now spans the loop) absorbs drift.
+    }
+  }
 }
 
 void LiveSystem::LocalBundleAdjustment(uint32_t center_kf_id) {

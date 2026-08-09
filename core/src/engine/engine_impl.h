@@ -1,17 +1,21 @@
 #pragma once
 
 #include <atomic>
+#include <memory>
 #include <mutex>
 #include <string>
+#include <vector>
 
 #include "bs/bs_api.h"
 #include "common/config.h"
+#include "live/live_system.h"
 
 namespace bs {
 
 // Engine facade behind the C ABI. Owns the live pipeline and the final-solve
-// pipeline (added in later milestones); this class is the only place that
-// holds cross-module state. All public methods are thread-safe.
+// pipeline (M6); this class is the only place that holds cross-module state.
+// All public methods are thread-safe; live processing currently runs
+// synchronously inside LiveFeed (callers feed from their own capture queue).
 class Engine {
  public:
   explicit Engine(EngineConfig config);
@@ -41,20 +45,28 @@ class Engine {
 
  private:
   bs_result Fail(bs_result code, const std::string& message);
+  void MaybeFitDistortion(const bs_frame_in& frame);
 
   EngineConfig config_;
 
   mutable std::mutex mutex_;
   std::string last_error_;
 
-  // Live-session state. The full tracker/mapper stack lands in M4; the
-  // skeleton keeps the ABI honest (state machine + counters) from M0 so the
-  // app and replay CLI integrate against real semantics immediately.
-  bs_live_state live_state_ = BS_LIVE_IDLE;
+  std::unique_ptr<LiveSystem> live_;
   std::string session_dir_;
   uint32_t frames_fed_ = 0;
-  uint32_t frames_processed_ = 0;
   uint32_t last_frame_id_ = 0;
+  bool distortion_ready_ = false;
+  double k1_ = 0, k2_ = 0;
+
+  struct SnapshotStorage {
+    std::vector<bs_snap_point> points;
+    std::vector<bs_snap_camera> cameras;
+    std::vector<bs_snap_patch> patches;
+    std::vector<bs_snap_region> regions;
+    std::vector<bs_snap_weak_area> weak_areas;
+  };
+
   std::atomic<int32_t> thermal_level_{0};
 };
 

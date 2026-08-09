@@ -67,6 +67,37 @@ struct ReprojectionResidual {
   double u_, v_, fx_, fy_, cx_, cy_;
 };
 
+// Pose-only variant with the world point fixed (live tracking refinement:
+// map points stay put while the current pose polishes).
+struct ReprojectionPoseOnlyResidual {
+  ReprojectionPoseOnlyResidual(double u, double v, const Eigen::Vector3d& X,
+                               const Intrinsics& K)
+      : u_(u), v_(v), X_(X), fx_(K.fx), fy_(K.fy), cx_(K.cx), cy_(K.cy) {}
+
+  template <typename T>
+  bool operator()(const T* const q_xyzw, const T* const t, T* residual) const {
+    const Eigen::Quaternion<T> q(q_xyzw[3], q_xyzw[0], q_xyzw[1], q_xyzw[2]);
+    const Eigen::Matrix<T, 3, 1> x_cam =
+        q * X_.cast<T>() + Eigen::Matrix<T, 3, 1>(t[0], t[1], t[2]);
+    const T z = x_cam.z() < T(1e-6) ? T(1e-6) : x_cam.z();
+    residual[0] = T(fx_) * x_cam.x() / z + T(cx_) - T(u_);
+    residual[1] = T(fy_) * x_cam.y() / z + T(cy_) - T(v_);
+    return true;
+  }
+
+  static ceres::CostFunction* Create(double u, double v,
+                                     const Eigen::Vector3d& X,
+                                     const Intrinsics& K) {
+    return new ceres::AutoDiffCostFunction<ReprojectionPoseOnlyResidual, 2, 4,
+                                           3>(
+        new ReprojectionPoseOnlyResidual(u, v, X, K));
+  }
+
+  double u_, v_;
+  Eigen::Vector3d X_;
+  double fx_, fy_, cx_, cy_;
+};
+
 // Differentiable lookup into one frame's sanitized depth map. Owned by the
 // engine per depth frame; shared by all residuals against that frame.
 class DepthLookup {

@@ -48,11 +48,11 @@ def main() -> int:
             print(f"ERROR: {exe.name} selftest failed", file=sys.stderr)
             return 1
 
-    # M1: synth session -> reader/replay round trip. 30 frames over a 60 deg
-    # sweep keeps per-pair viewpoint change realistic (~4 deg at gap 2).
+    # M1: synth session -> reader/replay round trip. 60 frames over a 60 deg
+    # sweep matches realistic handheld angular speed (~30 deg/s at 30 fps).
     with tempfile.TemporaryDirectory(prefix="bs_validate_") as tmp:
         session = Path(tmp) / "session"
-        frames = 30
+        frames = 60
         out = subprocess.run(
             [str(synth), str(session), "--frames", str(frames), "--width", "640",
              "--height", "480", "--seed", "3", "--sweep", "60"],
@@ -77,22 +77,27 @@ def main() -> int:
             print("ERROR: missing ground truth", file=sys.stderr)
             return 1
 
+        # M4: live tracking with ATE bounds against ground truth (--check
+        # enforces >=70% tracked, ATE < 0.10 m, mean rot < 2 deg).
         out = subprocess.run(
-            [str(replay), str(session), "--info", "--live"],
-            capture_output=True, text=True, timeout=600,
+            [str(replay), str(session), "--info", "--live", "--check"],
+            capture_output=True, text=True, timeout=1800,
         )
         print(out.stdout.strip())
         if out.returncode != 0:
-            print(f"ERROR: bs_replay failed:\n{out.stderr}", file=sys.stderr)
+            print(f"ERROR: live replay check failed:\n{out.stderr}",
+                  file=sys.stderr)
             return 1
         if f"fed {frames} frames" not in out.stdout:
             print("ERROR: replay did not feed all frames", file=sys.stderr)
             return 1
 
         # M2: two-view relative pose on the synthetic session, checked
-        # against ground truth (bounds enforced by --check).
+        # against ground truth (bounds enforced by --check). Gap 6 gives
+        # ~6 deg / 0.35 m per pair — proper two-view conditioning; smaller
+        # gaps are correctly declined as weak-parallax by the estimator.
         out = subprocess.run(
-            [str(replay), str(session), "--two-view", "2", "--check"],
+            [str(replay), str(session), "--two-view", "6", "--check"],
             capture_output=True, text=True, timeout=900,
         )
         print(out.stdout.strip())

@@ -8,6 +8,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <fstream>
 #include <string>
 #include <vector>
 
@@ -213,7 +214,8 @@ int RunTwoView(const bs::SessionReader& session, int gap, bool check) {
   return 0;
 }
 
-int RunLive(const bs::SessionReader& session, const std::string& config) {
+int RunLive(const bs::SessionReader& session, const std::string& config,
+            bool check) {
   bs_engine* engine = bs_create(config.c_str());
   if (engine == nullptr) {
     std::fprintf(stderr, "engine creation failed\n");
@@ -275,16 +277,116 @@ int RunLive(const bs::SessionReader& session, const std::string& config) {
   bs_live_status status{};
   bs_live_poll_status(engine, &status);
   std::printf("live replay: fed %u frames, engine processed %u, state=%d, "
-              "keyframes=%u, points=%u\n",
+              "keyframes=%u, points=%u, scale_locked=%d\n",
               fed, status.frames_processed, status.state, status.keyframes,
-              status.map_points);
+              status.map_points, status.scale_locked);
 
   const bs_result end = bs_live_end(engine);
   if (end != BS_OK) {
     std::fprintf(stderr, "live_end failed: %s\n", bs_last_error(engine));
   }
   bs_destroy(engine);
-  return end == BS_OK ? 0 : 1;
+  if (end != BS_OK) return 1;
+
+  // Compare live poses against ground truth (synthetic sessions). The live
+  // map's world frame is anchored at the first keyframe, so poses compare
+  // through T_align = T_gt_ref^-1 ∘ T_live_ref: ATE of camera centers after
+  // that SE3 alignment (scale comes from LiDAR and is NOT re-fit — a scale
+  // error shows up as trajectory error, which is the point of the test).
+  const auto gt = session.ReadGroundTruth();
+  if (!gt) return 0;
+
+  std::ifstream poses_file(session.dir() + "/live/poses.jsonl");
+  if (!poses_file) {
+    std::fprintf(stderr, "missing live/poses.jsonl\n");
+    return check ? 1 : 0;
+  }
+  struct LivePose {
+    uint32_t frame_id;
+    bs::SE3 pose;
+  };
+  std::vector<LivePose> live_poses;
+  std::string line;
+  while (std::getline(poses_file, line)) {
+    // Minimal parse of the fixed jsonl schema.
+    if (line.find("\"tracking\"") == std::string::npos) continue;
+    LivePose lp;
+    double qw, qx, qy, qz, px, py, pz;
+    const char* q = std::strstr(line.c_str(), "\"q\":[");
+    const char* p = std::strstr(line.c_str(), "\"p\":[");
+    if (std::sscanf(line.c_str(), "{\"frame_id\":%u", &lp.frame_id) != 1 ||
+        q == nullptr || p == nullptr ||
+        std::sscanf(q, "\"q\":[%lf,%lf,%lf,%lf]", &qw, &qx, &qy, &qz) != 4 ||
+        std::sscanf(p, "\"p\":[%lf,%lf,%lf]", &px, &py, &pz) != 3) {
+      continue;
+    }
+    lp.pose.q = Eigen::Quaterniond(qw, qx, qy, qz).normalized();
+    lp.pose.t = Eigen::Vector3d(px, py, pz);
+    live_poses.push_back(lp);
+  }
+
+  auto find_gt = [&](uint32_t frame_id) -> std::optional<bs::SE3> {
+    for (const auto& gp : gt->poses) {
+      if (gp.frame_id == frame_id) {
+        bs::SE3 pose;
+        pose.q = Eigen::Quaterniond(gp.q[0], gp.q[1], gp.q[2], gp.q[3]);
+        pose.t = Eigen::Vector3d(gp.t[0], gp.t[1], gp.t[2]);
+        return pose;
+      }
+    }
+    return std::nullopt;
+  };
+
+  if (live_poses.size() < 5) {
+    std::printf("live ATE: only %zu tracked poses\n", live_poses.size());
+    return check ? 1 : 0;
+  }
+
+  // Alignment from the first tracked pose.
+  const auto gt_ref = find_gt(live_poses.front().frame_id);
+  if (!gt_ref) return check ? 1 : 0;
+  // world_gt -> world_live: T_align = T_live_ref^-1 * T_gt_ref maps
+  // gt-world into live-world through the shared camera frame.
+  const bs::SE3 align = live_poses.front().pose.Inverse() * (*gt_ref);
+
+  double ate_sq_sum = 0;
+  double rot_err_sum = 0;
+  int compared = 0;
+  for (const auto& lp : live_poses) {
+    const auto gt_pose = find_gt(lp.frame_id);
+    if (!gt_pose) continue;
+    const bs::SE3 gt_in_live = *gt_pose * align.Inverse();
+    const double center_err =
+        (lp.pose.CameraCenter() - gt_in_live.CameraCenter()).norm();
+    ate_sq_sum += center_err * center_err;
+    rot_err_sum += bs::RadToDeg(bs::AngularDistance(lp.pose.q, gt_in_live.q));
+    ++compared;
+  }
+  if (compared == 0) return check ? 1 : 0;
+  const double ate_rmse = std::sqrt(ate_sq_sum / compared);
+  const double mean_rot = rot_err_sum / compared;
+  const double tracked_frac =
+      static_cast<double>(live_poses.size()) / session.frame_ids().size();
+  std::printf(
+      "live ATE: %.1f%% tracked, RMSE %.3f m, mean rot err %.2f deg (%d poses)\n",
+      100.0 * tracked_frac, ate_rmse, mean_rot, compared);
+
+  if (check) {
+    if (tracked_frac < 0.7) {
+      std::fprintf(stderr, "CHECK FAILED: tracked %.0f%% < 70%%\n",
+                   100.0 * tracked_frac);
+      return 1;
+    }
+    if (ate_rmse > 0.10) {
+      std::fprintf(stderr, "CHECK FAILED: ATE %.3f m > 0.10 m\n", ate_rmse);
+      return 1;
+    }
+    if (mean_rot > 2.0) {
+      std::fprintf(stderr, "CHECK FAILED: rot err %.2f deg > 2 deg\n", mean_rot);
+      return 1;
+    }
+  }
+  return 0;
 }
 
 }  // namespace
@@ -344,5 +446,5 @@ int main(int argc, char** argv) {
     const int rc = RunTwoView(*session, std::max(1, gap), check);
     if (rc != 0 || !do_live) return rc;
   }
-  return RunLive(*session, config);
+  return RunLive(*session, config, check);
 }

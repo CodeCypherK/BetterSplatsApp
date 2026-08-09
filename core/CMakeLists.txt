@@ -21,6 +21,9 @@ add_library(bscore STATIC
   src/io/session_schema.cpp
   src/io/session_reader.cpp
   src/io/session_writer.cpp
+  src/live/live_map.cpp
+  src/live/live_mapper.cpp
+  src/live/live_system.cpp
   src/vision/features.cpp
   src/vision/matching.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../third_party/lz4/lz4.c

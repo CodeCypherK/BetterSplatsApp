@@ -1,9 +1,15 @@
 #include "engine/engine_impl.h"
 
+#include <cmath>
 #include <cstring>
 #include <filesystem>
 
+#include <opencv2/imgproc.hpp>
+
+#include "calib/lut_fit.h"
 #include "common/log.h"
+#include "io/float16.h"
+#include "io/session_schema.h"
 
 namespace bs {
 
@@ -15,7 +21,7 @@ Engine::Engine(EngineConfig config) : config_(config) {
 }
 
 Engine::~Engine() {
-  if (live_state_ != BS_LIVE_IDLE && live_state_ != BS_LIVE_FINISHED) {
+  if (live_ && live_->state() != BS_LIVE_FINISHED) {
     LiveEnd();
   }
 }
@@ -36,7 +42,8 @@ bs_result Engine::LiveBegin(const char* session_dir) {
   if (session_dir == nullptr || session_dir[0] == '\0') {
     return Fail(BS_ERR_INVALID_ARGUMENT, "LiveBegin: empty session_dir");
   }
-  if (live_state_ != BS_LIVE_IDLE && live_state_ != BS_LIVE_FINISHED) {
+  if (live_ && live_->state() != BS_LIVE_FINISHED &&
+      live_->state() != BS_LIVE_IDLE) {
     return Fail(BS_ERR_INVALID_STATE, "LiveBegin: live session already active");
   }
 
@@ -49,17 +56,79 @@ bs_result Engine::LiveBegin(const char* session_dir) {
 
   session_dir_ = session_dir;
   frames_fed_ = 0;
-  frames_processed_ = 0;
   last_frame_id_ = 0;
-  live_state_ = BS_LIVE_INITIALIZING;
+  distortion_ready_ = false;
+  k1_ = k2_ = 0;
+
+  // Session calibration, when already on disk (replay path; the device app
+  // writes it after the first frame, handled by MaybeFitDistortion).
+  const std::string calib_text =
+      ReadTextFile((fs::path(session_dir) / "calibration.json").string());
+  if (!calib_text.empty()) {
+    if (const auto calib = CalibrationInfo::FromJson(calib_text)) {
+      if (calib->colmap_model && calib->colmap_model->params.size() >= 6 &&
+          calib->colmap_model->model == "OPENCV") {
+        k1_ = calib->colmap_model->params[4];
+        k2_ = calib->colmap_model->params[5];
+        distortion_ready_ = true;
+      } else if (!calib->distortion_lut.empty()) {
+        if (const auto fit = FitOpencvModelFromLut(
+                calib->distortion_lut, calib->intrinsics_session)) {
+          k1_ = fit->k1;
+          k2_ = fit->k2;
+          distortion_ready_ = true;
+        }
+      } else if (calib->colmap_model &&
+                 calib->colmap_model->model == "PINHOLE") {
+        distortion_ready_ = true;  // exact pinhole (synthetic sessions)
+      }
+    }
+  }
+
+  live_ = std::make_unique<LiveSystem>(config_);
+  live_->Begin(session_dir_, k1_, k2_);
   BS_LOGI("engine", "live session started at %s", session_dir);
   return BS_OK;
 }
 
+void Engine::MaybeFitDistortion(const bs_frame_in& frame) {
+  if (distortion_ready_) return;
+  if (frame.lut == nullptr || frame.lut_count <= 0 || frame.lut_ref_width <= 0) {
+    return;
+  }
+  DistortionLut lut;
+  lut.magnification.assign(frame.lut, frame.lut + frame.lut_count);
+  if (frame.lut_inverse != nullptr) {
+    lut.inverse.assign(frame.lut_inverse, frame.lut_inverse + frame.lut_count);
+  }
+  lut.center_x = frame.lut_center_x;
+  lut.center_y = frame.lut_center_y;
+
+  PinholeIntrinsics pin;
+  const double sx =
+      static_cast<double>(frame.lut_ref_width) / frame.luma_width;
+  pin.fx = frame.fx * sx;
+  pin.fy = frame.fy * sx;
+  pin.cx = frame.cx * sx;
+  pin.cy = frame.cy * sx;
+  pin.ref_w = frame.lut_ref_width;
+  pin.ref_h = frame.lut_ref_height;
+
+  if (const auto fit = FitOpencvModelFromLut(lut, pin)) {
+    k1_ = fit->k1;
+    k2_ = fit->k2;
+    distortion_ready_ = true;
+    live_->SetDistortion(k1_, k2_);
+    BS_LOGI("engine", "distortion fit from frame LUT: k1=%.4f k2=%.4f (%.2fpx)",
+            k1_, k2_, fit->max_residual_px);
+  }
+}
+
 bs_result Engine::LiveFeed(const bs_frame_in& frame) {
   std::lock_guard<std::mutex> lock(mutex_);
-  if (live_state_ != BS_LIVE_INITIALIZING && live_state_ != BS_LIVE_TRACKING &&
-      live_state_ != BS_LIVE_LOST) {
+  if (!live_ || (live_->state() != BS_LIVE_INITIALIZING &&
+                 live_->state() != BS_LIVE_TRACKING &&
+                 live_->state() != BS_LIVE_LOST)) {
     return Fail(BS_ERR_INVALID_STATE, "LiveFeed: no live session");
   }
   if (frame.luma == nullptr || frame.luma_width <= 0 || frame.luma_height <= 0) {
@@ -69,43 +138,129 @@ bs_result Engine::LiveFeed(const bs_frame_in& frame) {
     return Fail(BS_ERR_INVALID_ARGUMENT, "LiveFeed: frame_id not increasing");
   }
 
-  // M4 replaces this with the tracker queue; the skeleton just accounts.
+  MaybeFitDistortion(frame);
+
+  LiveFrameInput input;
+  input.frame_id = frame.frame_id;
+  input.t_capture = frame.t_capture;
+  input.t_depth = frame.t_depth;
+
+  // Wrap the borrowed luma, then normalize to tracking resolution (<=960
+  // wide) with intrinsics scaled to match.
+  const cv::Mat luma(frame.luma_height, frame.luma_width, CV_8UC1,
+                     const_cast<uint8_t*>(frame.luma),
+                     static_cast<size_t>(frame.luma_stride));
+  Intrinsics K{frame.fx, frame.fy, frame.cx, frame.cy, frame.luma_width,
+               frame.luma_height};
+  if (frame.luma_width > 1280) {
+    const int new_w = 960;
+    const int new_h =
+        static_cast<int>(std::lround(960.0 * frame.luma_height /
+                                     frame.luma_width));
+    cv::resize(luma, input.gray, cv::Size(new_w, new_h), 0, 0, cv::INTER_AREA);
+    K = K.ScaledTo(new_w, new_h);
+  } else {
+    input.gray = luma.clone();
+  }
+  input.K = K;
+
+  if (frame.depth != nullptr && frame.depth_width > 0 &&
+      frame.depth_height > 0) {
+    input.depth.width = frame.depth_width;
+    input.depth.height = frame.depth_height;
+    const size_t n =
+        static_cast<size_t>(frame.depth_width) * frame.depth_height;
+    input.depth.f16.resize(n);
+    for (size_t i = 0; i < n; ++i) {
+      input.depth.f16[i] = F32ToF16(frame.depth[i]);
+    }
+    input.Kd = {frame.dfx, frame.dfy, frame.dcx, frame.dcy,
+                frame.depth_width, frame.depth_height};
+  }
+
+  if (frame.gyro_valid) {
+    input.gyro = Eigen::Vector3f(frame.gyro_dx, frame.gyro_dy, frame.gyro_dz);
+    input.gyro_valid = true;
+  }
+
   ++frames_fed_;
-  ++frames_processed_;
   last_frame_id_ = frame.frame_id;
+  live_->Feed(input);
   return BS_OK;
 }
 
 bs_result Engine::LivePollStatus(bs_live_status& out) {
   std::lock_guard<std::mutex> lock(mutex_);
   std::memset(&out, 0, sizeof(out));
-  out.state = live_state_;
-  out.last_frame_id = last_frame_id_;
+  out.q[0] = 1.0;
+  if (!live_) {
+    out.state = BS_LIVE_IDLE;
+    return BS_OK;
+  }
+  live_->FillStatus(out);
   out.frames_fed = frames_fed_;
-  out.frames_processed = frames_processed_;
-  out.guidance =
-      live_state_ == BS_LIVE_INITIALIZING ? BS_GUIDE_MOVE_SIDEWAYS : BS_GUIDE_NONE;
-  out.q[0] = 1.0;  // identity quaternion until the tracker produces poses
+
+  const std::vector<bs_store_directive> directives = live_->DrainDirectives();
+  out.directive_count = static_cast<int32_t>(directives.size());
+  for (size_t i = 0; i < directives.size(); ++i) {
+    out.directives[i] = directives[i];
+  }
   return BS_OK;
 }
 
 bs_result Engine::LiveEnd() {
   std::lock_guard<std::mutex> lock(mutex_);
-  if (live_state_ == BS_LIVE_IDLE || live_state_ == BS_LIVE_FINISHED) {
+  if (!live_ || live_->state() == BS_LIVE_IDLE ||
+      live_->state() == BS_LIVE_FINISHED) {
     return Fail(BS_ERR_INVALID_STATE, "LiveEnd: no live session");
   }
-  live_state_ = BS_LIVE_FINISHED;
+  const bool ok = live_->End();
   BS_LOGI("engine", "live session ended after %u frames", frames_fed_);
-  return BS_OK;
+  return ok ? BS_OK : Fail(BS_ERR_IO, "LiveEnd: failed to flush live/ state");
 }
 
 bs_result Engine::SnapshotAcquire(bs_snapshot& out) {
+  std::lock_guard<std::mutex> lock(mutex_);
   std::memset(&out, 0, sizeof(out));
-  // Real snapshots (points/frusta/patches) land with the live map in M4/M5.
+
+  auto* storage = new (std::nothrow) SnapshotStorage;
+  if (storage == nullptr) {
+    return Fail(BS_ERR_INTERNAL, "SnapshotAcquire: allocation failed");
+  }
+  if (live_) {
+    live_->FillSnapshot(storage->points, storage->cameras);
+  }
+
+  out._h = storage;
+  out.points = storage->points.data();
+  out.point_count = static_cast<uint32_t>(storage->points.size());
+  out.cameras = storage->cameras.data();
+  out.camera_count = static_cast<uint32_t>(storage->cameras.size());
+  out.patches = storage->patches.data();
+  out.patch_count = 0;
+  out.regions = storage->regions.data();
+  out.region_count = 0;
+  out.weak_areas = storage->weak_areas.data();
+  out.weak_area_count = 0;
+
+  float lo[3] = {1e9f, 1e9f, 1e9f};
+  float hi[3] = {-1e9f, -1e9f, -1e9f};
+  for (const auto& p : storage->points) {
+    const float v[3] = {p.x, p.y, p.z};
+    for (int i = 0; i < 3; ++i) {
+      lo[i] = std::min(lo[i], v[i]);
+      hi[i] = std::max(hi[i], v[i]);
+    }
+  }
+  for (int i = 0; i < 3; ++i) {
+    out.bounds_min[i] = storage->points.empty() ? 0.0f : lo[i];
+    out.bounds_max[i] = storage->points.empty() ? 0.0f : hi[i];
+  }
   return BS_OK;
 }
 
 void Engine::SnapshotRelease(bs_snapshot& snap) {
+  delete static_cast<SnapshotStorage*>(snap._h);
   std::memset(&snap, 0, sizeof(snap));
 }
 

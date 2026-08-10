@@ -479,6 +479,24 @@ void PatchGrid::FindWeakAreas() {
             [](const WeakArea& a, const WeakArea& b) {
               return a.priority > b.priority;
             });
+
+  // Per-region tallies over ALL weak clusters (before the display cap), so a
+  // room card can report every weak spot even when only the global top few
+  // are published. weak_areas_ is priority-sorted, so the first hit per
+  // region is its worst.
+  std::map<uint32_t, uint32_t> counts;
+  std::map<uint32_t, int> worst;
+  for (const auto& a : weak_areas_) {
+    ++counts[a.region_id];
+    worst.emplace(a.region_id, a.deficiency);
+  }
+  for (auto& agg : regions_) {
+    const auto ci = counts.find(agg.id);
+    agg.weak_area_count = ci != counts.end() ? ci->second : 0;
+    const auto wi = worst.find(agg.id);
+    agg.worst_deficiency = wi != worst.end() ? wi->second : -1;
+  }
+
   if (static_cast<int>(weak_areas_.size()) > options_.max_weak_areas) {
     weak_areas_.resize(options_.max_weak_areas);
   }
@@ -518,6 +536,8 @@ void PatchGrid::FillSnapshot(std::vector<bs_snap_patch>& patches,
     for (int i = 0; i < 5; ++i) region.sub[i] = agg.sub[i];
     region.area_m2 = static_cast<float>(agg.area_m2);
     region.patch_count = agg.patch_count;
+    region.weak_area_count = agg.weak_area_count;
+    region.worst_deficiency = agg.worst_deficiency;
     regions.push_back(region);
   }
 

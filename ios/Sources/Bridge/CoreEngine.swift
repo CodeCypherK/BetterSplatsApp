@@ -97,6 +97,8 @@ final class CoreEngine: @unchecked Sendable {
             let sub: [Float]  // geometry, pose, texture, lidar, view
             let areaM2: Float
             let patchCount: UInt32
+            let weakAreaCount: UInt32
+            let worstDeficiency: Int  // axis of the worst weak spot, -1 none
         }
         struct WeakArea {
             let center: SIMD3<Float>
@@ -163,7 +165,9 @@ final class CoreEngine: @unchecked Sendable {
                 snap.regions.append(Snapshot.Region(
                     id: r.region_id, name: name, score: r.score,
                     sub: [r.sub.0, r.sub.1, r.sub.2, r.sub.3, r.sub.4],
-                    areaM2: r.area_m2, patchCount: r.patch_count))
+                    areaM2: r.area_m2, patchCount: r.patch_count,
+                    weakAreaCount: r.weak_area_count,
+                    worstDeficiency: Int(r.worst_deficiency)))
             }
         }
         if let weak = raw.weak_areas {

@@ -58,6 +58,18 @@ struct ReadinessDashboardView: View {
                                                  region.areaM2,
                                                  region.patchCount))
                         .font(.caption)
+
+                    if region.weakAreaCount > 0 {
+                        Label(weakSummary(for: region),
+                              systemImage: "exclamationmark.triangle.fill")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                    } else {
+                        Label("No weak spots — ready to capture",
+                              systemImage: "checkmark.circle.fill")
+                            .font(.caption)
+                            .foregroundStyle(.green)
+                    }
                 } header: {
                     Text("Region")
                 }
@@ -104,6 +116,15 @@ struct ReadinessDashboardView: View {
 
     private func scoreColor(_ score: Float) -> Color {
         score >= 85 ? .green : (score >= 60 ? .orange : .red)
+    }
+
+    private func weakSummary(for region: CoreEngine.Snapshot.Region) -> String {
+        let n = region.weakAreaCount
+        let spots = "\(n) weak spot\(n == 1 ? "" : "s")"
+        if region.worstDeficiency >= 0, region.worstDeficiency < Self.axisNames.count {
+            return "\(spots) · worst: \(Self.axisNames[region.worstDeficiency])"
+        }
+        return spots
     }
 
     /// Region name shown on weak areas only once there are several rooms.

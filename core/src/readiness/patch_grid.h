@@ -102,6 +102,10 @@ struct RegionAggregate {
   float sub[5] = {0, 0, 0, 0, 0};
   double area_m2 = 0;
   uint32_t patch_count = 0;
+  // How many weak clusters fall in this region, and the deficiency axis of
+  // its highest-priority one (-1 when the region has no weak areas).
+  uint32_t weak_area_count = 0;
+  int worst_deficiency = -1;
 };
 
 class PatchGrid {

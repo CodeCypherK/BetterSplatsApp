@@ -244,6 +244,11 @@ TEST(Readiness, DistantClustersFormSeparateRegions) {
   // Scores stay separated per room instead of averaging together.
   EXPECT_GT(grid.regions()[0].score, 60.0f);
   EXPECT_LT(grid.regions()[1].score, 45.0f);
+  // The strong room reports no weak spots; the blank-wall room does.
+  EXPECT_EQ(grid.regions()[0].weak_area_count, 0u);
+  EXPECT_EQ(grid.regions()[0].worst_deficiency, -1);
+  EXPECT_GT(grid.regions()[1].weak_area_count, 0u);
+  EXPECT_GE(grid.regions()[1].worst_deficiency, 0);
   uint32_t patch_total = 0;
   for (const auto& r : grid.regions()) patch_total += r.patch_count;
   EXPECT_EQ(patch_total, grid.patches().size());

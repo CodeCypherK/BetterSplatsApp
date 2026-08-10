@@ -1,9 +1,12 @@
 #include <gtest/gtest.h>
 
+#include <cmath>
 #include <random>
 
 #include <opencv2/imgproc.hpp>
 
+#include "common/geometry.h"
+#include "synth_scene.h"
 #include "vision/features.h"
 #include "vision/matching.h"
 
@@ -146,6 +149,58 @@ TEST(Features, OrbOnSyntheticTextureIsRepeatable) {
   }
   const int max_cell = *std::max_element(cells.begin(), cells.end());
   EXPECT_LT(max_cell, f1.size() / 4);
+}
+
+// Blur and sensor noise flatten local contrast, which starves a fixed
+// detector threshold long before the scene runs out of structure. Both
+// detectors must notice the shortfall and re-detect more sensitively.
+// Regression guard: the retry gate used to sit so low (1/3 of budget) that
+// a frame at ~46% of budget kept a 4x-thinner feature set than it could.
+TEST(Features, DetectorsRecoverYieldOnDegradedFrames) {
+  // Render the same real scene view twice: once clean, once with the motion
+  // blur and sensor noise of a handheld capture. Random-noise images cannot
+  // show this — they are saturated with contrast and never starve.
+  const synth::Scene scene = synth::MakeRoomScene(3);
+  const std::vector<SE3> poses =
+      synth::OrbitTrajectory(8, 1.6, 2.2, 1.5, 3, 60.0);
+  Intrinsics K;
+  K.width = 640;
+  K.height = 480;
+  K.fx = K.fy = 0.5 * 640 / std::tan(DegToRad(70.0) / 2.0);
+  K.cx = 0.5 * (640 - 1);
+  K.cy = 0.5 * (480 - 1);
+
+  synth::RenderOptions hard;
+  hard.motion_blur_px = 9.0f;
+  hard.motion_blur_angle = 0.2;
+  hard.noise_sigma = 4.0f;
+
+  cv::Mat sharp_bgr = synth::RenderImage(scene, poses[4], K);
+  cv::Mat degraded_bgr = synth::RenderImage(scene, poses[4], K, hard);
+  cv::Mat sharp, degraded;
+  cv::cvtColor(sharp_bgr, sharp, cv::COLOR_BGR2GRAY);
+  cv::cvtColor(degraded_bgr, degraded, cv::COLOR_BGR2GRAY);
+
+  OrbOptions orb_no_retry;
+  orb_no_retry.retry_yield_frac = 0.0f;  // disable: what a fixed gate gives
+  const int orb_fixed = DetectOrb(degraded, orb_no_retry).size();
+  const int orb_adaptive = DetectOrb(degraded, {}).size();
+  EXPECT_GT(orb_adaptive, orb_fixed)
+      << "ORB retry did not fire on a degraded frame";
+
+  SiftOptions sift_no_retry;
+  sift_no_retry.max_features = 3000;
+  sift_no_retry.retry_yield_frac = 0.0f;
+  SiftOptions sift_adaptive;
+  sift_adaptive.max_features = 3000;
+  const int sift_fixed = DetectSift(degraded, sift_no_retry).size();
+  const int sift_adaptive_n = DetectSift(degraded, sift_adaptive).size();
+  EXPECT_GT(sift_adaptive_n, sift_fixed)
+      << "SIFT retry did not fire on a degraded frame";
+
+  // A well-textured frame already fills its budget, so it must NOT pay for
+  // a second detection pass — identical results with and without the retry.
+  EXPECT_EQ(DetectOrb(sharp, {}).size(), DetectOrb(sharp, orb_no_retry).size());
 }
 
 TEST(Features, SiftRootNormalization) {

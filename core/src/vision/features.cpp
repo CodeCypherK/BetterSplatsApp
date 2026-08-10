@@ -59,7 +59,13 @@ FeatureSet DetectOrb(const cv::Mat& gray, const OrbOptions& options) {
                              cv::ORB::HARRIS_SCORE, 31, options.fast_threshold);
   orb->detectAndCompute(gray, cv::noArray(), set.keypoints, set.descriptors);
 
-  if (set.size() < options.max_features / 3 &&
+  // A frame that comes back short of its budget is starved, not simply
+  // featureless: blur and noise suppress FAST responses well before the
+  // scene runs out of structure. Re-detect more sensitively and let the
+  // grid filter below pick the strongest, still spatially spread.
+  const int retry_below =
+      static_cast<int>(options.max_features * options.retry_yield_frac);
+  if (set.size() < retry_below &&
       options.fast_threshold_min < options.fast_threshold) {
     auto retry = cv::ORB::create(options.max_features * 2, options.scale_factor,
                                  options.levels, 19, 0, 2, cv::ORB::HARRIS_SCORE,
@@ -75,8 +81,22 @@ FeatureSet DetectOrb(const cv::Mat& gray, const OrbOptions& options) {
 FeatureSet DetectSift(const cv::Mat& gray, const SiftOptions& options) {
   FeatureSet set;
   set.type = FeatureType::kSift;
-  auto sift = cv::SIFT::create(options.max_features);
-  sift->detectAndCompute(gray, cv::noArray(), set.keypoints, set.descriptors);
+  auto detect = [&](double contrast) {
+    auto sift = cv::SIFT::create(options.max_features, /*nOctaveLayers=*/3,
+                                 contrast, /*edgeThreshold=*/10, /*sigma=*/1.6);
+    sift->detectAndCompute(gray, cv::noArray(), set.keypoints, set.descriptors);
+  };
+  detect(options.contrast_threshold);
+
+  // Same starvation logic as ORB: the default contrast threshold rejects the
+  // low-amplitude extrema that blur and noise leave behind, so a short frame
+  // gets a second, more sensitive pass rather than a thin track set.
+  const int retry_below =
+      static_cast<int>(options.max_features * options.retry_yield_frac);
+  if (set.size() < retry_below &&
+      options.contrast_threshold_min < options.contrast_threshold) {
+    detect(options.contrast_threshold_min);
+  }
 
   if (options.root_sift && !set.descriptors.empty()) {
     // RootSIFT: L1-normalize then sqrt — Hellinger kernel matching with

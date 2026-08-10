@@ -110,11 +110,21 @@ uint64_t Fnv1a(uint64_t h, const void* data, size_t n) {
   return h;
 }
 
+// Bump whenever feature detection or matching changes what the cached bytes
+// would contain. The cache stores *outputs* of these algorithms, so a code
+// change with an unchanged config would otherwise be silently served stale
+// results from a previous run (detector improvements would appear to do
+// nothing). Config values alone cannot catch that — this must be manual.
+//   1: initial ORB/SIFT extraction
+//   2: yield-based retry in both detectors (blur/noise starvation fix)
+constexpr int kFeatureAlgorithmVersion = 2;
+
 uint64_t CacheConfigHash(const EngineConfig& c, bool use_sift, bool fast,
                          const std::vector<uint32_t>& frame_ids) {
   uint64_t h = 1469598103934665603ull;
   const int schema = 1;
   h = Fnv1a(h, &schema, sizeof(schema));
+  h = Fnv1a(h, &kFeatureAlgorithmVersion, sizeof(kFeatureAlgorithmVersion));
   h = Fnv1a(h, &use_sift, sizeof(use_sift));
   h = Fnv1a(h, &fast, sizeof(fast));
   h = Fnv1a(h, &c.final_orb_features, sizeof(c.final_orb_features));

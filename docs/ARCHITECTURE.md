@@ -193,21 +193,29 @@ three keyframes). Tracked support then decays (53 → 42 → 35 inliers) and
 cliffs, with hundreds of stale points still projecting into view but no
 longer matching.
 
-The following were each measured and ruled out, so they are not worth
-re-trying: bootstrap scale (accurate to 0.1% against ground truth),
-descriptor validity, keyframe cadence (one every ~5 frames right through the
-failure, including the frame before it), the descriptor distance cap
-(loosening it admits bad matches and makes things worse), candidate
-selection (the viewing-cone test is neutral), search radius (the 3× retry
-also finds nothing), and local BA divergence (it converges normally and the
-new validation guard never fires).
+Each of the following was measured and **ruled out**, so they are not worth
+re-trying:
 
-So the work is in `TriangulateNewPoints`: as the camera turns, the region
-coming into view has no covisible keyframe that already saw it, so there is
-nothing to triangulate against and the map stops growing in the direction
-of travel. Mapping forward — triangulating against the immediately previous
-keyframe regardless of covisibility, and seeding from LiDAR depth where
-visual correspondence is unavailable — is the next thing to try.
+| hypothesis | measurement |
+|---|---|
+| bootstrap scale wrong | 0.329 vs 0.3293 m true — accurate to 0.1% |
+| descriptors missing/invalid | zero unusable query descriptors |
+| keyframe cadence too sparse | one every ~5 frames, including the frame before the failure |
+| new points not created | 68 created at the last keyframe (the earlier "+3" reading was the map total, which nets against culling) |
+| descriptor distance cap too tight | loosening it admits bad matches and makes things worse |
+| candidate selection | viewing-cone test is neutral |
+| search radius too small | widening it with predicted motion made things worse (1223 → 1191 points, scout ends lost) |
+| local BA diverging | converges normally; the validation guard never fires |
+
+What the numbers do show is that **track extensions collapse** (52 → 28 → 17
+→ 9 → 7 over the final keyframes) while new points are still being created
+and then culled for never being re-observed. So points are made and
+immediately lost rather than never made. Note also that a diagnostic median
+taken over *all* projected points is misleading here — most of them are not
+actually visible (there is no occlusion reasoning), so it measures noise
+rather than the tracked subset. The next attempt should instrument the
+matched subset specifically, and look at why a point observed in keyframe N
+fails to be re-observed in N+1.
 
 The final solve is unaffected either way: it needs no live poses at all and
 reconstructs a two-room walkthrough from images alone.

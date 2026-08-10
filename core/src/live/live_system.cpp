@@ -621,14 +621,10 @@ bool LiveSystem::TrackFrame(const LiveFrameInput& input,
   }
 
   if (!pnp_ok) {
-    const Eigen::Vector3d pc = predicted.CameraCenter();
-    const Eigen::Vector3d lc = last_pose_.CameraCenter();
     BS_LOGD("live",
-            "frame %u lost: PnP failed (%zu projected, %d matched); "
-            "last C=(%.2f,%.2f,%.2f) pred C=(%.2f,%.2f,%.2f) feats=%d r=%.0f",
-            input.frame_id, predictions.size(), last_matches_, lc.x(), lc.y(),
-            lc.z(), pc.x(), pc.y(), pc.z(), features.features.size(),
-            base_radius);
+            "frame %u lost: PnP failed (%zu projected, %d matched, %d feats)",
+            input.frame_id, predictions.size(), last_matches_,
+            features.features.size());
     ++consecutive_lost_;
     state_ = BS_LIVE_LOST;
     guidance_ = BS_GUIDE_TRACKING_LOST;
@@ -729,16 +725,14 @@ bool LiveSystem::TrackFrame(const LiveFrameInput& input,
     // single large correction is then enough to throw every local point out
     // of the predicted frustum, which is exactly how tracking used to die
     // one frame after a keyframe (6 of 492 points projecting, permanently).
+    // The constant-velocity estimate is deliberately KEPT. It describes how
+    // the camera is moving, which a bundle adjustment of the map does not
+    // change; discarding it here made the next frame predict no motion at
+    // all, and one frame of real motion (~35 px at walking pace and 2 m
+    // depth) is already wider than the guided-match radius — so every
+    // keyframe insertion blinded the frame that followed it.
     if (const Keyframe* inserted = map_.FindKeyframe(last_kf_id_)) {
-      const double jump =
-          (inserted->pose.CameraCenter() - last_pose_.CameraCenter()).norm();
       last_pose_ = inserted->pose;
-      // A large correction also invalidates the constant-velocity estimate,
-      // which was measured across the old gauge.
-      if (jump > 0.02) {
-        velocity_ = SE3::Identity();
-        have_prev_pose_ = false;
-      }
     }
   }
   return true;

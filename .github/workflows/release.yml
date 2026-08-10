@@ -4,6 +4,14 @@ on:
   push:
     tags:
       - "v*"
+  # Dispatch path: creates the tag server-side via `gh release create
+  # --target`, so releases can be cut from environments where pushing
+  # refs/tags is blocked.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to create (e.g. v0.1.0)"
+        required: true
 
 permissions:
   contents: write
@@ -25,8 +33,10 @@ jobs:
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref_name }}
         run: |
-          gh release create "$GITHUB_REF_NAME" dist/*.ipa \
+          gh release create "$TAG" dist/*.ipa \
             --repo "$GITHUB_REPOSITORY" \
-            --title "BetterSplats $GITHUB_REF_NAME" \
+            --target "$GITHUB_SHA" \
+            --title "BetterSplats $TAG" \
             --generate-notes

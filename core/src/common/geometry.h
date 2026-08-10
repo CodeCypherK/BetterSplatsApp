@@ -1,5 +1,8 @@
 #pragma once
 
+#include <algorithm>
+#include <cmath>
+
 #include <Eigen/Dense>
 #include <Eigen/Geometry>
 

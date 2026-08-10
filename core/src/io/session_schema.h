@@ -90,6 +90,11 @@ struct SessionInfo {
   std::string depth_format;
   bool depth_filtering = false;
   bool af_locked = true;
+  // Photometric locks. Absent in schema-v1 sessions written before the app
+  // locked them, so they read back false rather than claiming a lock that
+  // never happened.
+  bool ae_locked = false;
+  bool awb_locked = false;
   bool gdc_disabled = true;
   std::string stabilization = "off";
   uint32_t frame_count = 0;

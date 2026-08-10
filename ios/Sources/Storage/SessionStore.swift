@@ -70,7 +70,10 @@ actor SessionStore {
                 ios: UIDevice.current.systemVersion),
             video: .init(w: videoW, h: videoH, fps: fps, pixelFormat: "420f"),
             depth: .init(w: depthW, h: depthH, format: "hdep", filtering: false),
-            capture: .init(afLocked: true, gdcDisabled: true, stabilization: "off"),
+            // Lock flags are provisional here — the real state is recorded at
+            // finalize(), after the settle window has actually locked them.
+            capture: .init(afLocked: false, aeLocked: false, awbLocked: false,
+                           gdcDisabled: true, stabilization: "off"),
             frameCount: 0,
             keyframeIds: [],
             regions: [RegionJSON(id: 1, name: "Room 1", renamed: false)],
@@ -147,9 +150,16 @@ actor SessionStore {
         }
     }
 
-    func finalize() throws {
+    /// `locks`: what the camera actually froze for this session (focus,
+    /// exposure, white balance) — recorded honestly, including partial or
+    /// failed locks, so the reconstruction side knows what to assume.
+    func finalize(locks: (focus: Bool, exposure: Bool, whiteBalance: Bool)
+                  = (false, false, false)) throws {
         sessionDoc.endUtc = ISO8601DateFormatter().string(from: Date())
         sessionDoc.frameCount = frameCount
+        sessionDoc.capture.afLocked = locks.focus
+        sessionDoc.capture.aeLocked = locks.exposure
+        sessionDoc.capture.awbLocked = locks.whiteBalance
         try writeSessionJson()
     }
 

@@ -147,7 +147,10 @@ std::string SessionInfo::ToJson() const {
                 {"pixel_format", video_pixel_format}};
   j["depth"] = {{"w", depth_w}, {"h", depth_h}, {"format", depth_format},
                 {"filtering", depth_filtering}};
-  j["capture"] = {{"af_locked", af_locked}, {"gdc_disabled", gdc_disabled},
+  j["capture"] = {{"af_locked", af_locked},
+                  {"ae_locked", ae_locked},
+                  {"awb_locked", awb_locked},
+                  {"gdc_disabled", gdc_disabled},
                   {"stabilization", stabilization}};
   j["frame_count"] = frame_count;
   j["keyframe_ids"] = keyframe_ids;
@@ -190,6 +193,8 @@ std::optional<SessionInfo> SessionInfo::FromJson(const std::string& text) {
   if (j.contains("capture")) {
     const auto& c = j["capture"];
     s.af_locked = c.value("af_locked", true);
+    s.ae_locked = c.value("ae_locked", false);
+    s.awb_locked = c.value("awb_locked", false);
     s.gdc_disabled = c.value("gdc_disabled", true);
     s.stabilization = c.value("stabilization", "off");
   }

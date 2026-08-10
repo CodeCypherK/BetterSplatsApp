@@ -9,8 +9,9 @@ import UIKit
 /// docs/ARCHITECTURE.md): geometric distortion correction OFF (we model the
 /// lens ourselves from the calibration LUT), stabilization OFF (warping
 /// invalidates intrinsics), depth temporal filtering OFF (raw measurements
-/// only), and autofocus locked shortly after start so one camera model
-/// serves the whole session.
+/// only), and focus + exposure + white balance all locked shortly after
+/// start so one camera model and one photometric response serve the whole
+/// session.
 final class CaptureManager: NSObject {
     enum CaptureError: LocalizedError {
         case noLiDARDevice
@@ -52,6 +53,21 @@ final class CaptureManager: NSObject {
 
     private(set) var videoDimensions: (width: Int, height: Int) = (0, 0)
     private(set) var depthDimensions: (width: Int, height: Int) = (0, 0)
+
+    /// What actually got locked once the settle delay elapsed. Read after
+    /// capture starts; recorded into session.json so the reconstruction side
+    /// knows whether photometric consistency can be assumed.
+    struct LockState {
+        var focus = false
+        var exposure = false
+        var whiteBalance = false
+    }
+    private let lockStateLock = NSLock()
+    private var lockState_ = LockState()
+    private(set) var lockState: LockState {
+        get { lockStateLock.lock(); defer { lockStateLock.unlock() }; return lockState_ }
+        set { lockStateLock.lock(); lockState_ = newValue; lockStateLock.unlock() }
+    }
 
     static var hasLiDAR: Bool {
         AVCaptureDevice.default(.builtInLiDARDepthCamera, for: .video, position: .back) != nil
@@ -160,10 +176,11 @@ final class CaptureManager: NSObject {
         startGyro()
         captureQueue.async { [session, weak self] in
             session.startRunning()
-            // Run continuous AF briefly to acquire focus, then lock it for
-            // the rest of the session (single camera model).
+            // Let AF/AE/AWB converge on the scene, then freeze all three for
+            // the rest of the session (one camera model, one exposure, one
+            // white point).
             self?.captureQueue.asyncAfter(deadline: .now() + 1.5) {
-                self?.lockFocus()
+                self?.lockCaptureSettings()
             }
         }
     }
@@ -175,15 +192,37 @@ final class CaptureManager: NSObject {
         }
     }
 
-    private func lockFocus() {
-        guard let device, device.isFocusModeSupported(.locked) else { return }
+    /// Freezes focus, exposure and white balance after a short settle window.
+    ///
+    /// All three matter for reconstruction quality. Focus keeps one camera
+    /// model valid for the whole session. Exposure and white balance keep the
+    /// scene photometrically consistent: a Gaussian splat bakes appearance
+    /// into the radiance field, so brightness steps and colour casts between
+    /// frames turn into muddy, washed-out surfaces. Locking is best-effort —
+    /// whatever the hardware refuses is recorded honestly in session.json.
+    private func lockCaptureSettings() {
+        guard let device else { return }
+        var state = LockState()
         do {
             try device.lockForConfiguration()
-            device.focusMode = .locked
-            device.unlockForConfiguration()
+            defer { device.unlockForConfiguration() }
+            if device.isFocusModeSupported(.locked) {
+                device.focusMode = .locked
+                state.focus = true
+            }
+            if device.isExposureModeSupported(.locked) {
+                device.exposureMode = .locked
+                state.exposure = true
+            }
+            if device.isWhiteBalanceModeSupported(.locked) {
+                device.whiteBalanceMode = .locked
+                state.whiteBalance = true
+            }
         } catch {
-            // Focus stays continuous; per-frame intrinsics still recorded.
+            // Settings stay continuous; per-frame intrinsics and exposure are
+            // still recorded, so the solve can compensate after the fact.
         }
+        lockState = state
     }
 
     private func startGyro() {

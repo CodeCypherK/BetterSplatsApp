@@ -4,6 +4,9 @@
 #include <gtest/gtest.h>
 
 #include <filesystem>
+#include <fstream>
+#include <iterator>
+#include <string>
 
 #include "io/session_reader.h"
 #include "io/session_writer.h"
@@ -34,6 +37,8 @@ class SessionIoTest : public ::testing::Test {
     info.depth_w = 320;
     info.depth_h = 240;
     info.depth_format = "hdep";
+    info.ae_locked = true;
+    info.awb_locked = true;
     info.regions = {{1, "Room 1", false}, {2, "Hallway", true}};
     info.app_version = "0.1.0";
     return info;
@@ -108,6 +113,10 @@ TEST_F(SessionIoTest, WriteThenReadBackIdentity) {
   EXPECT_EQ(reader->info().regions[1].name, "Hallway");
   EXPECT_TRUE(reader->info().regions[1].renamed);
   EXPECT_EQ(reader->info().keyframe_ids, std::vector<uint32_t>{1});
+  // Photometric lock flags survive the round trip.
+  EXPECT_TRUE(reader->info().af_locked);
+  EXPECT_TRUE(reader->info().ae_locked);
+  EXPECT_TRUE(reader->info().awb_locked);
 
   ASSERT_EQ(reader->frame_ids(), (std::vector<uint32_t>{1, 2}));
 
@@ -145,6 +154,37 @@ TEST_F(SessionIoTest, WriteThenReadBackIdentity) {
   EXPECT_EQ(read_gt->poses[0].frame_id, 1u);
   EXPECT_DOUBLE_EQ(read_gt->poses[0].q[3], 0.3);
   EXPECT_DOUBLE_EQ(read_gt->poses[0].t[2], 1.75);
+}
+
+TEST_F(SessionIoTest, LegacySessionReportsPhotometricLocksAbsent) {
+  // A session.json written before the app locked AE/AWB has no such keys.
+  // Reading it must NOT claim locks that never happened.
+  SessionWriter writer;
+  ASSERT_TRUE(SessionWriter::Create(dir_, MakeInfo(), MakeCalibration(), writer));
+  ASSERT_TRUE(writer.WriteFrame(MakeMeta(1), {0xFF, 0xD8}, MakeDepth(1)));
+  ASSERT_TRUE(writer.Finalize("2026-08-09T12:05:00Z"));
+
+  const fs::path path = fs::path(dir_) / "session.json";
+  std::ifstream in(path);
+  std::string text((std::istreambuf_iterator<char>(in)),
+                   std::istreambuf_iterator<char>());
+  in.close();
+  auto strip = [&text](const std::string& key) {
+    const size_t at = text.find("\"" + key + "\"");
+    ASSERT_NE(at, std::string::npos);
+    const size_t end = text.find(',', at);
+    ASSERT_NE(end, std::string::npos);
+    text.erase(at, end - at + 1);
+  };
+  strip("ae_locked");
+  strip("awb_locked");
+  std::ofstream(path, std::ios::trunc) << text;
+
+  auto reader = SessionReader::Open(dir_);
+  ASSERT_TRUE(reader.has_value());
+  EXPECT_TRUE(reader->info().af_locked);    // long-standing key, defaults true
+  EXPECT_FALSE(reader->info().ae_locked);   // absent -> not locked
+  EXPECT_FALSE(reader->info().awb_locked);
 }
 
 TEST_F(SessionIoTest, RawIsWriteOnce) {

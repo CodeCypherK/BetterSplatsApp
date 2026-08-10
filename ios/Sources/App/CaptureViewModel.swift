@@ -328,7 +328,10 @@ final class CaptureViewModel {
             try? await Task.sleep(for: .milliseconds(600))
             CoreEngine.shared.liveEnd()
             if let context {
-                try? await context.store.finalize()
+                let locks = manager.lockState
+                try? await context.store.finalize(
+                    locks: (focus: locks.focus, exposure: locks.exposure,
+                            whiteBalance: locks.whiteBalance))
                 let name = context.store.directory.lastPathComponent
                 state = .finished(sessionName: name)
                 guidance = "Saved \(name)"

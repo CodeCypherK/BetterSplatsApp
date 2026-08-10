@@ -115,7 +115,10 @@ from `calibration.json` unless per-frame drift exceeds its fit residual.
   "device": { "model": "iPhone16,1", "ios": "18.6" },
   "video": { "w": 1920, "h": 1440, "fps": 30, "pixel_format": "420f" },
   "depth": { "w": 320, "h": 240, "format": "hdep", "filtering": false },
-  "capture": { "af_locked": true, "gdc_disabled": true, "stabilization": "off" },
+  // Locks actually achieved this session (recorded at finalize, not intent).
+  // ae/awb absent in early schema-v1 sessions -> read as false.
+  "capture": { "af_locked": true, "ae_locked": true, "awb_locked": true,
+               "gdc_disabled": true, "stabilization": "off" },
   "frame_count": 412,                          // stored frames
   "keyframe_ids": [1, 9, 15, ...],
   "regions": [ { "id": 1, "name": "Room 1", "renamed": false } ],

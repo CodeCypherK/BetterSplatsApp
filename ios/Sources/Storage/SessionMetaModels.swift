@@ -136,10 +136,14 @@ struct SessionJSON: Codable {
     }
     struct Capture: Codable {
         var afLocked: Bool
+        var aeLocked: Bool
+        var awbLocked: Bool
         var gdcDisabled: Bool
         var stabilization: String
         enum CodingKeys: String, CodingKey {
             case afLocked = "af_locked"
+            case aeLocked = "ae_locked"
+            case awbLocked = "awb_locked"
             case gdcDisabled = "gdc_disabled"
             case stabilization
         }

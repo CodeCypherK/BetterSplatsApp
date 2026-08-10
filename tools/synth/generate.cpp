@@ -49,6 +49,10 @@ bool GenerateSession(const GenerateOptions& o) {
   info.depth_h = o.depth_height;
   info.depth_format = "f16-synth";
   info.depth_filtering = false;
+  // The synthetic camera is photometrically fixed unless exposure drift is
+  // requested, which is exactly what an AE lock would (or would not) give.
+  info.ae_locked = o.exposure_drift == 0.0;
+  info.awb_locked = true;
   info.regions = {{1, "Room 1", false}};
   info.app_version = "synth";
 

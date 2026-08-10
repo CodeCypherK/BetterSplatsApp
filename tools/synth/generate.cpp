@@ -7,6 +7,7 @@
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/imgproc.hpp>
 
+#include "common/config.h"
 #include "common/geometry.h"
 #include "io/session_writer.h"
 #include "synth_scene.h"
@@ -21,6 +22,44 @@ double LaplacianVariance(const cv::Mat& gray) {
   cv::Scalar mean, stddev;
   cv::meanStdDev(lap, mean, stddev);
   return stddev[0] * stddev[0];
+}
+
+// Frames needed to walk `shape`'s path at `speed_mps` without exceeding
+// `pan_dps`. The trajectories are arc-length parameterized, so a dense
+// sampling measures the true path once, cheaply, before anything renders.
+int FramesForSpeed(const std::vector<SE3>& shape, double speed_mps,
+                   double pan_dps, double fps) {
+  const TrajectoryMotion m = MeasureMotion(shape);
+  const double seconds = std::max(m.path_m / std::max(0.05, speed_mps),
+                                  m.turn_deg / std::max(1.0, pan_dps));
+  const long long n = std::llround(seconds * fps) + 1;
+  return static_cast<int>(std::min<long long>(std::max<long long>(n, 2), 20000));
+}
+
+// Prints what the generated motion actually is, and says so plainly when it
+// is not motion a held phone can produce. Silence here is what let a 9 m/s
+// "walkthrough" masquerade as a tracker failure for an entire debugging run.
+void ReportMotion(const char* label, const std::vector<SE3>& poses,
+                  double fps) {
+  const TrajectoryMotion m = MeasureMotion(poses);
+  const double speed = m.mean_step_m * fps;
+  const double rate = m.mean_turn_deg * fps;
+  std::printf(
+      "%s: %zu frames, %.1f m path -> %.1f cm/frame, %.2f deg/frame "
+      "(%.2f m/s, %.0f deg/s at %.0f fps)\n",
+      label, poses.size(), m.path_m, 100.0 * m.mean_step_m, m.mean_turn_deg,
+      speed, rate, fps);
+
+  const EngineConfig limits;  // the tracker's own plausibility bounds
+  if (speed > limits.track_max_speed_mps || rate > limits.track_max_rot_dps) {
+    std::printf(
+        "  NOTE: this is store-gate cadence, not capture cadence — %.1f m/s "
+        "at %.0f fps exceeds hand-held motion (%.1f m/s, %.0f deg/s), so the "
+        "tracker's own motion gate rejects it. Fine as final-solve input "
+        "(that stage sees only stored frames anyway); it cannot measure live "
+        "tracking. Use --speed for that.\n",
+        speed, fps, limits.track_max_speed_mps, limits.track_max_rot_dps);
+  }
 }
 
 }  // namespace
@@ -43,7 +82,7 @@ bool GenerateSession(const GenerateOptions& o) {
   info.device_ios = "n/a";
   info.video_w = o.image_width;
   info.video_h = o.image_height;
-  info.video_fps = 30;
+  info.video_fps = static_cast<int>(std::lround(o.capture_fps));
   info.video_pixel_format = "bgr8-synth";
   info.depth_w = o.depth_width;
   info.depth_h = o.depth_height;
@@ -72,19 +111,44 @@ bool GenerateSession(const GenerateOptions& o) {
 
   const Scene scene = o.two_room ? MakeTwoRoomScene(o.seed, o.blank_wall)
                                  : MakeRoomScene(o.seed, o.blank_wall);
+  // Trajectory shapes are functions of frame count over a fixed path, so a
+  // coarse pass measures the path and a second pass renders it at the rate
+  // the physics asks for.
+  // A declared rotation rate only means something if it binds per frame. The
+  // scout circuit's average was a calm 0.7 deg/frame while rounding the
+  // doorway corner at 4 — 120 deg/s, faster than new structure can be
+  // triangulated, and enough to end tracking.
+  const double turn_cap =
+      o.speed_mps > 0.0 ? o.pan_dps / std::max(1.0, o.capture_fps) : 0.0;
+  auto scout_shape = [&](int n) {
+    return ScoutTrajectory(n, 1.5, o.seed ^ 0x5C0Fu, turn_cap);
+  };
+  auto capture_shape = [&](int n) {
+    return o.two_room
+               ? WalkthroughTrajectory(n, 1.5, o.seed ^ 0x7777u, turn_cap)
+               : OrbitTrajectory(n, 1.6, 2.2, 1.5, o.seed ^ 0x7777u,
+                                 o.sweep_deg, turn_cap);
+  };
+
   std::vector<SE3> poses;
   // The scout circuit comes first, so the capture pass can localize against
   // the scaffold it leaves behind — the order is the whole point.
-  const int scout_count = o.two_room ? std::max(0, o.scout_frames) : 0;
+  int scout_count = o.two_room ? std::max(0, o.scout_frames) : 0;
   if (scout_count > 0) {
-    poses = ScoutTrajectory(scout_count, 1.5, o.seed ^ 0x5C0Fu);
+    if (o.speed_mps > 0.0) {
+      scout_count =
+          FramesForSpeed(scout_shape(256), o.speed_mps, o.pan_dps, o.capture_fps);
+    }
+    poses = scout_shape(scout_count);
+    ReportMotion("scout", poses, o.capture_fps);
   }
   {
-    const std::vector<SE3> capture =
-        o.two_room
-            ? WalkthroughTrajectory(o.frame_count, 1.5, o.seed ^ 0x7777u)
-            : OrbitTrajectory(o.frame_count, 1.6, 2.2, 1.5, o.seed ^ 0x7777u,
-                              o.sweep_deg);
+    const int capture_count =
+        o.speed_mps > 0.0 ? FramesForSpeed(capture_shape(256), o.speed_mps,
+                                           o.pan_dps, o.capture_fps)
+                          : o.frame_count;
+    const std::vector<SE3> capture = capture_shape(capture_count);
+    ReportMotion("capture", capture, o.capture_fps);
     poses.insert(poses.end(), capture.begin(), capture.end());
   }
   const int total_frames = static_cast<int>(poses.size());
@@ -99,7 +163,7 @@ bool GenerateSession(const GenerateOptions& o) {
   }
 
   GroundTruth gt;
-  const double dt = 1.0 / 30.0;
+  const double dt = 1.0 / std::max(1.0, o.capture_fps);
 
   // Projects a world point into a world-to-camera pose (pixels).
   auto project = [&K](const SE3& p, const Eigen::Vector3d& X) {

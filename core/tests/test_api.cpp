@@ -19,7 +19,10 @@ class ApiTest : public ::testing::Test {
     engine_ = bs_create("{}");
     ASSERT_NE(engine_, nullptr);
     session_dir_ =
-        (fs::temp_directory_path() / "bs_api_test_session").string();
+        (fs::temp_directory_path() /
+         (std::string("bs_api_test_session_") +
+          ::testing::UnitTest::GetInstance()->current_test_info()->name()))
+            .string();
     fs::remove_all(session_dir_);
   }
 

@@ -171,6 +171,7 @@ void LiveSystem::TriangulateNewPoints(Keyframe& kf) {
 
   int created = 0;
   int extended = 0;
+  int candidates = 0, matched = 0, rej_tri = 0, rej_angle = 0, rej_lidar = 0;
   for (const uint32_t neighbor_id : neighbors) {
     Keyframe* other = map_.FindKeyframe(neighbor_id);
     if (other == nullptr) continue;
@@ -186,6 +187,7 @@ void LiveSystem::TriangulateNewPoints(Keyframe& kf) {
       if (kf.point_ids[i] < 0) map_kf.push_back(static_cast<int>(i));
     }
     if (map_kf.size() < 8) continue;
+    candidates += static_cast<int>(map_kf.size());
 
     unmatched_kf.descriptors.create(static_cast<int>(map_kf.size()), 32, CV_8U);
     for (size_t i = 0; i < map_kf.size(); ++i) {
@@ -200,6 +202,7 @@ void LiveSystem::TriangulateNewPoints(Keyframe& kf) {
     options.max_distance = 64.0f;
     const std::vector<Match> matches =
         MatchFeatures(unmatched_kf, other->features, options);
+    matched += static_cast<int>(matches.size());
 
     for (const auto& m : matches) {
       const int fi = map_kf[m.idx_a];
@@ -226,8 +229,14 @@ void LiveSystem::TriangulateNewPoints(Keyframe& kf) {
       const auto tri = TriangulateTwoView(kf.pose, other->pose, kf.K,
                                           kf.undistorted[fi],
                                           other->undistorted[fo]);
-      if (!tri || !tri->InFrontOfAll()) continue;
-      if (tri->max_angle_deg < 1.0 || tri->max_reproj_error_px > 2.0) continue;
+      if (!tri || !tri->InFrontOfAll()) {
+        ++rej_tri;
+        continue;
+      }
+      if (tri->max_angle_deg < 1.0 || tri->max_reproj_error_px > 2.0) {
+        ++rej_angle;
+        continue;
+      }
 
       // LiDAR plausibility: reject candidates far in FRONT of a confident
       // surface (floaters). Points behind the measured surface may be real
@@ -252,7 +261,10 @@ void LiveSystem::TriangulateNewPoints(Keyframe& kf) {
           break;
         }
       }
-      if (implausible) continue;
+      if (implausible) {
+        ++rej_lidar;
+        continue;
+      }
 
       MapPoint point;
       point.X = tri->point;
@@ -267,8 +279,10 @@ void LiveSystem::TriangulateNewPoints(Keyframe& kf) {
       ++created;
     }
   }
-  BS_LOGD("live", "kf %u: %d new points, %d track extensions (%zu total)",
-          kf.kf_id, created, extended, map_.points().size());
+  BS_LOGD("live",
+          "kf %u: %d new points, %d track extensions (%zu total); cand %d matched %d rejected tri=%d angle=%d lidar=%d",
+          kf.kf_id, created, extended, map_.points().size(), candidates,
+          matched, rej_tri, rej_angle, rej_lidar);
 }
 
 void LiveSystem::TryLoopLink(Keyframe& kf) {

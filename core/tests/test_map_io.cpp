@@ -18,7 +18,11 @@ namespace fs = std::filesystem;
 class MapIoTest : public ::testing::Test {
  protected:
   void SetUp() override {
-    path_ = (fs::temp_directory_path() / "bs_map_io.bin").string();
+    path_ = (fs::temp_directory_path() /
+              (std::string("bs_map_io_") +
+               ::testing::UnitTest::GetInstance()->current_test_info()->name() +
+               ".bin"))
+                 .string();
     fs::remove(path_);
   }
   void TearDown() override { fs::remove(path_); }

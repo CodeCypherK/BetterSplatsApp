@@ -259,6 +259,66 @@ cv::Mat MotionBlurKernel(double length_px, double angle_rad) {
   return k;
 }
 
+// Rotates `from` toward `to` by at most `max_deg`.
+Eigen::Vector3d SlewToward(const Eigen::Vector3d& from,
+                           const Eigen::Vector3d& to, double max_deg) {
+  const Eigen::Vector3d a = from.normalized();
+  const Eigen::Vector3d b = to.normalized();
+  const double angle = RadToDeg(std::acos(std::clamp(a.dot(b), -1.0, 1.0)));
+  if (angle <= max_deg || angle < 1e-9) return b;
+  const Eigen::Quaterniond full = Eigen::Quaterniond::FromTwoVectors(a, b);
+  const Eigen::Quaterniond step =
+      Eigen::Quaterniond::Identity().slerp(max_deg / angle, full);
+  return (step * a).normalized();
+}
+
+// Builds world-to-camera poses from positions and the direction the camera
+// WANTS to face, rate-limited so no single frame turns further than a hand
+// could. Trajectories express intent ("look at the centre of the room you
+// are standing in"); when that intent switches discretely — crossing a
+// doorway from one room to the next — the raw result is a single-frame 174
+// deg flip. It is physically impossible, it ends tracking outright, and it
+// is invisible in mean or 95th-percentile motion. The cap is the larger of a
+// fixed hand-held rate and twice the sequence's own average turn, so it
+// clips discontinuities without reshaping intended motion (and leaves short,
+// deliberately coarse fixtures alone).
+std::vector<SE3> PosesFromLookDirections(
+    const std::vector<Eigen::Vector3d>& positions,
+    const std::vector<Eigen::Vector3d>& desired, double cap_deg) {
+  const size_t n = positions.size();
+  std::vector<SE3> poses;
+  poses.reserve(n);
+  if (n == 0) return poses;
+
+  double turn_sum = 0;
+  for (size_t i = 1; i < n; ++i) {
+    turn_sum += RadToDeg(std::acos(std::clamp(
+        desired[i].normalized().dot(desired[i - 1].normalized()), -1.0, 1.0)));
+  }
+  const double mean_turn = n > 1 ? turn_sum / static_cast<double>(n - 1) : 0.0;
+  // A caller-declared rate wins outright. Without one, fall back to a rate
+  // that clips discontinuities without reshaping intended motion (and leaves
+  // short, deliberately coarse fixtures alone).
+  const double max_turn =
+      cap_deg > 0.0 ? cap_deg : std::max(4.0, 2.0 * mean_turn);
+
+  Eigen::Vector3d forward = desired[0].normalized();
+  for (size_t i = 0; i < n; ++i) {
+    forward = i == 0 ? forward : SlewToward(forward, desired[i], max_turn);
+    const Eigen::Vector3d world_up(0, 1, 0);
+    // CV camera basis (+X right, +Y down, +Z forward), det(R) = +1.
+    const Eigen::Vector3d right = forward.cross(world_up).normalized();
+    const Eigen::Vector3d down = forward.cross(right).normalized();
+    Eigen::Matrix3d R_cw;  // camera-to-world: columns are camera axes in world
+    R_cw.col(0) = right;
+    R_cw.col(1) = down;
+    R_cw.col(2) = forward;
+    poses.push_back(
+        SE3::FromCamToWorld(Eigen::Quaterniond(R_cw), positions[i]));
+  }
+  return poses;
+}
+
 }  // namespace
 
 cv::Mat RenderImage(const Scene& scene, const SE3& pose, const Intrinsics& K,
@@ -352,15 +412,16 @@ DepthImage RenderDepth(const Scene& scene, const SE3& pose, const Intrinsics& K,
 
 std::vector<SE3> OrbitTrajectory(int frame_count, double radius_x, double radius_z,
                                  double eye_height, uint32_t seed,
-                                 double sweep_deg) {
-  std::vector<SE3> poses;
-  poses.reserve(frame_count);
+                                 double sweep_deg, double max_turn_deg) {
   std::mt19937 rng(seed);
   std::normal_distribution<double> gauss(0.0, 1.0);
 
   // Smooth per-frame jitter accumulated as a slow random walk (handheld feel).
   double jitter_y = 0.0, jitter_heading = 0.0;
 
+  std::vector<Eigen::Vector3d> positions, forwards;
+  positions.reserve(frame_count);
+  forwards.reserve(frame_count);
   for (int i = 0; i < frame_count; ++i) {
     const double s = static_cast<double>(i) / std::max(1, frame_count - 1);
     const double angle = DegToRad(sweep_deg) * s;
@@ -375,23 +436,14 @@ std::vector<SE3> OrbitTrajectory(int frame_count, double radius_x, double radius
                            eye_height * 0.75,
                            1.8 * radius_z * std::cos(angle + 0.15 + jitter_heading));
 
-    const Eigen::Vector3d forward = (target - position).normalized();
-    const Eigen::Vector3d world_up(0, 1, 0);
-    // CV camera basis (+X right, +Y down, +Z forward), det(R) = +1:
-    const Eigen::Vector3d right = forward.cross(world_up).normalized();
-    const Eigen::Vector3d down = forward.cross(right).normalized();
-    Eigen::Matrix3d R_cw;  // camera-to-world: columns are camera axes in world
-    R_cw.col(0) = right;
-    R_cw.col(1) = down;
-    R_cw.col(2) = forward;
-
-    poses.push_back(SE3::FromCamToWorld(Eigen::Quaterniond(R_cw), position));
+    positions.push_back(position);
+    forwards.push_back((target - position).normalized());
   }
-  return poses;
+  return PosesFromLookDirections(positions, forwards, max_turn_deg);
 }
 
 std::vector<SE3> ScoutTrajectory(int frame_count, double eye_height,
-                                 uint32_t seed) {
+                                 uint32_t seed, double max_turn_deg) {
   // Hug the perimeter of both rooms, always looking across the space rather
   // than along the wall behind you. The look target is the centre of
   // whichever room you are currently in, so every frame sees a whole room.
@@ -425,12 +477,13 @@ std::vector<SE3> ScoutTrajectory(int frame_count, double eye_height,
     return waypoints[seg - 1] + f * (waypoints[seg] - waypoints[seg - 1]);
   };
 
-  std::vector<SE3> poses;
-  poses.reserve(frame_count);
   std::mt19937 rng(seed);
   std::normal_distribution<double> gauss(0.0, 1.0);
   double jitter_y = 0.0;
 
+  std::vector<Eigen::Vector3d> positions, forwards;
+  positions.reserve(frame_count);
+  forwards.reserve(frame_count);
   for (int i = 0; i < frame_count; ++i) {
     const double s = static_cast<double>(i) / std::max(1, frame_count - 1);
     jitter_y = 0.97 * jitter_y + 0.004 * gauss(rng);
@@ -438,28 +491,39 @@ std::vector<SE3> ScoutTrajectory(int frame_count, double eye_height,
     position.y() = eye_height + jitter_y;
 
     // Aim at the centre of the room we are standing in — that is what
-    // "back to the wall, scanning inward" produces.
-    const Eigen::Vector3d room_centre =
-        position.x() < 3.0 ? Eigen::Vector3d(0.0, eye_height * 0.8, 0.0)
-                           : Eigen::Vector3d(6.0, eye_height * 0.8, 0.0);
-    Eigen::Vector3d forward = room_centre - position;
-    if (forward.norm() < 1e-6) forward = Eigen::Vector3d(0, 0, -1);
-    forward.normalize();
+    // "back to the wall, scanning inward" produces. Across the doorway the
+    // two centres are BLENDED rather than switched: picking whichever room
+    // contains the camera swung the view 174 deg between two adjacent frames
+    // at x = 3, which read as a tracker failure for a long time and was
+    // really a teleporting camera.
+    const double blend =
+        std::clamp((position.x() - 2.0) / 2.0, 0.0, 1.0);  // x 2->4 m
+    const Eigen::Vector3d room_centre(6.0 * blend, eye_height * 0.8, 0.0);
+    const Eigen::Vector3d to_centre = room_centre - position;
 
-    const Eigen::Vector3d world_up(0, 1, 0);
-    const Eigen::Vector3d right = forward.cross(world_up).normalized();
-    const Eigen::Vector3d down = forward.cross(right).normalized();
-    Eigen::Matrix3d R_cw;
-    R_cw.col(0) = right;
-    R_cw.col(1) = down;
-    R_cw.col(2) = forward;
-    poses.push_back(SE3::FromCamToWorld(Eigen::Quaterniond(R_cw), position));
+    // In the doorway that blended centre passes through the camera itself.
+    // Looking at a point you are standing on aims the lens at the floor and
+    // leaves the roll ill-conditioned — a 4 deg/frame change of view
+    // direction came out as a 10 deg/frame change of pose. Close in, the
+    // view follows travel instead, which is what walking through a door
+    // actually looks like.
+    Eigen::Vector3d travel = sample(std::min(1.0, s + 0.01)) - position;
+    travel.y() = 0;
+    if (travel.norm() < 1e-6) travel = Eigen::Vector3d(1, 0, 0);
+    const double weight =
+        std::clamp((to_centre.norm() - 0.8) / 1.2, 0.0, 1.0);  // 0.8 -> 2.0 m
+    Eigen::Vector3d forward = weight * to_centre.normalized() +
+                              (1.0 - weight) * travel.normalized();
+    if (forward.norm() < 1e-6) forward = travel.normalized();
+
+    positions.push_back(position);
+    forwards.push_back(forward.normalized());
   }
-  return poses;
+  return PosesFromLookDirections(positions, forwards, max_turn_deg);
 }
 
 std::vector<SE3> WalkthroughTrajectory(int frame_count, double eye_height,
-                                       uint32_t seed) {
+                                       uint32_t seed, double max_turn_deg) {
   // Closed loop: sweep room A, through the doorway, around room B, back
   // through the doorway, and home to the starting viewpoint. Ending where it
   // began is the point — that revisit is what loop closure must recognize,
@@ -488,8 +552,6 @@ std::vector<SE3> WalkthroughTrajectory(int frame_count, double eye_height,
   }
   const double total = arc.back();
 
-  std::vector<SE3> poses;
-  poses.reserve(frame_count);
   std::mt19937 rng(seed);
   std::normal_distribution<double> gauss(0.0, 1.0);
   double jitter_y = 0.0;
@@ -503,6 +565,10 @@ std::vector<SE3> WalkthroughTrajectory(int frame_count, double eye_height,
     return waypoints[seg - 1] + f * (waypoints[seg] - waypoints[seg - 1]);
   };
 
+  std::vector<Eigen::Vector3d> positions, forwards;
+  positions.reserve(frame_count);
+  forwards.reserve(frame_count);
+  Eigen::Vector3d last_ahead(0, 0, -1);
   for (int i = 0; i < frame_count; ++i) {
     const double s = static_cast<double>(i) / std::max(1, frame_count - 1);
     jitter_y = 0.97 * jitter_y + 0.004 * gauss(rng);
@@ -511,11 +577,18 @@ std::vector<SE3> WalkthroughTrajectory(int frame_count, double eye_height,
     position.y() = eye_height + jitter_y;
 
     // Heading follows travel; a slow yaw sweep covers the walls to either
-    // side the way a person turns their phone while walking a space.
+    // side the way a person turns their phone while walking a space. At the
+    // very end the forward difference vanishes, so travel direction carries
+    // over instead of snapping to a fixed axis — that fallback used to spin
+    // the last frame of the loop by 134 deg.
     Eigen::Vector3d ahead = sample(std::min(1.0, s + 0.02)) - sample(s);
     ahead.y() = 0;
-    if (ahead.norm() < 1e-6) ahead = Eigen::Vector3d(0, 0, -1);
-    ahead.normalize();
+    if (ahead.norm() < 1e-6) {
+      ahead = last_ahead;
+    } else {
+      ahead.normalize();
+      last_ahead = ahead;
+    }
     const double yaw = DegToRad(38.0) * std::sin(2.0 * M_PI * 2.5 * s);
     const Eigen::Vector3d dir(
         ahead.x() * std::cos(yaw) - ahead.z() * std::sin(yaw), 0.0,
@@ -523,18 +596,43 @@ std::vector<SE3> WalkthroughTrajectory(int frame_count, double eye_height,
     const Eigen::Vector3d target =
         position + 3.0 * dir - Eigen::Vector3d(0, eye_height * 0.22, 0);
 
-    const Eigen::Vector3d forward = (target - position).normalized();
-    const Eigen::Vector3d world_up(0, 1, 0);
-    const Eigen::Vector3d right = forward.cross(world_up).normalized();
-    const Eigen::Vector3d down = forward.cross(right).normalized();
-    Eigen::Matrix3d R_cw;
-    R_cw.col(0) = right;
-    R_cw.col(1) = down;
-    R_cw.col(2) = forward;
-
-    poses.push_back(SE3::FromCamToWorld(Eigen::Quaterniond(R_cw), position));
+    positions.push_back(position);
+    forwards.push_back((target - position).normalized());
   }
-  return poses;
+  return PosesFromLookDirections(positions, forwards, max_turn_deg);
+}
+
+TrajectoryMotion MeasureMotion(const std::vector<SE3>& poses) {
+  TrajectoryMotion m;
+  if (poses.size() < 2) return m;
+
+  std::vector<double> steps, turns;
+  steps.reserve(poses.size() - 1);
+  turns.reserve(poses.size() - 1);
+  for (size_t i = 1; i < poses.size(); ++i) {
+    steps.push_back(
+        (poses[i].CameraCenter() - poses[i - 1].CameraCenter()).norm());
+    turns.push_back(RadToDeg(
+        poses[i].q.angularDistance(poses[i - 1].q)));
+    m.path_m += steps.back();
+    m.turn_deg += turns.back();
+  }
+  m.mean_step_m = m.path_m / static_cast<double>(steps.size());
+  m.mean_turn_deg = m.turn_deg / static_cast<double>(turns.size());
+
+  m.max_step_m = *std::max_element(steps.begin(), steps.end());
+  m.max_turn_deg = *std::max_element(turns.begin(), turns.end());
+
+  auto percentile = [](std::vector<double>& v, double p) {
+    std::sort(v.begin(), v.end());
+    const size_t i = std::min(
+        v.size() - 1,
+        static_cast<size_t>(p * static_cast<double>(v.size() - 1) + 0.5));
+    return v[i];
+  };
+  m.p95_step_m = percentile(steps, 0.95);
+  m.p95_turn_deg = percentile(turns, 0.95);
+  return m;
 }
 
 }  // namespace bs::synth

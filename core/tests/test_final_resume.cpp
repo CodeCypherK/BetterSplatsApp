@@ -19,7 +19,12 @@ namespace fs = std::filesystem;
 class FinalResumeTest : public ::testing::Test {
  protected:
   void SetUp() override {
-    dir_ = (fs::temp_directory_path() / "bs_final_resume").string();
+    // Per-test directory: these two cases both build a session and a cache,
+    // so a shared path makes them pass only when ctest runs serially.
+    dir_ = (fs::temp_directory_path() /
+            (std::string("bs_final_resume_") +
+             ::testing::UnitTest::GetInstance()->current_test_info()->name()))
+               .string();
     fs::remove_all(dir_);
 
     synth::GenerateOptions options;

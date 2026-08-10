@@ -32,6 +32,12 @@ struct EngineConfig {
   // claims otherwise is rejected and relocalization takes over.
   float track_max_speed_mps = 4.0f;
   float track_max_rot_dps = 300.0f;
+  // Comfortable turn rate. Above this the view sweeps into unmapped space
+  // faster than keyframe pairs can triangulate it — measured on a walking
+  // circuit, a 120 deg/s turn cut new points from 67 to 12 per keyframe and
+  // tracking died fifteen frames later. Nothing is rejected at this rate;
+  // the user is told to slow down while there is still support to hold.
+  float track_warn_rot_dps = 60.0f;
   // Viewing-cone test for tracking candidates: cos of the largest angle
   // between the current viewing direction and one this point was observed
   // from (0.5 = 60 deg). ORB is not viewpoint-invariant, so points mapped

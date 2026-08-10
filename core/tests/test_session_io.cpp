@@ -19,7 +19,10 @@ namespace fs = std::filesystem;
 class SessionIoTest : public ::testing::Test {
  protected:
   void SetUp() override {
-    dir_ = (fs::temp_directory_path() / "bs_session_io_test").string();
+    dir_ = (fs::temp_directory_path() /
+            (std::string("bs_session_io_test_") +
+             ::testing::UnitTest::GetInstance()->current_test_info()->name()))
+               .string();
     fs::remove_all(dir_);
   }
   void TearDown() override { fs::remove_all(dir_); }

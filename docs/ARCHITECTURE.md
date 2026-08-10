@@ -171,27 +171,76 @@ established once, and the readiness room list exists before detail capture
 starts — finish the circuit and the dashboard already reads "Room 1…N" with
 low scores, i.e. a worklist.
 
+## Measuring the tracker honestly
+
+A long investigation into "live tracking is fragile on walking
+trajectories" ended with the finding that most of the fragility was in the
+**harness, not the tracker** — and the way it hid is worth keeping written
+down, because the same trap is easy to re-enter.
+
+Every synthetic trajectory covers a *fixed physical path*. So a frame count
+is a speed. `--frames 110` over the 33 m two-room loop is 30 cm and 10 deg
+between frames: **9 m/s at 30 fps**, a sprint, and beyond the engine's own
+motion-plausibility gate. Every "tracking failure" measured that way was the
+tracker correctly refusing impossible motion.
+
+Two further defects were pure geometry, both invisible in mean and 95th
+percentile statistics:
+
+- The scout circuit aimed at "the centre of whichever room you are in",
+  switching rooms at the doorway — **one 174 deg frame** in an otherwise
+  clean 0.7 deg/frame lap. That single frame ended tracking for the
+  following 800.
+- Blending the two room centres fixed the flip but put the look target *on
+  top of the camera* mid-doorway, aiming the lens at the floor where the
+  roll is ill-conditioned: a 4 deg/frame change of view direction came out
+  as 10 deg/frame of pose.
+
+`bs_synth` now takes `--speed` (m/s) and derives the frame count from the
+measured path length, `--pan` (deg/s) binds the per-frame view slew, and
+every run prints what it generated — with a NOTE when the motion is outside
+hand-held range. `MeasureMotion` reports the **worst single frame**, and a
+test asserts every speed-derived trajectory stays inside the engine's own
+limits. The frame-count mode is still correct for final-solve harnesses:
+that stage only ever sees stored frames, which really are ~30 cm apart.
+
+Measured on the two-room scout circuit (44 m lap, 1.0 m/s, 40 deg/s pan):
+
+| | before | after |
+|---|---|---|
+| scout frames tracked | 33% | **86%** |
+| scout ATE (RMSE) | — | **4.3 cm**, 0.47 deg |
+| scaffold | 85 kf / 3.9k pts | **224 kf / 11.8k pts** |
+
+`bs_replay` reports per-pass motion and writes `live/poses_scout.jsonl`
+separately from `live/poses.jsonl`, so the capture pass no longer erases the
+evidence for the scout pass, and a replay that is feeding decimated frames
+says so.
+
 ## Known limitations (measured)
 
-**Live tracking is still fragile on walking trajectories, which caps what
-the scout pass delivers.** One cause has been found and fixed: PnP RANSAC
-would occasionally converge on a geometrically consistent but physically
-impossible pose (measured: a 5.9 m single-frame jump accepted with 92 of
-114 inliers). That single bad pose is unrecoverable, because the local map
-then projects outside the predicted frustum and no later frame can
-re-acquire by tracking. `MotionIsPlausible` now rejects poses that exceed a
-hand-held camera's speed, and relocalization takes over instead. On the
-scout circuit that took tracking from frame 49 to frame 135 and doubled the
-scaffold (14 → 28 keyframes, 586 → 1219 points).
+**Turning outruns mapping.** A new point needs two keyframes that both see
+it, so the map grows at the rate keyframes accumulate, while a turn sweeps
+the leading edge of the view across unmapped space at the rotation rate.
+Past roughly 100 deg/s the second wins: measured on the walking circuit, a
+120 deg/s turn round a doorway took new points from 67 to 12 per keyframe
+while in-view support fell 616 → 64 over fifteen frames, and tracking ended
+three frames later. That rate is well inside what a wrist can do and far
+below the plausibility gate, so it is not a bad pose to reject. The engine
+now raises `SLOW DOWN` above `track_warn_rot_dps` (60 deg/s) while there is
+still support to hold onto.
 
-What remains is a slower failure, and the measurements now point at its
-cause: **new-point creation starves before the old map leaves view.** On the
-scout circuit the mapper adds ~50 points per keyframe early on, but by the
-last keyframe before the collapse it adds **3**, and the local BA window
-shrinks with it (3741 → 1213 → 949 reprojection residuals over the final
-three keyframes). Tracked support then decays (53 → 42 → 35 inliers) and
-cliffs, with hundreds of stale points still projecting into view but no
-longer matching.
+**A capture pass localizes into a scout scaffold poorly (12% of frames).**
+The mechanism is a consequence of the scout design: the circuit looks
+*inward at room centres* while the capture walk looks *along travel*, so
+the two passes rarely view the same surface from a similar direction — and
+ORB is not viewpoint-invariant. The scaffold is geometrically excellent and
+appearance-wise nearly unusable to the pass that needs it. Widening the
+relocalization sweep from 8 to up to 64 candidates while lost moved this
+only 11.8% → 12.2%, confirming that candidate *coverage* is not the binding
+constraint. The fix has to change what the scout captures (sweeping the
+view during the lap) or how relocalization matches (viewpoint-tolerant
+retrieval), not how many keyframes it tries.
 
 Each of the following was measured and **ruled out**, so they are not worth
 re-trying:
@@ -201,24 +250,15 @@ re-trying:
 | bootstrap scale wrong | 0.329 vs 0.3293 m true — accurate to 0.1% |
 | descriptors missing/invalid | zero unusable query descriptors |
 | keyframe cadence too sparse | one every ~5 frames, including the frame before the failure |
-| new points not created | 68 created at the last keyframe (the earlier "+3" reading was the map total, which nets against culling) |
+| new points not created | created normally (67/keyframe) until the turn rate outran them |
 | descriptor distance cap too tight | loosening it admits bad matches and makes things worse |
 | candidate selection | viewing-cone test is neutral |
-| search radius too small | widening it with predicted motion made things worse (1223 → 1191 points, scout ends lost) |
+| search radius too small | widening it with predicted motion made things worse |
 | local BA diverging | converges normally; the validation guard never fires |
+| relocalization candidate coverage | 8 → 64 candidates per attempt moved tracking 11.8% → 12.2% |
 
-What the numbers do show is that **track extensions collapse** (52 → 28 → 17
-→ 9 → 7 over the final keyframes) while new points are still being created
-and then culled for never being re-observed. So points are made and
-immediately lost rather than never made. Note also that a diagnostic median
-taken over *all* projected points is misleading here — most of them are not
-actually visible (there is no occlusion reasoning), so it measures noise
-rather than the tracked subset. The next attempt should instrument the
-matched subset specifically, and look at why a point observed in keyframe N
-fails to be re-observed in N+1.
-
-The final solve is unaffected either way: it needs no live poses at all and
-reconstructs a two-room walkthrough from images alone.
+The final solve is unaffected by any of this: it needs no live poses at all
+and reconstructs a two-room walkthrough from images alone.
 
 The two-room walkthrough still does not meet the single-room accuracy
 bounds (≥90% registration is met; <5 cm ATE is not), so it remains a

@@ -524,6 +524,9 @@ bool LiveSystem::TrackFrame(const LiveFrameInput& input,
     query_pids.push_back(pid);
     desc_rows.push_back(mp->descriptor);
   }
+  BS_LOGD("live", "frame %u: local %zu -> %zu in view (kf %u, %zu map pts)",
+          input.frame_id, local_points.size(), predictions.size(), last_kf_id_,
+          map_.points().size());
   if (predictions.size() < 20) {
     const Eigen::Vector3d pc = predicted.CameraCenter();
     const Eigen::Vector3d lc = last_pose_.CameraCenter();
@@ -664,9 +667,11 @@ bool LiveSystem::TrackFrame(const LiveFrameInput& input,
   // local map then projects outside the frustum, so no later frame can
   // re-acquire by tracking. A held camera has bounded speed, so a pose that
   // violates it is rejected here and relocalization takes over instead.
+  double turn_rate_dps = 0.0;
   if (last_track_time_ >= 0.0 && consecutive_lost_ == 0) {
     const double dt =
         std::clamp(input.t_capture - last_track_time_, 1.0 / 60.0, 0.5);
+    turn_rate_dps = RadToDeg(AngularDistance(pose.q, last_pose_.q)) / dt;
     if (!MotionIsPlausible(last_pose_, pose, dt, config_.track_max_speed_mps,
                            config_.track_max_rot_dps)) {
       BS_LOGD("live",
@@ -696,9 +701,19 @@ bool LiveSystem::TrackFrame(const LiveFrameInput& input,
   consecutive_lost_ = 0;
   state_ = BS_LIVE_TRACKING;
 
+  // Turning too fast to map. A new point needs two keyframes that both see
+  // it, so the map can only grow at the rate keyframes accumulate — while a
+  // turn sweeps the leading edge of the view across unmapped space at the
+  // rotation rate. Past a certain rate the second one wins: measured on a
+  // walking circuit, a 120 deg/s turn round a doorway took new points from
+  // 67 to 12 per keyframe while in-view support fell 616 -> 64 over fifteen
+  // frames, and tracking ended. This is well inside what a wrist can do and
+  // far below the plausibility gate, so it is not a bad pose to reject — it
+  // is the one moment the user can still be told to slow down.
   const double inlier_ratio =
       static_cast<double>(inliers.size()) / std::max(1, last_matches_);
-  if (features.lap_var < BlurThreshold(0.4) || last_gyro_mag_ > 0.6) {
+  if (features.lap_var < BlurThreshold(0.4) || last_gyro_mag_ > 0.6 ||
+      turn_rate_dps > config_.track_warn_rot_dps) {
     guidance_ = BS_GUIDE_SLOW_DOWN;
   } else if (inlier_ratio < 0.4) {
     guidance_ = BS_GUIDE_RECAPTURE;
@@ -756,16 +771,25 @@ bool LiveSystem::Relocalize(const LiveFrameInput& input,
   // So: always try the newest few, then sweep a cursor across the remainder
   // of the map, advancing it every attempt. Every keyframe is retried within
   // a bounded number of frames, at a fixed cost per frame.
+  //
+  // The sweep widens the longer we stay lost. A fixed eight candidates is a
+  // sensible cost while there is a live map to fall back on, but a capture
+  // pass that loads a 224-keyframe scaffold is testing 3.6% of it per frame
+  // — and a pass that is lost has nothing else to spend its budget on.
   constexpr int kRecentCandidates = 5;
   constexpr int kSweepCandidates = 8;
+  constexpr int kMaxSweepCandidates = 64;
+  const int sweep_width =
+      std::min(kMaxSweepCandidates,
+               kSweepCandidates * (1 + std::min(7, consecutive_lost_ / 8)));
   std::vector<int> candidates;
-  candidates.reserve(kRecentCandidates + kSweepCandidates);
+  candidates.reserve(kRecentCandidates + sweep_width);
   for (int i = kf_count - 1; i >= 0 && i > kf_count - 1 - kRecentCandidates;
        --i) {
     candidates.push_back(i);
   }
   const int sweep_span = kf_count - static_cast<int>(candidates.size());
-  for (int n = 0; n < std::min(kSweepCandidates, sweep_span); ++n) {
+  for (int n = 0; n < std::min(sweep_width, sweep_span); ++n) {
     candidates.push_back(static_cast<int>(
         (reloc_cursor_ + static_cast<uint32_t>(n)) % sweep_span));
   }
@@ -972,7 +996,13 @@ bool LiveSystem::End() {
       BS_LOGW("live", "failed to write scout scaffold to %s", map_path.c_str());
     }
   }
-  std::ofstream out(fs::path(session_dir_) / "live" / "poses.jsonl",
+  // Each pass gets its own log. They answer different questions — did the
+  // scout circuit hold position all the way round, and did the capture pass
+  // localize into what it left — and a single file means the second pass
+  // erases the evidence for the first.
+  const char* log_name =
+      pass_ == BS_PASS_SCOUT ? "poses_scout.jsonl" : "poses.jsonl";
+  std::ofstream out(fs::path(session_dir_) / "live" / log_name,
                     std::ios::trunc);
   if (!out) return false;
   out.precision(12);

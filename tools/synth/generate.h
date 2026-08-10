@@ -8,6 +8,19 @@ namespace bs::synth {
 struct GenerateOptions {
   std::string out_dir;
   int frame_count = 60;
+
+  // --- capture rate ---
+  // Every trajectory covers a fixed physical path, so a frame count IS a
+  // speed: 110 frames over the 33 m two-room loop is 30 cm and 10 deg
+  // between frames — 9 m/s at 30 fps, which is a sprint, not a capture. The
+  // engine's own motion gate rejects poses that fast, so such a session
+  // measures nothing about the tracker. Set `speed_mps` (and optionally
+  // `pan_dps`) and let the frame count follow from the path; a count given
+  // directly is still honored, with the implied motion reported and flagged
+  // when it leaves hand-held range.
+  double capture_fps = 30.0;
+  double speed_mps = 0.0;   // >0 derives frame_count from the path length
+  double pan_dps = 40.0;    // ceiling on rotation rate when deriving counts
   int image_width = 960;
   int image_height = 720;
   int depth_width = 320;

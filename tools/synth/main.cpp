@@ -21,6 +21,13 @@ void PrintUsage() {
                "       bs_synth --version | --selftest\n"
                "options:\n"
                "  --frames N        frame count (default 60)\n"
+               "  --speed M         walking speed in m/s; derives the frame\n"
+               "                    count from the path length instead of\n"
+               "                    --frames (a fixed count over a fixed path\n"
+               "                    is a speed, and a wrong one is unmeasurable)\n"
+               "  --pan D           max rotation rate in deg/s when deriving\n"
+               "                    the count (default 40)\n"
+               "  --fps F           capture rate (default 30)\n"
                "  --width W         image width (default 960)\n"
                "  --height H        image height (default 720)\n"
                "  --seed S          scene/trajectory seed (default 7)\n"
@@ -35,7 +42,8 @@ void PrintUsage() {
                "  --two-room        two rooms joined by a doorway, walked as a\n"
                "                    closed loop that revisits its start\n"
                "  --scout N         prepend an N-frame scout circuit (localization\n"
-               "                    scaffold only; excluded from the final solve)\n");
+               "                    scaffold only; excluded from the final solve).\n"
+               "                    With --speed, N only switches it on.\n");
 }
 
 }  // namespace
@@ -68,6 +76,9 @@ int main(int argc, char** argv) {
       return argv[++i];
     };
     if (arg == "--frames") options.frame_count = std::atoi(next("--frames"));
+    else if (arg == "--speed") options.speed_mps = std::atof(next("--speed"));
+    else if (arg == "--pan") options.pan_dps = std::atof(next("--pan"));
+    else if (arg == "--fps") options.capture_fps = std::atof(next("--fps"));
     else if (arg == "--width") options.image_width = std::atoi(next("--width"));
     else if (arg == "--height") options.image_height = std::atoi(next("--height"));
     else if (arg == "--seed") options.seed = static_cast<uint32_t>(std::atoi(next("--seed")));
@@ -93,13 +104,24 @@ int main(int argc, char** argv) {
     }
   }
 
-  if (options.frame_count < 2) {
+  if (options.frame_count < 2 && options.speed_mps <= 0.0) {
     std::fprintf(stderr, "--frames must be >= 2\n");
     return 2;
   }
+  if (options.capture_fps < 1.0) {
+    std::fprintf(stderr, "--fps must be >= 1\n");
+    return 2;
+  }
 
-  std::printf("generating %d frames (%dx%d) into %s ...\n", options.frame_count,
-              options.image_width, options.image_height, options.out_dir.c_str());
+  if (options.speed_mps > 0.0) {
+    std::printf("generating %dx%d at %.2f m/s into %s ...\n",
+                options.image_width, options.image_height, options.speed_mps,
+                options.out_dir.c_str());
+  } else {
+    std::printf("generating %d frames (%dx%d) into %s ...\n",
+                options.frame_count, options.image_width, options.image_height,
+                options.out_dir.c_str());
+  }
   if (!bs::synth::GenerateSession(options)) {
     std::fprintf(stderr, "generation FAILED\n");
     return 1;

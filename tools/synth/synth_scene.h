@@ -84,16 +84,23 @@ DepthImage RenderDepth(const Scene& scene, const SE3& pose, const Intrinsics& K,
 // per-frame angular change realistic (a phone at 30 fps moves well under
 // 1 deg/frame; stored-frame sequences a few deg/frame). Returns
 // world-to-camera poses.
+// `max_turn_deg` caps how far the view may swing between consecutive frames.
+// It is what makes a declared rotation rate binding: a trajectory expresses
+// where it wants to look, and where that intent moves quickly (rounding a
+// corner, crossing a doorway) the camera follows at a rate a wrist can
+// produce instead of snapping. 0 keeps a permissive default.
 std::vector<SE3> OrbitTrajectory(int frame_count, double radius_x, double radius_z,
                                  double eye_height, uint32_t seed,
-                                 double sweep_deg = 140.0);
+                                 double sweep_deg = 140.0,
+                                 double max_turn_deg = 0.0);
 
 // Walks a closed loop through both rooms of MakeTwoRoomScene and returns to
 // the starting viewpoint, so the sequence ends with a genuine revisit for
 // loop closure to find (and for drift to be measured against). The camera
 // looks along travel with a slow yaw sweep, as a person scanning would.
 std::vector<SE3> WalkthroughTrajectory(int frame_count, double eye_height,
-                                       uint32_t seed);
+                                       uint32_t seed,
+                                       double max_turn_deg = 0.0);
 
 // The optional opening circuit: one fast lap of both rooms hugging the
 // walls with the camera aimed INWARD across each space. Deliberately unlike
@@ -101,6 +108,27 @@ std::vector<SE3> WalkthroughTrajectory(int frame_count, double eye_height,
 // how far apart the views are, which is what a localization scaffold needs
 // and the opposite of what splat detail needs. Never reconstructed from.
 std::vector<SE3> ScoutTrajectory(int frame_count, double eye_height,
-                                 uint32_t seed);
+                                 uint32_t seed, double max_turn_deg = 0.0);
+
+// How much a trajectory actually moves. Every trajectory above covers a
+// FIXED physical path, so the frame count alone decides how fast the camera
+// travels — and a count chosen for render cost rather than for physics
+// silently produces motion no hand can make and no tracker can follow.
+struct TrajectoryMotion {
+  double path_m = 0;          // total distance travelled by the camera centre
+  double turn_deg = 0;        // total rotation swept
+  double mean_step_m = 0;     // per-frame translation
+  double mean_turn_deg = 0;   // per-frame rotation
+  double p95_step_m = 0;
+  double p95_turn_deg = 0;
+  // The worst single frame. This is the number that matters for tracking and
+  // the one summary statistics hide: a look target that switches rooms as you
+  // cross a doorway produced a single 174 deg frame in an otherwise clean
+  // 0.54 deg/frame circuit, and that one frame ended tracking for the
+  // remaining 800.
+  double max_step_m = 0;
+  double max_turn_deg = 0;
+};
+TrajectoryMotion MeasureMotion(const std::vector<SE3>& poses);
 
 }  // namespace bs::synth

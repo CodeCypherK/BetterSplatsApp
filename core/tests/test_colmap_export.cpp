@@ -15,7 +15,10 @@ namespace fs = std::filesystem;
 class ColmapExportTest : public ::testing::Test {
  protected:
   void SetUp() override {
-    dir_ = (fs::temp_directory_path() / "bs_colmap_test").string();
+    dir_ = (fs::temp_directory_path() /
+            (std::string("bs_colmap_test_") +
+             ::testing::UnitTest::GetInstance()->current_test_info()->name()))
+               .string();
     fs::remove_all(dir_);
     fs::create_directories(dir_);
   }

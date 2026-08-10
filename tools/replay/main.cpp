@@ -431,6 +431,135 @@ int FeedPass(const bs::SessionReader& session, const std::string& config,
   return end == BS_OK ? 0 : 1;
 }
 
+// One pass's tracked poses, measured against ground truth. Each pass writes
+// its own log because they answer different questions: whether the scout
+// circuit held position all the way round, and whether the capture pass
+// localized into what the scout left behind.
+struct PassAccuracy {
+  bool have = false;
+  int tracked = 0;
+  int compared = 0;
+  double tracked_frac = 0;
+  double ate_rmse = 0;
+  double mean_rot = 0;
+};
+
+PassAccuracy EvaluatePass(const bs::SessionReader& session,
+                          const bs::GroundTruth& gt, const std::string& log,
+                          const std::vector<uint32_t>& pass_ids,
+                          const char* label) {
+  PassAccuracy out;
+  std::ifstream poses_file(session.dir() + "/live/" + log);
+  if (!poses_file) return out;
+
+  struct LivePose {
+    uint32_t frame_id;
+    double t;
+    bs::SE3 pose;
+  };
+  std::vector<LivePose> live_poses;
+  std::string line;
+  while (std::getline(poses_file, line)) {
+    // Minimal parse of the fixed jsonl schema.
+    if (line.find("\"tracking\"") == std::string::npos) continue;
+    LivePose lp;
+    double qw, qx, qy, qz, px, py, pz;
+    const char* q = std::strstr(line.c_str(), "\"q\":[");
+    const char* p = std::strstr(line.c_str(), "\"p\":[");
+    if (std::sscanf(line.c_str(), "{\"frame_id\":%u,\"t\":%lf", &lp.frame_id,
+                    &lp.t) != 2 ||
+        q == nullptr || p == nullptr ||
+        std::sscanf(q, "\"q\":[%lf,%lf,%lf,%lf]", &qw, &qx, &qy, &qz) != 4 ||
+        std::sscanf(p, "\"p\":[%lf,%lf,%lf]", &px, &py, &pz) != 3) {
+      continue;
+    }
+    lp.pose.q = Eigen::Quaterniond(qw, qx, qy, qz).normalized();
+    lp.pose.t = Eigen::Vector3d(px, py, pz);
+    live_poses.push_back(lp);
+  }
+  out.have = true;
+  out.tracked = static_cast<int>(live_poses.size());
+  out.tracked_frac = pass_ids.empty()
+                         ? 0.0
+                         : static_cast<double>(live_poses.size()) /
+                               static_cast<double>(pass_ids.size());
+
+  // What this replay actually asked the tracker to follow, measured over
+  // consecutive frames only. An exported session holds only STORED frames
+  // (~3 fps) while on device the tracker sees every frame (~30 fps), so a
+  // replay can be feeding ten times the inter-frame motion the device saw —
+  // and a tracking result read without this line is not comparable to
+  // on-device behavior.
+  {
+    double step_sum = 0, turn_sum = 0, dt_sum = 0;
+    int n = 0;
+    for (size_t i = 1; i < live_poses.size(); ++i) {
+      if (live_poses[i].frame_id != live_poses[i - 1].frame_id + 1) continue;
+      const double dt = live_poses[i].t - live_poses[i - 1].t;
+      if (dt <= 0) continue;
+      step_sum += (live_poses[i].pose.CameraCenter() -
+                   live_poses[i - 1].pose.CameraCenter())
+                      .norm();
+      turn_sum += bs::RadToDeg(
+          bs::AngularDistance(live_poses[i].pose.q, live_poses[i - 1].pose.q));
+      dt_sum += dt;
+      ++n;
+    }
+    if (n > 0 && dt_sum > 0) {
+      std::printf(
+          "%s motion: %.1f cm/frame, %.2f deg/frame at %.1f fps "
+          "(%.2f m/s, %.0f deg/s)\n",
+          label, 100.0 * step_sum / n, turn_sum / n, n / dt_sum,
+          step_sum / dt_sum, turn_sum / dt_sum);
+    }
+  }
+
+  auto find_gt = [&](uint32_t frame_id) -> std::optional<bs::SE3> {
+    for (const auto& gp : gt.poses) {
+      if (gp.frame_id == frame_id) {
+        bs::SE3 pose;
+        pose.q = Eigen::Quaterniond(gp.q[0], gp.q[1], gp.q[2], gp.q[3]);
+        pose.t = Eigen::Vector3d(gp.t[0], gp.t[1], gp.t[2]);
+        return pose;
+      }
+    }
+    return std::nullopt;
+  };
+
+  if (live_poses.size() < 5) {
+    std::printf("%s ATE: only %zu tracked poses\n", label, live_poses.size());
+    return out;
+  }
+
+  // The live map's world frame is anchored at the first keyframe, so poses
+  // compare through T_align = T_live_ref^-1 ∘ T_gt_ref: ATE of camera centers
+  // after that SE3 alignment (scale comes from LiDAR and is NOT re-fit — a
+  // scale error shows up as trajectory error, which is the point of the test).
+  const auto gt_ref = find_gt(live_poses.front().frame_id);
+  if (!gt_ref) return out;
+  const bs::SE3 align = live_poses.front().pose.Inverse() * (*gt_ref);
+
+  double ate_sq_sum = 0, rot_err_sum = 0;
+  for (const auto& lp : live_poses) {
+    const auto gt_pose = find_gt(lp.frame_id);
+    if (!gt_pose) continue;
+    const bs::SE3 gt_in_live = *gt_pose * align.Inverse();
+    const double center_err =
+        (lp.pose.CameraCenter() - gt_in_live.CameraCenter()).norm();
+    ate_sq_sum += center_err * center_err;
+    rot_err_sum += bs::RadToDeg(bs::AngularDistance(lp.pose.q, gt_in_live.q));
+    ++out.compared;
+  }
+  if (out.compared == 0) return out;
+  out.ate_rmse = std::sqrt(ate_sq_sum / out.compared);
+  out.mean_rot = rot_err_sum / out.compared;
+  std::printf(
+      "%s ATE: %.1f%% tracked, RMSE %.3f m, mean rot err %.2f deg (%d poses)\n",
+      label, 100.0 * out.tracked_frac, out.ate_rmse, out.mean_rot,
+      out.compared);
+  return out;
+}
+
 int RunLive(const bs::SessionReader& session, const std::string& config,
             bool check) {
   // Split the session by pass. A scout circuit runs first and writes the
@@ -460,104 +589,36 @@ int RunLive(const bs::SessionReader& session, const std::string& config,
   if (FeedPass(session, config, BS_PASS_CAPTURE, capture_ids, status) != 0) {
     return 1;
   }
-  const uint32_t fed = status.frames_processed;
-  (void)fed;
 
-  // Compare live poses against ground truth (synthetic sessions). The live
-  // map's world frame is anchored at the first keyframe, so poses compare
-  // through T_align = T_gt_ref^-1 ∘ T_live_ref: ATE of camera centers after
-  // that SE3 alignment (scale comes from LiDAR and is NOT re-fit — a scale
-  // error shows up as trajectory error, which is the point of the test).
+  // Compare live poses against ground truth (synthetic sessions only).
   const auto gt = session.ReadGroundTruth();
   if (!gt) return 0;
 
-  std::ifstream poses_file(session.dir() + "/live/poses.jsonl");
-  if (!poses_file) {
+  if (!scout_ids.empty()) {
+    EvaluatePass(session, *gt, "poses_scout.jsonl", scout_ids, "scout");
+  }
+  const PassAccuracy live =
+      EvaluatePass(session, *gt, "poses.jsonl", capture_ids, "live");
+  if (!live.have) {
     std::fprintf(stderr, "missing live/poses.jsonl\n");
     return check ? 1 : 0;
   }
-  struct LivePose {
-    uint32_t frame_id;
-    bs::SE3 pose;
-  };
-  std::vector<LivePose> live_poses;
-  std::string line;
-  while (std::getline(poses_file, line)) {
-    // Minimal parse of the fixed jsonl schema.
-    if (line.find("\"tracking\"") == std::string::npos) continue;
-    LivePose lp;
-    double qw, qx, qy, qz, px, py, pz;
-    const char* q = std::strstr(line.c_str(), "\"q\":[");
-    const char* p = std::strstr(line.c_str(), "\"p\":[");
-    if (std::sscanf(line.c_str(), "{\"frame_id\":%u", &lp.frame_id) != 1 ||
-        q == nullptr || p == nullptr ||
-        std::sscanf(q, "\"q\":[%lf,%lf,%lf,%lf]", &qw, &qx, &qy, &qz) != 4 ||
-        std::sscanf(p, "\"p\":[%lf,%lf,%lf]", &px, &py, &pz) != 3) {
-      continue;
-    }
-    lp.pose.q = Eigen::Quaterniond(qw, qx, qy, qz).normalized();
-    lp.pose.t = Eigen::Vector3d(px, py, pz);
-    live_poses.push_back(lp);
-  }
-
-  auto find_gt = [&](uint32_t frame_id) -> std::optional<bs::SE3> {
-    for (const auto& gp : gt->poses) {
-      if (gp.frame_id == frame_id) {
-        bs::SE3 pose;
-        pose.q = Eigen::Quaterniond(gp.q[0], gp.q[1], gp.q[2], gp.q[3]);
-        pose.t = Eigen::Vector3d(gp.t[0], gp.t[1], gp.t[2]);
-        return pose;
-      }
-    }
-    return std::nullopt;
-  };
-
-  if (live_poses.size() < 5) {
-    std::printf("live ATE: only %zu tracked poses\n", live_poses.size());
-    return check ? 1 : 0;
-  }
-
-  // Alignment from the first tracked pose.
-  const auto gt_ref = find_gt(live_poses.front().frame_id);
-  if (!gt_ref) return check ? 1 : 0;
-  // world_gt -> world_live: T_align = T_live_ref^-1 * T_gt_ref maps
-  // gt-world into live-world through the shared camera frame.
-  const bs::SE3 align = live_poses.front().pose.Inverse() * (*gt_ref);
-
-  double ate_sq_sum = 0;
-  double rot_err_sum = 0;
-  int compared = 0;
-  for (const auto& lp : live_poses) {
-    const auto gt_pose = find_gt(lp.frame_id);
-    if (!gt_pose) continue;
-    const bs::SE3 gt_in_live = *gt_pose * align.Inverse();
-    const double center_err =
-        (lp.pose.CameraCenter() - gt_in_live.CameraCenter()).norm();
-    ate_sq_sum += center_err * center_err;
-    rot_err_sum += bs::RadToDeg(bs::AngularDistance(lp.pose.q, gt_in_live.q));
-    ++compared;
-  }
-  if (compared == 0) return check ? 1 : 0;
-  const double ate_rmse = std::sqrt(ate_sq_sum / compared);
-  const double mean_rot = rot_err_sum / compared;
-  const double tracked_frac =
-      static_cast<double>(live_poses.size()) / session.frame_ids().size();
-  std::printf(
-      "live ATE: %.1f%% tracked, RMSE %.3f m, mean rot err %.2f deg (%d poses)\n",
-      100.0 * tracked_frac, ate_rmse, mean_rot, compared);
+  if (live.compared == 0) return check ? 1 : 0;
 
   if (check) {
-    if (tracked_frac < 0.7) {
+    if (live.tracked_frac < 0.7) {
       std::fprintf(stderr, "CHECK FAILED: tracked %.0f%% < 70%%\n",
-                   100.0 * tracked_frac);
+                   100.0 * live.tracked_frac);
       return 1;
     }
-    if (ate_rmse > 0.10) {
-      std::fprintf(stderr, "CHECK FAILED: ATE %.3f m > 0.10 m\n", ate_rmse);
+    if (live.ate_rmse > 0.10) {
+      std::fprintf(stderr, "CHECK FAILED: ATE %.3f m > 0.10 m\n",
+                   live.ate_rmse);
       return 1;
     }
-    if (mean_rot > 2.0) {
-      std::fprintf(stderr, "CHECK FAILED: rot err %.2f deg > 2 deg\n", mean_rot);
+    if (live.mean_rot > 2.0) {
+      std::fprintf(stderr, "CHECK FAILED: rot err %.2f deg > 2 deg\n",
+                   live.mean_rot);
       return 1;
     }
   }

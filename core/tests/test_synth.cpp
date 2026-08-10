@@ -5,10 +5,13 @@
 
 #include <cmath>
 #include <filesystem>
+#include <functional>
+#include <utility>
 
 #include <opencv2/features2d.hpp>
 #include <opencv2/imgcodecs.hpp>
 
+#include "common/config.h"
 #include "common/geometry.h"
 #include "generate.h"
 #include "io/session_reader.h"
@@ -22,7 +25,12 @@ namespace fs = std::filesystem;
 class SynthTest : public ::testing::Test {
  protected:
   void SetUp() override {
-    dir_ = (fs::temp_directory_path() / "bs_synth_test").string();
+    // Per-test directory, so ctest -j does not have two cases generating
+    // into the same session path.
+    dir_ = (fs::temp_directory_path() /
+            (std::string("bs_synth_test_") +
+             ::testing::UnitTest::GetInstance()->current_test_info()->name()))
+               .string();
     fs::remove_all(dir_);
   }
   void TearDown() override {
@@ -312,6 +320,91 @@ TEST_F(SynthTest, TwoRoomSceneHasAnOpenDoorway) {
       synth::CastRay(scene, blocked_from, Eigen::Vector3d(1, 0, 0));
   ASSERT_GT(blocked.t, 0.0);
   EXPECT_LT(blocked.t, 3.5) << "divider should block off-doorway rays";
+}
+
+// A frame count over a fixed path IS a speed. Choosing the count for render
+// cost produced a 9 m/s "walkthrough" that the tracker's own motion gate
+// rejects — which looked for a long time like a tracker defect rather than a
+// harness defect. Speed-derived counts must stay inside hand-held motion.
+TEST_F(SynthTest, SpeedDerivedFrameCountsStayWithinHandHeldMotion) {
+  const EngineConfig limits;
+  const double fps = 30.0, speed = 1.0, pan = 40.0;
+
+  struct Case {
+    const char* name;
+    std::vector<SE3> (*shape)(int);
+  };
+  const auto walk = [](int n) {
+    return synth::WalkthroughTrajectory(n, 1.5, 4u);
+  };
+  const auto scout = [](int n) { return synth::ScoutTrajectory(n, 1.5, 4u); };
+  const auto orbit = [](int n) {
+    return synth::OrbitTrajectory(n, 1.6, 2.2, 1.5, 4u, 140.0);
+  };
+
+  for (const auto& [name, shape] :
+       std::vector<std::pair<const char*, std::function<std::vector<SE3>(int)>>>{
+           {"walkthrough", walk}, {"scout", scout}, {"orbit", orbit}}) {
+    const synth::TrajectoryMotion probe = synth::MeasureMotion(shape(256));
+    const double seconds =
+        std::max(probe.path_m / speed, probe.turn_deg / pan);
+    const int frames = static_cast<int>(std::llround(seconds * fps)) + 1;
+    ASSERT_GE(frames, 2) << name;
+
+    const synth::TrajectoryMotion m = synth::MeasureMotion(shape(frames));
+    EXPECT_LE(m.mean_step_m * fps, limits.track_max_speed_mps)
+        << name << " mean speed";
+    EXPECT_LE(m.mean_turn_deg * fps, limits.track_max_rot_dps)
+        << name << " mean rotation rate";
+    // The WORST frame is what decides this, not the average or the 95th
+    // percentile. A look target that switched rooms at the doorway produced
+    // exactly one 174 deg frame in an otherwise clean 0.7 deg/frame circuit;
+    // the mean and p95 both looked healthy, and that one frame ended
+    // tracking for the following 800.
+    EXPECT_LE(m.max_step_m * fps, limits.track_max_speed_mps)
+        << name << " peak speed";
+    EXPECT_LE(m.max_turn_deg * fps, limits.track_max_rot_dps)
+        << name << " peak rotation rate";
+  }
+}
+
+// The measurement itself: a straight 1 m walk sampled 11 times is 10 cm and
+// no rotation per step, whatever the units elsewhere claim.
+TEST_F(SynthTest, MeasureMotionReportsPathAndTurn) {
+  std::vector<SE3> poses;
+  for (int i = 0; i <= 10; ++i) {
+    const Eigen::Quaterniond q(
+        Eigen::AngleAxisd(DegToRad(i * 2.0), Eigen::Vector3d::UnitY()));
+    poses.push_back(SE3::FromCamToWorld(
+        q, Eigen::Vector3d(0.1 * i, 0.0, 0.0)));
+  }
+  const synth::TrajectoryMotion m = synth::MeasureMotion(poses);
+  EXPECT_NEAR(m.path_m, 1.0, 1e-9);
+  EXPECT_NEAR(m.mean_step_m, 0.1, 1e-9);
+  EXPECT_NEAR(m.turn_deg, 20.0, 1e-6);
+  EXPECT_NEAR(m.mean_turn_deg, 2.0, 1e-6);
+  EXPECT_NEAR(m.max_step_m, 0.1, 1e-9);
+  EXPECT_NEAR(m.max_turn_deg, 2.0, 1e-6);
+  EXPECT_EQ(synth::MeasureMotion({}).path_m, 0.0);
+}
+
+// The view direction is rate-limited, so a trajectory whose look target
+// jumps still turns the camera at a speed a wrist can produce.
+TEST_F(SynthTest, ScoutCircuitDoesNotTeleportItsViewAtTheDoorway) {
+  const std::vector<SE3> poses = synth::ScoutTrajectory(1303, 1.5, 4u);
+  const synth::TrajectoryMotion m = synth::MeasureMotion(poses);
+  EXPECT_LT(m.max_turn_deg, 6.0)
+      << "single-frame view flip at the room boundary";
+
+  // And the camera never ends up staring at the floor: the doorway blend
+  // once put the look target on top of the camera, which both aimed the lens
+  // down and made the roll ill-conditioned.
+  double worst_tilt = 0;
+  for (const SE3& p : poses) {
+    const Eigen::Vector3d forward = p.Inverse().q * Eigen::Vector3d(0, 0, 1);
+    worst_tilt = std::max(worst_tilt, std::abs(forward.y()));
+  }
+  EXPECT_LT(worst_tilt, 0.5) << "view tilted past 30 deg from horizontal";
 }
 
 }  // namespace

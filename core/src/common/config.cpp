@@ -49,6 +49,7 @@ EngineConfig EngineConfig::FromJson(const char* text, bool* ok) {
   get_to(j, "live_queue_depth", c.live_queue_depth);
   get_to(j, "track_max_speed_mps", c.track_max_speed_mps);
   get_to(j, "track_max_rot_dps", c.track_max_rot_dps);
+  get_to(j, "track_warn_rot_dps", c.track_warn_rot_dps);
   get_to(j, "track_max_view_cos", c.track_max_view_cos);
 
   get_to(j, "boot_min_matches", c.boot_min_matches);

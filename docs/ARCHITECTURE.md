@@ -110,43 +110,51 @@ graph; weak clusters generate ranked, directional guidance ("Back wall —
 insufficient visual geometry. Move 1–2 ft left and capture again."). The
 final report (`final/report.json`) recomputes everything from FINAL data.
 
+## Multi-component recovery (S7b)
+
+The live pass is allowed to fail. When it does — tracking dies on a blank
+wall and the user walks into a room that was never mapped — those frames
+see no reconstructed structure, so PnP cannot reach them and they used to
+be dropped from the final model. That made a live failure propagate into
+the final result, contrary to the whole point of recomputing from RAW.
+
+S7b rebuilds them instead. While unposed frames remain, it seeds a fresh
+component from the strongest verified two-view pair among them (never a
+plane-dominated pair — those carry the conjugate-plane ambiguity), grows it
+by PnP against its own points, anchors its scale on LiDAR exactly as the
+live bootstrap does, and aligns it into the main model over the tracks the
+two share. A component that shares no alignable structure is left
+unregistered rather than placed on a guess.
+
+Two properties are load-bearing, both learned by measurement:
+- **The merge is rigid when the component is metric.** LiDAR is the metric
+  authority; letting the fit absorb a free scale let alignment noise resize
+  a whole room (9.6% global scale error).
+- **The alignment RANSAC is adaptive.** Adjoining rooms share very little
+  structure — a measured 6.6% inlier ratio — where a fixed 256 draws finds
+  a clean sample only ~7% of the time. Iterations are recomputed from the
+  best ratio seen, so weak overlaps still converge and strong ones stop
+  early. For the same reason there is no inlier-*fraction* gate: a 25%
+  threshold rejected a correct 6.6% alignment and made the result 8× worse.
+
+Measured on `bs_synth --two-room` (33 m closed loop through a doorway):
+registration 57% → **92%**, and geometry (RMSE after optimal alignment to
+ground truth) 0.50 m → **~0.20 m**, with global scale within 1%.
+
 ## Known limitations (measured)
 
-The synthetic harness covers a single-room orbit and, since `--two-room`, a
-closed-loop walkthrough of two rooms joined by a doorway. The walkthrough
-currently **fails**, and the failure is architectural rather than a tuning
-problem. Recorded here so the gap is visible rather than implied by a
-passing single-room test.
+**The live map is still single-segment.** Tracking dies facing the blank
+wall, and the system waits for relocalization instead of starting a new
+sub-map (plan risk #4, "segment-and-rejoin"), so a two-room walkthrough
+tracks only ~17% of frames live — accurately (2.3 cm) but intermittently.
+Relocalization now sweeps the whole map rather than only the 20 newest
+keyframes, which is necessary but not sufficient. The final solve no longer
+depends on this, which is why the reconstruction survives it.
 
-Measured on `bs_synth --two-room` (33 m loop, two rooms, returns to its
-start), replayed at realistic frame density:
-
-| | result | bound |
-|---|---|---|
-| live tracking | 17% of frames tracked (accurate when tracked: 2.3 cm) | ≥70% |
-| final solve | 24–57% of frames registered (accurate when registered: 1.1 cm) | ≥90% |
-
-Two distinct causes:
-
-1. **The live map is single-segment.** Tracking dies facing the blank wall,
-   the user walks into a room that was never mapped, and there is nothing to
-   relocalize against. The system waits for relocalization instead of
-   starting a new sub-map (plan risk #4, "segment-and-rejoin").
-   Relocalization itself now sweeps the whole map rather than only the 20
-   newest keyframes, which is necessary but not sufficient.
-
-2. **The final solve initializes poses only from live poses** (S6), and can
-   otherwise only grow the single connected component that PnP can reach.
-   It has no image-based initial-pair bootstrap for frames the live system
-   never posed. This means a live failure propagates into the final result —
-   contrary to the design intent that the final solve recomputes everything
-   and *fixes* live errors. Closing this needs multi-component incremental
-   SfM: seed unposed frames from their own best two-view pair, scale each
-   component metrically from LiDAR, and merge components over shared tracks.
-
-Neither limitation affects single-room captures, which pass all bounds
-clean and under `--hard` degradation. The two-room scene is therefore
-available as a harness but is **not** yet a CI gate.
+The two-room walkthrough still does not meet the single-room accuracy
+bounds (≥90% registration is met; <5 cm ATE is not), so it remains a
+harness rather than a CI gate. Single-room captures are unaffected and pass
+every bound both clean and under `--hard` degradation.
 
 ## Configuration
 

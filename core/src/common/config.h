@@ -104,6 +104,25 @@ struct EngineConfig {
   float final_early_stop_frac = 0.005f;
   int final_threads = 4;
 
+  // --- multi-component recovery ---
+  // Frames the live pass never posed cannot be reached by PnP when they see
+  // no already-reconstructed structure (walking into a new room). Such
+  // frames are bootstrapped into their own component from image geometry,
+  // scaled metrically from LiDAR, and merged back over shared tracks — so a
+  // live tracking failure no longer propagates into the final result.
+  bool final_multi_component = true;
+  int final_component_min_frames = 4;   // smaller components aren't merged
+  int final_merge_min_points = 12;      // shared 3D points needed to align
+  float final_merge_inlier_m = 0.15f;   // alignment RANSAC inlier radius
+  // Off by default, and deliberately: adjoining rooms genuinely share very
+  // little structure, so most candidate correspondences are spurious and the
+  // true overlap is a small fraction. A 25% gate rejected a correct 7%
+  // alignment and made the reconstruction 8x worse (0.19 m -> 1.58 m). The
+  // absolute inlier count at a tight radius is the meaningful evidence.
+  float final_merge_min_inlier_frac = 0.0f;
+  int final_component_grow_iters = 4;   // PnP/triangulate passes per component
+  int final_max_components = 6;         // recovery attempts per solve
+
   // --- floater sweep ---
   float floater_sigma_gate = 4.0f;
   int floater_min_rays = 2;

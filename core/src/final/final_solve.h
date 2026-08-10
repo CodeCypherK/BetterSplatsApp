@@ -30,6 +30,10 @@ struct FinalMetrics {
   uint32_t lidar_residuals = 0;
   // Resume accounting: stages reloaded from final/cache/ instead of
   // recomputed (features per frame; matches whole-stage).
+  // Components rebuilt from image geometry because the live pass never
+  // posed them, and how many frames that recovered.
+  uint32_t components_recovered = 0;
+  uint32_t frames_recovered = 0;
   uint32_t features_cached = 0;
   uint32_t matches_cached = 0;
 };

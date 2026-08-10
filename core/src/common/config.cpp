@@ -115,6 +115,13 @@ EngineConfig EngineConfig::FromJson(const char* text, bool* ok) {
   get_to(j, "final_track_complete_px", c.final_track_complete_px);
   get_to(j, "final_early_stop_frac", c.final_early_stop_frac);
   get_to(j, "final_threads", c.final_threads);
+  get_to(j, "final_multi_component", c.final_multi_component);
+  get_to(j, "final_component_min_frames", c.final_component_min_frames);
+  get_to(j, "final_merge_min_points", c.final_merge_min_points);
+  get_to(j, "final_merge_inlier_m", c.final_merge_inlier_m);
+  get_to(j, "final_merge_min_inlier_frac", c.final_merge_min_inlier_frac);
+  get_to(j, "final_component_grow_iters", c.final_component_grow_iters);
+  get_to(j, "final_max_components", c.final_max_components);
 
   get_to(j, "floater_sigma_gate", c.floater_sigma_gate);
   get_to(j, "floater_min_rays", c.floater_min_rays);

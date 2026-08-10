@@ -7,6 +7,7 @@
 #include <fstream>
 #include <map>
 #include <numeric>
+#include <random>
 #include <set>
 #include <unordered_map>
 #include <unordered_set>
@@ -19,6 +20,7 @@
 #include "calib/lut_fit.h"
 #include "common/log.h"
 #include "final/colmap_export.h"
+#include "final/component_align.h"
 #include "fusion/residuals.h"
 #include "fusion/scale.h"
 #include "geometry/triangulation.h"
@@ -94,6 +96,12 @@ double MeanGradientAt(const cv::Mat& gray, const cv::Point2f& pt) {
   }
   return sum / 9.0;
 }
+
+// One geometrically verified image pair and its surviving correspondences.
+struct PairMatches {
+  int a, b;
+  std::vector<Match> inliers;
+};
 
 // ------------------------------------------------------- resume caching
 // Features and verified matches persist to final/cache/ as they are
@@ -507,10 +515,6 @@ FinalOutcome RunFinalSolve(const EngineConfig& config,
   }
 
   // --------------------------------------------------- S4 verified matching
-  struct PairMatches {
-    int a, b;
-    std::vector<Match> inliers;
-  };
   std::vector<PairMatches> verified;
   {
     std::unordered_map<uint32_t, int> index_of_frame;
@@ -701,6 +705,284 @@ FinalOutcome RunFinalSolve(const EngineConfig& config,
     report(BS_STAGE_TRIANGULATE, 1.0f);
   }
 
+  // Depth + solver lookup for one frame, built once. Both the component
+  // recovery below and the BA rounds need these, and they must be created
+  // together: a frame carrying `depth` without `lookup` silently contributes
+  // zero LiDAR residuals, which un-anchors the geometry.
+  auto ensure_depth = [&](FrameData& frame) {
+    if (frame.depth && frame.lookup) return;
+    const auto meta = session->ReadMeta(frame.frame_id);
+    const auto depth_img = session->ReadDepth(frame.frame_id);
+    if (!meta || !depth_img) return;
+    const Intrinsics kd{meta->depth_intrinsics.fx, meta->depth_intrinsics.fy,
+                        meta->depth_intrinsics.cx, meta->depth_intrinsics.cy,
+                        depth_img->width, depth_img->height};
+    LidarConfidenceOptions lo;
+    lo.sigma_base_m = config.lidar_sigma_base_m;
+    lo.sigma_quadratic = config.lidar_sigma_quadratic;
+    lo.range_min_m = config.lidar_range_min_m;
+    lo.range_full_m = config.lidar_range_full_m;
+    lo.range_zero_m = config.lidar_range_zero_m;
+    frame.depth = std::make_shared<DepthFrame>(*depth_img, kd, lo);
+    frame.lookup = std::make_shared<DepthLookup>(*frame.depth);
+  };
+
+  // ------------------------------------- S7b multi-component recovery
+  //
+  // Frames the live pass never posed are unreachable by PnP when they see no
+  // already-reconstructed structure — walk into the next room and every
+  // frame there is invisible to the model. Rebuild them from image geometry
+  // instead: bootstrap a component from its own best two-view pair, grow it
+  // internally, anchor its scale on LiDAR, then align it back over the
+  // tracks it shares with the main model. This is what lets the final solve
+  // repair a live tracking failure rather than inherit it.
+  if (config.final_multi_component) {
+    std::vector<bool> exhausted(frames.size(), false);  // tried, cannot seed
+    int components_merged = 0;
+    int frames_recovered = 0;
+
+    for (int attempt = 0; attempt < config.final_max_components; ++attempt) {
+      if (cancelled()) {
+        outcome.cancelled = true;
+        return outcome;
+      }
+      auto eligible = [&](int i) {
+        return !frames[i].posed && !exhausted[i];
+      };
+      int remaining = 0;
+      for (size_t i = 0; i < frames.size(); ++i) remaining += eligible(i) ? 1 : 0;
+      if (remaining < config.final_component_min_frames) break;
+
+      // --- seed: strongest verified pair with real parallax, both unposed
+      const PairMatches* seed = nullptr;
+      TwoViewResult seed_rel;
+      size_t seed_score = 0;
+      for (const auto& pm : verified) {
+        if (!eligible(pm.a) || !eligible(pm.b)) continue;
+        if (pm.inliers.size() <= seed_score) continue;
+        std::vector<cv::Point2f> pa, pb;
+        pa.reserve(pm.inliers.size());
+        pb.reserve(pm.inliers.size());
+        for (const auto& m : pm.inliers) {
+          pa.push_back(frames[pm.a].undistorted[m.idx_a]);
+          pb.push_back(frames[pm.b].undistorted[m.idx_b]);
+        }
+        TwoViewOptions tv;
+        tv.ransac_thresh_px = config.final_ransac_px;
+        tv.min_median_tri_angle_deg = config.final_tri_min_angle_deg;
+        const TwoViewResult rel =
+            EstimateRelativePose(pa, pb, frames[pm.a].K, tv);
+        // A plane-dominated pair carries the conjugate-plane ambiguity and
+        // may return the wrong branch — never seed a component from one.
+        if (!rel.ok() || rel.planar_ambiguous) continue;
+        seed = &pm;
+        seed_rel = rel;
+        seed_score = pm.inliers.size();
+      }
+      if (seed == nullptr) {
+        // Nothing left that can start a component.
+        for (size_t i = 0; i < frames.size(); ++i) {
+          if (!frames[i].posed) exhausted[i] = true;
+        }
+        break;
+      }
+
+      // --- component gauge: seed frame at the origin, partner from the pair
+      std::unordered_map<int, SE3> comp_pose;
+      // Seed frame defines the component's world; the partner's pose is the
+      // relative pose directly (unit baseline until LiDAR sets the scale).
+      comp_pose[seed->a] = SE3::Identity();
+      comp_pose[seed->b] = seed_rel.rel_pose;
+
+      auto comp_triangulate = [&](const Track& track,
+                                  Eigen::Vector3d& X) -> bool {
+        std::vector<Observation2D> obs;
+        for (const auto& to : track.observations) {
+          const auto it = comp_pose.find(to.frame_index);
+          if (it == comp_pose.end()) continue;
+          obs.push_back({it->second, frames[to.frame_index].K,
+                         frames[to.frame_index].undistorted[to.feature]});
+        }
+        if (obs.size() < 2) return false;
+        const auto tri = TriangulatePoint(obs);
+        if (!tri || !tri->InFrontOfAll()) return false;
+        if (tri->max_angle_deg < config.final_tri_min_angle_deg) return false;
+        if (tri->max_reproj_error_px > config.final_tri_max_err_px) return false;
+        X = tri->point;
+        return true;
+      };
+
+      std::unordered_map<int, Eigen::Vector3d> comp_point;  // track -> X
+      auto retriangulate_component = [&] {
+        comp_point.clear();
+        for (size_t t = 0; t < tracks.size(); ++t) {
+          if (tracks[t].dead) continue;
+          Eigen::Vector3d X;
+          if (comp_triangulate(tracks[t], X)) comp_point[static_cast<int>(t)] = X;
+        }
+      };
+      retriangulate_component();
+
+      // --- grow: PnP eligible frames against this component's own points
+      for (int iter = 0; iter < config.final_component_grow_iters; ++iter) {
+        int added = 0;
+        for (size_t i = 0; i < frames.size(); ++i) {
+          if (!eligible(static_cast<int>(i))) continue;
+          if (comp_pose.count(static_cast<int>(i))) continue;
+          FrameData& frame = frames[i];
+          std::vector<cv::Point3f> object_points;
+          std::vector<cv::Point2f> image_points;
+          for (size_t feat = 0; feat < frame.track_of_feature.size(); ++feat) {
+            const int32_t t = frame.track_of_feature[feat];
+            if (t < 0) continue;
+            const auto it = comp_point.find(t);
+            if (it == comp_point.end()) continue;
+            object_points.emplace_back(static_cast<float>(it->second.x()),
+                                       static_cast<float>(it->second.y()),
+                                       static_cast<float>(it->second.z()));
+            image_points.push_back(frame.undistorted[feat]);
+          }
+          if (static_cast<int>(object_points.size()) <
+              config.final_register_min_inliers) {
+            continue;
+          }
+          cv::Mat camera = (cv::Mat_<double>(3, 3) << frame.K.fx, 0, frame.K.cx,
+                            0, frame.K.fy, frame.K.cy, 0, 0, 1);
+          cv::Mat rvec, tvec;
+          std::vector<int> inliers;
+          const bool ok = cv::solvePnPRansac(
+              object_points, image_points, camera, cv::noArray(), rvec, tvec,
+              false, 200, static_cast<float>(config.final_register_thresh_px),
+              0.999, inliers, cv::SOLVEPNP_EPNP);
+          if (!ok || static_cast<int>(inliers.size()) <
+                         config.final_register_min_inliers) {
+            continue;
+          }
+          cv::Mat R;
+          cv::Rodrigues(rvec, R);
+          Eigen::Matrix3d rot;
+          for (int r = 0; r < 3; ++r) {
+            for (int c = 0; c < 3; ++c) rot(r, c) = R.at<double>(r, c);
+          }
+          SE3 pose;
+          pose.q = Eigen::Quaterniond(rot).normalized();
+          pose.t = Eigen::Vector3d(tvec.at<double>(0), tvec.at<double>(1),
+                                   tvec.at<double>(2));
+          comp_pose[static_cast<int>(i)] = pose;
+          ++added;
+        }
+        retriangulate_component();
+        if (added == 0) break;
+      }
+
+      if (static_cast<int>(comp_pose.size()) < config.final_component_min_frames) {
+        exhausted[seed->a] = exhausted[seed->b] = true;
+        continue;
+      }
+
+      // --- metric anchor: LiDAR fixes this component's scale, exactly as it
+      // fixes the live map's gauge at bootstrap.
+      bool component_is_metric = false;
+      {
+        std::vector<double> ratios;
+        for (const auto& [track_index, X] : comp_point) {
+          for (const auto& to : tracks[track_index].observations) {
+            const auto pit = comp_pose.find(to.frame_index);
+            if (pit == comp_pose.end()) continue;
+            FrameData& f = frames[to.frame_index];
+            ensure_depth(f);
+            if (!f.depth) continue;
+            const Eigen::Vector3d xc = pit->second.Apply(X);
+            if (xc.z() < 0.05) continue;
+            const auto& dK = f.depth->K();
+            const int u = static_cast<int>(
+                std::lround(dK.fx * xc.x() / xc.z() + dK.cx));
+            const int v = static_cast<int>(
+                std::lround(dK.fy * xc.y() / xc.z() + dK.cy));
+            if (!f.depth->Valid(u, v)) continue;
+            const double d = f.depth->DepthAt(u, v);
+            if (d > 0.05) ratios.push_back(d / xc.z());
+          }
+        }
+        const ScaleEstimate est = EstimateScale(std::move(ratios));
+        if (est.locked) {
+          for (auto& [_, pose] : comp_pose) pose.t *= est.scale;
+          for (auto& [_, X] : comp_point) X *= est.scale;
+          component_is_metric = true;
+        }
+      }
+
+      // --- align: tracks reconstructed in BOTH gauges give the transform
+      std::vector<Eigen::Vector3d> src, dst;
+      for (const auto& [track_index, X] : comp_point) {
+        const Track& track = tracks[track_index];
+        if (track.dead || !track.has_point) continue;
+        src.push_back(X);
+        dst.push_back(track.X);
+      }
+      Similarity sim;
+      int align_inliers = 0;
+      // LiDAR already put this component in metric units, and the main model
+      // is metric too — so the only freedom left is rigid. Fitting a scale
+      // here would let alignment noise resize a whole room.
+      bool aligned = RobustSimilarity(
+          src, dst, config.final_merge_inlier_m, config.final_merge_min_points,
+          /*allow_scale=*/!component_is_metric, sim, align_inliers);
+      // A handful of inliers among hundreds of candidates is a coincidence,
+      // not an overlap — placing a room on that evidence is worse than
+      // leaving its frames out.
+      if (aligned && !src.empty() &&
+          static_cast<double>(align_inliers) / static_cast<double>(src.size()) <
+              config.final_merge_min_inlier_frac) {
+        BS_LOGI("final",
+                "component alignment rejected: only %d/%zu inliers (%.0f%%)",
+                align_inliers, src.size(),
+                100.0 * align_inliers / static_cast<double>(src.size()));
+        aligned = false;
+      }
+      if (!aligned) {
+        // Genuinely disconnected from the main model (no shared structure).
+        // Leave the frames unposed and honest rather than inventing a pose.
+        BS_LOGI("final",
+                "component of %zu frames shares no alignable structure "
+                "(%zu candidate points) — left unregistered",
+                comp_pose.size(), src.size());
+        for (const auto& [frame_index, _] : comp_pose) {
+          exhausted[frame_index] = true;
+        }
+        continue;
+      }
+
+      for (const auto& [frame_index, pose] : comp_pose) {
+        frames[frame_index].pose = TransformPose(pose, sim);
+        frames[frame_index].posed = true;
+        ++frames_recovered;
+      }
+      ++components_merged;
+
+      // Fold the new views into the shared structure before the next pass.
+      for (auto& track : tracks) {
+        if (!track.dead) triangulate_track(track);
+      }
+
+      // Note: re-solving each merged frame by PnP against the freshly
+      // triangulated structure was tried and measured slightly worse
+      // (0.19 m -> 0.24 m aligned RMSE) — the re-triangulation already
+      // absorbs the component's poses, so PnP just refits to points it
+      // dragged. The BA rounds below are the right place to refine.
+      BS_LOGI("final",
+              "recovered component: %zu frames, scale %.3f, %d/%zu alignment "
+              "inliers",
+              comp_pose.size(), sim.scale, align_inliers, src.size());
+    }
+
+    metrics.components_recovered = static_cast<uint32_t>(components_merged);
+    metrics.frames_recovered = static_cast<uint32_t>(frames_recovered);
+    uint32_t posed_now = 0;
+    for (const auto& f : frames) posed_now += f.posed ? 1 : 0;
+    metrics.images_registered = posed_now;
+  }
+
   // ------------------------------------------------- S8 global BA rounds
   const int first_posed = [&] {
     for (const auto& f : frames) {
@@ -718,21 +1000,7 @@ FinalOutcome RunFinalSolve(const EngineConfig& config,
 
     // Lazily build depth frames for posed frames.
     for (auto& frame : frames) {
-      if (!frame.posed || frame.depth) continue;
-      const auto meta = session->ReadMeta(frame.frame_id);
-      const auto depth_img = session->ReadDepth(frame.frame_id);
-      if (!meta || !depth_img) continue;
-      const Intrinsics kd{meta->depth_intrinsics.fx, meta->depth_intrinsics.fy,
-                          meta->depth_intrinsics.cx, meta->depth_intrinsics.cy,
-                          depth_img->width, depth_img->height};
-      LidarConfidenceOptions lo;
-      lo.sigma_base_m = config.lidar_sigma_base_m;
-      lo.sigma_quadratic = config.lidar_sigma_quadratic;
-      lo.range_min_m = config.lidar_range_min_m;
-      lo.range_full_m = config.lidar_range_full_m;
-      lo.range_zero_m = config.lidar_range_zero_m;
-      frame.depth = std::make_shared<DepthFrame>(*depth_img, kd, lo);
-      frame.lookup = std::make_shared<DepthLookup>(*frame.depth);
+      if (frame.posed) ensure_depth(frame);
     }
 
     // Build the problem.

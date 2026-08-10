@@ -4,6 +4,7 @@ find_package(OpenCV REQUIRED COMPONENTS core imgproc imgcodecs features2d)
 add_executable(bs_tests
   test_api.cpp
   test_colmap_export.cpp
+  test_component_align.cpp
   test_config.cpp
   test_depth_codec.cpp
   test_final_resume.cpp

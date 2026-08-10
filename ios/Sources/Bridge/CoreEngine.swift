@@ -64,6 +64,29 @@ final class CoreEngine: @unchecked Sendable {
         bs_region_rename(handle, id, name)
     }
 
+    // MARK: - Final solve
+
+    @discardableResult
+    func finalStart(sessionDir: String, preset: String) -> bs_result {
+        bs_final_start(handle, sessionDir, preset)
+    }
+
+    func finalPoll() -> bs_final_progress {
+        var progress = bs_final_progress()
+        _ = bs_final_poll(handle, &progress)
+        return progress
+    }
+
+    @discardableResult
+    func finalCancel() -> bs_result {
+        bs_final_cancel(handle)
+    }
+
+    @discardableResult
+    func thermalHint(level: Int32) -> bs_result {
+        bs_thermal_hint(handle, level)
+    }
+
     // MARK: - Snapshot
 
     struct Snapshot {

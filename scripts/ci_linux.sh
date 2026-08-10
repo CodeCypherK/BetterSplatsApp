@@ -33,10 +33,15 @@ test_stage() {
 
 validate() {
   cd "$ROOT"
+  # Spec invariant: ARKit tracking is forbidden anywhere in the codebase.
+  if grep -rn --include='*.swift' --include='*.h' --include='*.cpp' \
+       -e 'import ARKit' -e 'ARSession' -e 'ARWorldTracking' \
+       ios/ core/ tools/; then
+    echo "ERROR: ARKit usage detected — image-first SfM only" >&2
+    exit 1
+  fi
   # End-to-end pipeline validation: synth session -> replay live -> final
-  # solve -> COLMAP export -> pycolmap assertions. Stages activate as the
-  # corresponding milestones land; the script degrades gracefully before
-  # then so CI stays green at every milestone boundary.
+  # solve -> COLMAP export -> pycolmap assertions + RAW immutability.
   python3 scripts/validate_colmap.py --build-dir "build/$PRESET"
 }
 

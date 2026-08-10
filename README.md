@@ -14,10 +14,20 @@ ARKit is not used.
 
 ## Status
 
-Early development — M0 (scaffold) complete: portable C++ engine skeleton
-with Eigen/OpenCV/Ceres proven on Linux CI and cross-compiled to iOS, plus
-a diagnostics app shell. See `docs/ARCHITECTURE.md` for the full design and
-the milestone plan.
+The full reconstruction engine works end-to-end on Linux CI (76 unit tests
+plus a synthetic ground-truth pipeline): capture format + immutable RAW
+storage, two-view geometry, LiDAR confidence + adaptive fusion, live
+incremental SfM (95% tracked / 3 mm ATE on the synthetic room), the
+splat-readiness scoring system, and the final global reconstruction —
+60/60 frames registered at 2.2 mm ATE, COLMAP export loads in pycolmap
+(track length 4.6, 0.41 px reprojection), fused `dense.ply`, and a
+verified byte-identical RAW layer after processing.
+
+The iOS app (capture, live guidance, readiness dashboard, 3D map,
+on-device reconstruction + share-sheet export) builds via the `ios-app`
+workflow; grab the IPA artifact and see `docs/SIDELOADING.md`. On-device
+field testing is the current frontier — expect tuning commits as real
+captures come back through the replay tool.
 
 ## Build matrix (no Mac required)
 

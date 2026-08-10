@@ -1,0 +1,74 @@
+# Working backlog
+
+Live worklist for autonomous sessions. The container is ephemeral and each
+wake-up re-clones, so **this file is the memory** — read it first, update it
+last, and push every change. Anything not written here did not happen.
+
+Rules of engagement for this backlog:
+
+- One small, complete, committed change per session. Never leave the branch
+  broken.
+- `ctest` green before every push. `scripts/validate_colmap.py` before any
+  push that touches the solver, the export, or the session format.
+- Measure before and after, and record the numbers here. A change with no
+  number attached is not done.
+- If a measurement contradicts something written here, correct the entry.
+  Being wrong in the log is fine; leaving it wrong is not.
+
+## Goal
+
+Cleanest possible reconstruction data, and a capture experience that gets a
+non-expert to that data on the first try.
+
+---
+
+## Now
+
+- [ ] **Scout scaffold is appearance-incompatible with the capture pass.**
+      A capture pass localizes into a 224-keyframe scaffold on only 12% of
+      frames. The scout looks *inward at room centres*; the capture walk
+      looks *along travel*; ORB is not viewpoint-invariant, so the two
+      passes almost never see a surface from a similar direction. Widening
+      the relocalization sweep 8 → 64 candidates moved it 11.8% → 12.2%, so
+      candidate coverage is *not* the constraint (already measured, do not
+      retry). Two candidate fixes, in order of expected value:
+      1. Make the scout circuit sweep the phone while walking, so each
+         location is captured from several directions. This is also a
+         product decision — it changes the on-screen instruction.
+      2. Viewpoint-tolerant relocalization: BoW retrieval over the scaffold
+         instead of raw descriptor matching against associated features.
+
+## Next
+
+- [ ] **Turning outruns mapping** (see ARCHITECTURE.md). `SLOW DOWN` now
+      fires above 60 deg/s, but the underlying limit stands: a point needs
+      two keyframes to exist. Worth trying: keyframe cadence that scales
+      with rotation rate rather than a flat `kf_min_interval_s`.
+- [ ] **Capture UX for the scout pass.** There is no UI for "walk the
+      perimeter first" — the pass exists in the engine and the format but a
+      user cannot invoke it. Design the flow, then build it.
+- [ ] **Readiness guidance wording pass.** Messages are generated from
+      sub-score argmin; check they read as instructions a stranger can
+      follow, not as diagnostics.
+- [ ] **Two-room walkthrough as a CI gate.** Blocked on render cost
+      (~2300 frames at walking pace ≈ 13 min). Consider a shorter realistic
+      path, or a cached fixture committed to `core/testdata/`.
+
+## Ideas (unranked, unvalidated)
+
+- Exposure/white-balance normalization across frames before the final solve.
+- Per-session depth-vs-triangulation affine correction (risk 6 in the plan).
+- Report per-image blur/exposure outliers in `report.json` so a user can see
+  which frames hurt the model.
+
+---
+
+## Log
+
+Newest first. One line per session: what changed, what it measured.
+
+- `aed20fa` Harness made physically honest (`--speed`/`--pan`/`--fps`, worst-frame
+  motion reporting); fixed a 174 deg doorway view flip and an ill-conditioned
+  look target. Scout circuit 33% → **86%** tracked, ATE **4.3 cm**, scaffold
+  85 → **224** keyframes. Added `SLOW DOWN` above 60 deg/s; per-pass pose logs;
+  per-test temp dirs so `ctest -j` passes.

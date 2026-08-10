@@ -78,8 +78,12 @@ struct EngineConfig {
   float readiness_weak_threshold = 70.0f;
 
   // --- final solve ---
-  int final_sift_features = 4096;
-  int final_orb_features = 3000;   // "fast" preset
+  int final_sift_features = 3000;
+  int final_orb_features = 3000;
+  // SIFT for the quality preset: 0 = never, 1 = always, 2 = auto (only
+  // when the session is small enough for the transient descriptor memory).
+  int final_use_sift = 2;
+  int final_sift_max_frames = 250;
   int final_seq_window = 8;
   int final_bow_top_k = 10;
   int final_exhaustive_below = 150;

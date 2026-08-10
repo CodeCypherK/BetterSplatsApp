@@ -94,6 +94,8 @@ EngineConfig EngineConfig::FromJson(const char* text, bool* ok) {
 
   get_to(j, "final_sift_features", c.final_sift_features);
   get_to(j, "final_orb_features", c.final_orb_features);
+  get_to(j, "final_use_sift", c.final_use_sift);
+  get_to(j, "final_sift_max_frames", c.final_sift_max_frames);
   get_to(j, "final_seq_window", c.final_seq_window);
   get_to(j, "final_bow_top_k", c.final_bow_top_k);
   get_to(j, "final_exhaustive_below", c.final_exhaustive_below);

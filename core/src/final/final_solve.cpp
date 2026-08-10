@@ -95,6 +95,174 @@ double MeanGradientAt(const cv::Mat& gray, const cv::Point2f& pt) {
   return sum / 9.0;
 }
 
+// ------------------------------------------------------- resume caching
+// Features and verified matches persist to final/cache/ as they are
+// computed, keyed by a hash of the solve-relevant configuration and the
+// frame list. A cancelled/killed solve resumes past the expensive stages;
+// any config or session change invalidates the cache wholesale.
+
+uint64_t Fnv1a(uint64_t h, const void* data, size_t n) {
+  const auto* p = static_cast<const uint8_t*>(data);
+  for (size_t i = 0; i < n; ++i) {
+    h ^= p[i];
+    h *= 1099511628211ull;
+  }
+  return h;
+}
+
+uint64_t CacheConfigHash(const EngineConfig& c, bool use_sift, bool fast,
+                         const std::vector<uint32_t>& frame_ids) {
+  uint64_t h = 1469598103934665603ull;
+  const int schema = 1;
+  h = Fnv1a(h, &schema, sizeof(schema));
+  h = Fnv1a(h, &use_sift, sizeof(use_sift));
+  h = Fnv1a(h, &fast, sizeof(fast));
+  h = Fnv1a(h, &c.final_orb_features, sizeof(c.final_orb_features));
+  h = Fnv1a(h, &c.final_sift_features, sizeof(c.final_sift_features));
+  h = Fnv1a(h, &c.final_match_ratio, sizeof(c.final_match_ratio));
+  h = Fnv1a(h, &c.final_ransac_px, sizeof(c.final_ransac_px));
+  h = Fnv1a(h, &c.final_pair_min_inliers, sizeof(c.final_pair_min_inliers));
+  h = Fnv1a(h, &c.final_seq_window, sizeof(c.final_seq_window));
+  h = Fnv1a(h, &c.final_exhaustive_below, sizeof(c.final_exhaustive_below));
+  h = Fnv1a(h, frame_ids.data(), frame_ids.size() * sizeof(uint32_t));
+  return h;
+}
+
+template <typename T>
+void PutPod(std::ofstream& out, const T& v) {
+  out.write(reinterpret_cast<const char*>(&v), sizeof(T));
+}
+
+template <typename T>
+bool GetPod(std::ifstream& in, T& v) {
+  in.read(reinterpret_cast<char*>(&v), sizeof(T));
+  return static_cast<bool>(in);
+}
+
+constexpr uint32_t kFeatureCacheMagic = 0x42534643;  // "BSFC"
+constexpr uint32_t kMatchCacheMagic = 0x42534D43;    // "BSMC"
+
+struct CachedFeatures {
+  FeatureSet features;
+  std::vector<cv::Point2f> undistorted;
+  std::vector<std::array<uint8_t, 3>> colors;
+  std::vector<float> gradients;
+};
+
+bool WriteFeatureCache(const fs::path& path, const CachedFeatures& data) {
+  std::ofstream out(path, std::ios::binary | std::ios::trunc);
+  if (!out) return false;
+  PutPod(out, kFeatureCacheMagic);
+  PutPod(out, static_cast<int32_t>(data.features.type));
+  const int32_t n = data.features.size();
+  PutPod(out, n);
+  const int32_t desc_cols = data.features.descriptors.cols;
+  const int32_t desc_type = data.features.descriptors.type();
+  PutPod(out, desc_cols);
+  PutPod(out, desc_type);
+  for (const auto& kp : data.features.keypoints) {
+    PutPod(out, kp.pt.x);
+    PutPod(out, kp.pt.y);
+    PutPod(out, kp.response);
+    PutPod(out, kp.octave);
+  }
+  if (n > 0) {
+    out.write(reinterpret_cast<const char*>(data.features.descriptors.data),
+              static_cast<std::streamsize>(data.features.descriptors.total() *
+                                           data.features.descriptors.elemSize()));
+  }
+  out.write(reinterpret_cast<const char*>(data.undistorted.data()),
+            static_cast<std::streamsize>(n * sizeof(cv::Point2f)));
+  out.write(reinterpret_cast<const char*>(data.colors.data()),
+            static_cast<std::streamsize>(n * 3));
+  out.write(reinterpret_cast<const char*>(data.gradients.data()),
+            static_cast<std::streamsize>(n * sizeof(float)));
+  return static_cast<bool>(out);
+}
+
+bool ReadFeatureCache(const fs::path& path, FeatureType expected_type,
+                      CachedFeatures& data) {
+  std::ifstream in(path, std::ios::binary);
+  if (!in) return false;
+  uint32_t magic;
+  int32_t type_raw, n, desc_cols, desc_type;
+  if (!GetPod(in, magic) || magic != kFeatureCacheMagic) return false;
+  if (!GetPod(in, type_raw) ||
+      static_cast<FeatureType>(type_raw) != expected_type) {
+    return false;
+  }
+  if (!GetPod(in, n) || n < 0 || n > 100000) return false;
+  if (!GetPod(in, desc_cols) || !GetPod(in, desc_type)) return false;
+
+  data.features.type = expected_type;
+  data.features.keypoints.resize(n);
+  for (auto& kp : data.features.keypoints) {
+    if (!GetPod(in, kp.pt.x) || !GetPod(in, kp.pt.y) ||
+        !GetPod(in, kp.response) || !GetPod(in, kp.octave)) {
+      return false;
+    }
+  }
+  data.features.descriptors.create(n, desc_cols, desc_type);
+  if (n > 0) {
+    in.read(reinterpret_cast<char*>(data.features.descriptors.data),
+            static_cast<std::streamsize>(data.features.descriptors.total() *
+                                         data.features.descriptors.elemSize()));
+  }
+  data.undistorted.resize(n);
+  in.read(reinterpret_cast<char*>(data.undistorted.data()),
+          static_cast<std::streamsize>(n * sizeof(cv::Point2f)));
+  data.colors.resize(n);
+  in.read(reinterpret_cast<char*>(data.colors.data()),
+          static_cast<std::streamsize>(n * 3));
+  data.gradients.resize(n);
+  in.read(reinterpret_cast<char*>(data.gradients.data()),
+          static_cast<std::streamsize>(n * sizeof(float)));
+  return static_cast<bool>(in);
+}
+
+struct CachedPair {
+  uint32_t frame_a, frame_b;
+  std::vector<std::pair<int32_t, int32_t>> inliers;
+};
+
+bool WriteMatchCache(const fs::path& path,
+                     const std::vector<CachedPair>& pairs) {
+  std::ofstream out(path, std::ios::binary | std::ios::trunc);
+  if (!out) return false;
+  PutPod(out, kMatchCacheMagic);
+  PutPod(out, static_cast<uint32_t>(pairs.size()));
+  for (const auto& p : pairs) {
+    PutPod(out, p.frame_a);
+    PutPod(out, p.frame_b);
+    PutPod(out, static_cast<uint32_t>(p.inliers.size()));
+    out.write(reinterpret_cast<const char*>(p.inliers.data()),
+              static_cast<std::streamsize>(p.inliers.size() * sizeof(int32_t) *
+                                           2));
+  }
+  return static_cast<bool>(out);
+}
+
+bool ReadMatchCache(const fs::path& path, std::vector<CachedPair>& pairs) {
+  std::ifstream in(path, std::ios::binary);
+  if (!in) return false;
+  uint32_t magic, count;
+  if (!GetPod(in, magic) || magic != kMatchCacheMagic) return false;
+  if (!GetPod(in, count) || count > 10'000'000) return false;
+  pairs.resize(count);
+  for (auto& p : pairs) {
+    uint32_t n;
+    if (!GetPod(in, p.frame_a) || !GetPod(in, p.frame_b) || !GetPod(in, n) ||
+        n > 1'000'000) {
+      return false;
+    }
+    p.inliers.resize(n);
+    in.read(reinterpret_cast<char*>(p.inliers.data()),
+            static_cast<std::streamsize>(n * sizeof(int32_t) * 2));
+    if (!in) return false;
+  }
+  return true;
+}
+
 std::unordered_map<uint32_t, SE3> LoadLivePoses(const std::string& session_dir) {
   std::unordered_map<uint32_t, SE3> poses;
   std::ifstream in(fs::path(session_dir) / "live" / "poses.jsonl");
@@ -165,10 +333,42 @@ FinalOutcome RunFinalSolve(const EngineConfig& config,
     }
   }
 
+  // Feature choice: SIFT for the quality preset when the session fits the
+  // transient descriptor budget (or forced by config), else ORB.
+  const size_t session_frames = session->frame_ids().size();
+  const bool use_sift =
+      !fast && (config.final_use_sift == 1 ||
+                (config.final_use_sift == 2 &&
+                 static_cast<int>(session_frames) <=
+                     config.final_sift_max_frames));
+
+  // Resume cache setup.
+  const fs::path cache_dir = fs::path(session_dir) / "final" / "cache";
+  {
+    std::error_code ec;
+    fs::create_directories(cache_dir, ec);
+  }
+  const uint64_t config_hash =
+      CacheConfigHash(config, use_sift, fast, session->frame_ids());
+  bool cache_valid = false;
+  {
+    std::ifstream manifest(cache_dir / "manifest.txt");
+    uint64_t stored = 0;
+    if (manifest >> stored && stored == config_hash) cache_valid = true;
+  }
+  if (!cache_valid) {
+    std::error_code ec;
+    fs::remove_all(cache_dir, ec);
+    fs::create_directories(cache_dir, ec);
+    std::ofstream(cache_dir / "manifest.txt") << config_hash << "\n";
+  }
+  const FeatureType feature_type =
+      use_sift ? FeatureType::kSift : FeatureType::kOrb;
+
   // ---------------------------------------------------------- S1 features
   std::vector<FrameData> frames;
-  frames.reserve(session->frame_ids().size());
-  metrics.images_total = static_cast<uint32_t>(session->frame_ids().size());
+  frames.reserve(session_frames);
+  metrics.images_total = static_cast<uint32_t>(session_frames);
   {
     int done = 0;
     for (const uint32_t frame_id : session->frame_ids()) {
@@ -177,12 +377,7 @@ FinalOutcome RunFinalSolve(const EngineConfig& config,
         return outcome;
       }
       const auto meta = session->ReadMeta(frame_id);
-      const auto jpeg = session->ReadImageBytes(frame_id);
-      if (!meta || !jpeg) continue;
-      const cv::Mat color = cv::imdecode(*jpeg, cv::IMREAD_COLOR);
-      if (color.empty()) continue;
-      cv::Mat gray;
-      cv::cvtColor(color, gray, cv::COLOR_BGR2GRAY);
+      if (!meta) continue;
 
       FrameData frame;
       frame.frame_id = frame_id;
@@ -190,34 +385,74 @@ FinalOutcome RunFinalSolve(const EngineConfig& config,
       char name[32];
       std::snprintf(name, sizeof(name), "%06u.jpg", frame_id);
       frame.export_name = name;
-      frame.K = {meta->intrinsics.fx, meta->intrinsics.fy, meta->intrinsics.cx,
-                 meta->intrinsics.cy, gray.cols, gray.rows};
 
-      OrbOptions orb;
-      orb.max_features = orb_features;
-      frame.features = DetectOrb(gray, orb);
+      char cache_name[32];
+      std::snprintf(cache_name, sizeof(cache_name), "feat_%06u.bin", frame_id);
+      const fs::path cache_path = cache_dir / cache_name;
 
-      const PinholeIntrinsics pin{frame.K.fx, frame.K.fy, frame.K.cx,
-                                  frame.K.cy, frame.K.width, frame.K.height};
-      frame.undistorted.reserve(frame.features.keypoints.size());
-      frame.colors.reserve(frame.features.keypoints.size());
-      frame.gradients.reserve(frame.features.keypoints.size());
-      for (const auto& kp : frame.features.keypoints) {
-        if (k1 == 0.0 && k2 == 0.0) {
-          frame.undistorted.push_back(kp.pt);
+      CachedFeatures cached;
+      if (cache_valid && ReadFeatureCache(cache_path, feature_type, cached)) {
+        frame.features = std::move(cached.features);
+        frame.undistorted = std::move(cached.undistorted);
+        frame.colors = std::move(cached.colors);
+        frame.gradients = std::move(cached.gradients);
+        frame.K = {meta->intrinsics.fx, meta->intrinsics.fy,
+                   meta->intrinsics.cx, meta->intrinsics.cy,
+                   meta->intrinsics.ref_w, meta->intrinsics.ref_h};
+        ++metrics.features_cached;
+      } else {
+        const auto jpeg = session->ReadImageBytes(frame_id);
+        if (!jpeg) continue;
+        const cv::Mat color = cv::imdecode(*jpeg, cv::IMREAD_COLOR);
+        if (color.empty()) continue;
+        cv::Mat gray;
+        cv::cvtColor(color, gray, cv::COLOR_BGR2GRAY);
+
+        frame.K = {meta->intrinsics.fx, meta->intrinsics.fy,
+                   meta->intrinsics.cx, meta->intrinsics.cy, gray.cols,
+                   gray.rows};
+        if (use_sift) {
+          SiftOptions sift;
+          sift.max_features = config.final_sift_features;
+          frame.features = DetectSift(gray, sift);
         } else {
-          const Eigen::Vector2d u =
-              UndistortPixel({kp.pt.x, kp.pt.y}, pin, k1, k2);
-          frame.undistorted.emplace_back(static_cast<float>(u.x()),
-                                         static_cast<float>(u.y()));
+          OrbOptions orb;
+          orb.max_features = orb_features;
+          frame.features = DetectOrb(gray, orb);
         }
-        const int px = std::clamp(static_cast<int>(kp.pt.x), 0, color.cols - 1);
-        const int py = std::clamp(static_cast<int>(kp.pt.y), 0, color.rows - 1);
-        const cv::Vec3b bgr = color.at<cv::Vec3b>(py, px);
-        frame.colors.push_back({bgr[2], bgr[1], bgr[0]});
-        frame.gradients.push_back(
-            static_cast<float>(MeanGradientAt(gray, kp.pt)));
+
+        const PinholeIntrinsics pin{frame.K.fx, frame.K.fy, frame.K.cx,
+                                    frame.K.cy, frame.K.width, frame.K.height};
+        frame.undistorted.reserve(frame.features.keypoints.size());
+        frame.colors.reserve(frame.features.keypoints.size());
+        frame.gradients.reserve(frame.features.keypoints.size());
+        for (const auto& kp : frame.features.keypoints) {
+          if (k1 == 0.0 && k2 == 0.0) {
+            frame.undistorted.push_back(kp.pt);
+          } else {
+            const Eigen::Vector2d u =
+                UndistortPixel({kp.pt.x, kp.pt.y}, pin, k1, k2);
+            frame.undistorted.emplace_back(static_cast<float>(u.x()),
+                                           static_cast<float>(u.y()));
+          }
+          const int px =
+              std::clamp(static_cast<int>(kp.pt.x), 0, color.cols - 1);
+          const int py =
+              std::clamp(static_cast<int>(kp.pt.y), 0, color.rows - 1);
+          const cv::Vec3b bgr = color.at<cv::Vec3b>(py, px);
+          frame.colors.push_back({bgr[2], bgr[1], bgr[0]});
+          frame.gradients.push_back(
+              static_cast<float>(MeanGradientAt(gray, kp.pt)));
+        }
+
+        CachedFeatures to_cache;
+        to_cache.features = frame.features;
+        to_cache.undistorted = frame.undistorted;
+        to_cache.colors = frame.colors;
+        to_cache.gradients = frame.gradients;
+        WriteFeatureCache(cache_path, to_cache);
       }
+
       frame.track_of_feature.assign(frame.features.keypoints.size(), -1);
       frame.index = static_cast<int>(frames.size());
       frames.push_back(std::move(frame));
@@ -268,46 +503,86 @@ FinalOutcome RunFinalSolve(const EngineConfig& config,
   };
   std::vector<PairMatches> verified;
   {
-    int done = 0;
-    for (const auto& [i, j] : pairs) {
-      if (cancelled()) {
-        outcome.cancelled = true;
-        return outcome;
-      }
-      MatchOptions mo;
-      mo.ratio = config.final_match_ratio;
-      mo.cross_check = true;
-      mo.max_distance = 64.0f;
-      const std::vector<Match> matches =
-          MatchFeatures(frames[i].features, frames[j].features, mo);
-      if (static_cast<int>(matches.size()) < config.final_pair_min_inliers) {
-        ++done;
-        continue;
-      }
-      std::vector<cv::Point2f> pa, pb;
-      for (const auto& m : matches) {
-        pa.push_back(frames[i].undistorted[m.idx_a]);
-        pb.push_back(frames[j].undistorted[m.idx_b]);
-      }
-      TwoViewOptions tv;
-      tv.ransac_thresh_px = config.final_ransac_px;
-      tv.min_median_tri_angle_deg = 0.0;  // verification only, keep pairs
-      tv.estimate_homography = false;
-      const TwoViewResult rel = EstimateRelativePose(pa, pb, frames[i].K, tv);
-      if (rel.ok() || rel.failure == TwoViewFailure::kRotationDominant) {
+    std::unordered_map<uint32_t, int> index_of_frame;
+    for (const auto& f : frames) index_of_frame[f.frame_id] = f.index;
+
+    std::vector<CachedPair> cached_pairs;
+    if (cache_valid &&
+        ReadMatchCache(cache_dir / "matches.bin", cached_pairs)) {
+      for (const auto& cp : cached_pairs) {
+        const auto ia = index_of_frame.find(cp.frame_a);
+        const auto ib = index_of_frame.find(cp.frame_b);
+        if (ia == index_of_frame.end() || ib == index_of_frame.end()) continue;
         PairMatches pm;
-        pm.a = i;
-        pm.b = j;
-        for (size_t m = 0; m < matches.size(); ++m) {
-          if (m < rel.inlier_mask.size() && rel.inlier_mask[m]) {
-            pm.inliers.push_back(matches[m]);
+        pm.a = ia->second;
+        pm.b = ib->second;
+        pm.inliers.reserve(cp.inliers.size());
+        for (const auto& [fa, fb] : cp.inliers) {
+          Match m;
+          m.idx_a = fa;
+          m.idx_b = fb;
+          pm.inliers.push_back(m);
+        }
+        verified.push_back(std::move(pm));
+      }
+      metrics.matches_cached = static_cast<uint32_t>(verified.size());
+      report(BS_STAGE_MATCHING, 1.0f);
+    } else {
+      int done = 0;
+      for (const auto& [i, j] : pairs) {
+        if (cancelled()) {
+          outcome.cancelled = true;
+          return outcome;
+        }
+        MatchOptions mo;
+        mo.ratio = config.final_match_ratio;
+        mo.cross_check = true;
+        // Absolute cap applies to Hamming (ORB); SIFT relies on ratio.
+        mo.max_distance = use_sift ? 0.0f : 64.0f;
+        const std::vector<Match> matches =
+            MatchFeatures(frames[i].features, frames[j].features, mo);
+        if (static_cast<int>(matches.size()) < config.final_pair_min_inliers) {
+          ++done;
+          continue;
+        }
+        std::vector<cv::Point2f> pa, pb;
+        for (const auto& m : matches) {
+          pa.push_back(frames[i].undistorted[m.idx_a]);
+          pb.push_back(frames[j].undistorted[m.idx_b]);
+        }
+        TwoViewOptions tv;
+        tv.ransac_thresh_px = config.final_ransac_px;
+        tv.min_median_tri_angle_deg = 0.0;  // verification only, keep pairs
+        tv.estimate_homography = false;
+        const TwoViewResult rel = EstimateRelativePose(pa, pb, frames[i].K, tv);
+        if (rel.ok() || rel.failure == TwoViewFailure::kRotationDominant) {
+          PairMatches pm;
+          pm.a = i;
+          pm.b = j;
+          for (size_t m = 0; m < matches.size(); ++m) {
+            if (m < rel.inlier_mask.size() && rel.inlier_mask[m]) {
+              pm.inliers.push_back(matches[m]);
+            }
+          }
+          if (static_cast<int>(pm.inliers.size()) >=
+              config.final_pair_min_inliers) {
+            verified.push_back(std::move(pm));
           }
         }
-        if (static_cast<int>(pm.inliers.size()) >= config.final_pair_min_inliers) {
-          verified.push_back(std::move(pm));
-        }
+        report(BS_STAGE_MATCHING, static_cast<float>(++done) / pairs.size());
       }
-      report(BS_STAGE_MATCHING, static_cast<float>(++done) / pairs.size());
+
+      std::vector<CachedPair> to_cache;
+      to_cache.reserve(verified.size());
+      for (const auto& pm : verified) {
+        CachedPair cp;
+        cp.frame_a = frames[pm.a].frame_id;
+        cp.frame_b = frames[pm.b].frame_id;
+        cp.inliers.reserve(pm.inliers.size());
+        for (const auto& m : pm.inliers) cp.inliers.emplace_back(m.idx_a, m.idx_b);
+        to_cache.push_back(std::move(cp));
+      }
+      WriteMatchCache(cache_dir / "matches.bin", to_cache);
     }
   }
   if (verified.empty()) return fail("no verified pairs");
@@ -363,6 +638,10 @@ FinalOutcome RunFinalSolve(const EngineConfig& config,
               ? 0
               : grad / static_cast<float>(track.observations.size());
     }
+    // Descriptors are no longer needed past track building — releasing
+    // them bounds peak memory (matters for the SIFT quality path on-device;
+    // the resume cache keeps them on disk).
+    for (auto& frame : frames) frame.features.descriptors.release();
     report(BS_STAGE_TRACKS, 1.0f);
   }
 
@@ -843,6 +1122,15 @@ FinalOutcome RunFinalSolve(const EngineConfig& config,
     const std::string invalid = ValidateColmapDir(colmap_dir);
     if (!invalid.empty()) return fail("COLMAP self-validation: " + invalid);
 
+    // Metrics reflect the exported model, not the last BA round's live map.
+    metrics.points = static_cast<uint32_t>(model.points.size());
+    double track_len_sum = 0;
+    for (const auto& p : model.points) track_len_sum += p.track.size();
+    metrics.mean_track_len =
+        model.points.empty()
+            ? 0.0f
+            : static_cast<float>(track_len_sum / model.points.size());
+
     // report.json
     std::ofstream report_out(fs::path(session_dir) / "final" / "report.json",
                              std::ios::trunc);
@@ -859,7 +1147,6 @@ FinalOutcome RunFinalSolve(const EngineConfig& config,
                << "  \"ba_rounds\": " << metrics.ba_round << ",\n"
                << "  \"preset\": \"" << (fast ? "fast" : "quality") << "\"\n"
                << "}\n";
-    metrics.points = static_cast<uint32_t>(model.points.size());
     report(BS_STAGE_EXPORT, 1.0f);
   }
 

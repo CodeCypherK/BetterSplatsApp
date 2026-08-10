@@ -6,6 +6,7 @@ add_executable(bs_tests
   test_colmap_export.cpp
   test_config.cpp
   test_depth_codec.cpp
+  test_final_resume.cpp
   test_fusion.cpp
   test_lidar.cpp
   test_lut_fit.cpp

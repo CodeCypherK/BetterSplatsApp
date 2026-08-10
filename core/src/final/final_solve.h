@@ -28,6 +28,10 @@ struct FinalMetrics {
   uint32_t ba_round = 0;
   uint32_t floaters_removed = 0;
   uint32_t lidar_residuals = 0;
+  // Resume accounting: stages reloaded from final/cache/ instead of
+  // recomputed (features per frame; matches whole-stage).
+  uint32_t features_cached = 0;
+  uint32_t matches_cached = 0;
 };
 
 struct FinalOutcome {

@@ -255,7 +255,8 @@ int RunFinal(const bs::SessionReader& session, const std::string& config,
   std::printf("final solve: %s — registered %u/%u, %u points, rmse %.2fpx, "
               "mean track %.1f\n",
               solved ? "DONE" : "FAILED", progress.images_registered,
-              progress.images_total, progress.points, progress.reproj_rmse_px);
+              progress.images_total, progress.points, progress.reproj_rmse_px,
+              progress.mean_track_len);
   if (!solved) {
     std::fprintf(stderr, "error: %s\n", bs_last_error(engine));
     bs_destroy(engine);

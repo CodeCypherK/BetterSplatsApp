@@ -41,6 +41,9 @@ struct Patch {
   PatchKey key;
   Eigen::Vector3d centroid = Eigen::Vector3d::Zero();
   Eigen::Vector3d normal = Eigen::Vector3d::UnitZ();
+  // Mean unit direction from the surface toward its observing cameras.
+  // Its tangential bias reveals which side of the surface still lacks views.
+  Eigen::Vector3d mean_view_dir = Eigen::Vector3d::Zero();
 
   int point_count = 0;
   double err_sum = 0;
@@ -80,6 +83,9 @@ struct WeakArea {
   uint32_t region_id = 1;
   int deficiency = 0;     // argmin sub-score index
   int surface_kind = 0;   // 0 wall, 1 floor, 2 ceiling, 3 object
+  // Region-relative placement of a wall: 0 unknown, 1 back, 2 left, 3 right,
+  // 4 front (near the region's entry). Only meaningful when surface_kind == 0.
+  int surface_side = 0;
   Eigen::Vector3d move_dir = Eigen::Vector3d::UnitX();
   double move_dist_m = 0.5;
   float score = 0;
@@ -123,8 +129,19 @@ class PatchGrid {
                     const std::map<uint32_t, std::string>& names) const;
 
  private:
+  // Horizontal reference frame of one region, used to name walls relative to
+  // where the user has stood (back/left/right/front). `forward` points from
+  // the camera-coverage centroid into the region, on the world floor plane.
+  struct RegionFrame {
+    Eigen::Vector3d cam_centroid = Eigen::Vector3d::Zero();
+    Eigen::Vector3d centroid = Eigen::Vector3d::Zero();
+    Eigen::Vector3d forward = Eigen::Vector3d::Zero();
+    bool valid = false;
+  };
+
   void ScorePatch(Patch& patch) const;
   void FindWeakAreas();
+  int WallSide(const WeakArea& area) const;
   // Fills region_of_kf via union-find over the covisibility graph.
   std::map<uint32_t, uint32_t> ClusterRegions(const LiveMap& map) const;
 
@@ -132,6 +149,7 @@ class PatchGrid {
   std::unordered_map<PatchKey, Patch, PatchKeyHash> patches_;
   std::vector<WeakArea> weak_areas_;
   std::vector<RegionAggregate> regions_;
+  std::map<uint32_t, RegionFrame> region_frames_;
   float overall_ = 0;
   float overall_sub_[5] = {0, 0, 0, 0, 0};
   // False when no keyframe carries depth (LiDAR-less map): the lidar axis

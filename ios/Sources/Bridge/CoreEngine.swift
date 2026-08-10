@@ -104,6 +104,7 @@ final class CoreEngine: @unchecked Sendable {
             let regionID: UInt32
             let deficiency: Int  // 0 geom, 1 pose, 2 texture, 3 lidar, 4 view
             let surfaceKind: Int // 0 wall, 1 floor, 2 ceiling, 3 object
+            let surfaceSide: Int // wall: 0 unknown, 1 back, 2 left, 3 right, 4 front
             let moveDir: SIMD3<Float>
             let moveDistM: Float
             let score: Float
@@ -173,6 +174,7 @@ final class CoreEngine: @unchecked Sendable {
                     regionID: w.region_id,
                     deficiency: Int(w.deficiency),
                     surfaceKind: Int(w.surface_kind),
+                    surfaceSide: Int(w.surface_side),
                     moveDir: SIMD3(w.move_dir.0, w.move_dir.1, w.move_dir.2),
                     moveDistM: w.move_dist_m, score: w.score))
             }

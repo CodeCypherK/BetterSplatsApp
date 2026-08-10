@@ -88,6 +88,7 @@ void PatchGrid::Build(const LiveMap& map) {
   patches_.clear();
   weak_areas_.clear();
   regions_.clear();
+  region_frames_.clear();
   overall_ = 0;
   std::memset(overall_sub_, 0, sizeof(overall_sub_));
   if (map.points().empty()) return;
@@ -139,6 +140,16 @@ void PatchGrid::Build(const LiveMap& map) {
       }
     }
   }
+
+  // Per-region accumulators for the horizontal reference frame used to name
+  // walls (where the user stood vs. where the surfaces are).
+  struct RegionAccum {
+    Eigen::Vector3d cam_sum = Eigen::Vector3d::Zero();
+    int cam_count = 0;
+    Eigen::Vector3d cen_sum = Eigen::Vector3d::Zero();
+    int cen_count = 0;
+  };
+  std::map<uint32_t, RegionAccum> region_accum;
 
   for (auto& [key, patch] : patches_) {
     patch.centroid /= patch.point_count;
@@ -197,6 +208,18 @@ void PatchGrid::Build(const LiveMap& map) {
             patch.max_view_angle_deg, RadToDeg(std::acos(cosang)));
       }
     }
+    // Mean surface->camera direction: its tangential lean points back toward
+    // the viewpoints already captured, so the empty side is the other way.
+    Eigen::Vector3d view_sum = Eigen::Vector3d::Zero();
+    for (const auto& vd : view_dirs) view_sum += vd;
+    if (view_sum.norm() > 1e-9) patch.mean_view_dir = view_sum.normalized();
+
+    // Orient the (sign-ambiguous) PCA normal to face the observing cameras,
+    // so normals are consistent across a surface and sum cleanly per cluster.
+    if (patch.mean_view_dir.squaredNorm() > 0 &&
+        patch.normal.dot(patch.mean_view_dir) < 0) {
+      patch.normal = -patch.normal;
+    }
 
     // Region: majority vote over observing keyframes.
     std::map<uint32_t, int> votes;
@@ -213,7 +236,31 @@ void PatchGrid::Build(const LiveMap& map) {
               ->first;
     }
 
+    RegionAccum& acc = region_accum[patch.region_id];
+    for (const auto& c : centers) {
+      acc.cam_sum += c;
+      ++acc.cam_count;
+    }
+    acc.cen_sum += patch.centroid;
+    ++acc.cen_count;
+
     ScorePatch(patch);
+  }
+
+  // Region frames: forward = camera-coverage centroid -> region centroid,
+  // flattened onto the world floor plane (Y up).
+  for (const auto& [id, acc] : region_accum) {
+    if (acc.cam_count == 0 || acc.cen_count == 0) continue;
+    RegionFrame frame;
+    frame.cam_centroid = acc.cam_sum / acc.cam_count;
+    frame.centroid = acc.cen_sum / acc.cen_count;
+    Eigen::Vector3d fwd = frame.centroid - frame.cam_centroid;
+    fwd.y() = 0;
+    if (fwd.norm() > 0.2) {  // need a real depth axis to call back/left/right
+      frame.forward = fwd.normalized();
+      frame.valid = true;
+    }
+    region_frames_[id] = frame;
   }
 
   // Aggregates: overall and per region (uniform patch area).
@@ -299,6 +346,21 @@ void PatchGrid::ScorePatch(Patch& patch) const {
   patch.score = static_cast<float>(std::min(weighted, min_sub + 35.0));
 }
 
+int PatchGrid::WallSide(const WeakArea& area) const {
+  const auto it = region_frames_.find(area.region_id);
+  if (it == region_frames_.end() || !it->second.valid) return 0;
+  const RegionFrame& f = it->second;
+  const Eigen::Vector3d up(0, 1, 0);
+  Eigen::Vector3d s = area.centroid - f.cam_centroid;
+  s.y() = 0;
+  if (s.norm() < 1e-3) return 0;
+  const Eigen::Vector3d right = up.cross(f.forward).normalized();  // user's right
+  const double along = s.dot(f.forward);
+  const double lateral = s.dot(right);
+  if (std::abs(lateral) >= std::abs(along)) return lateral > 0 ? 3 : 2;
+  return along >= 0 ? 1 : 4;  // back : front (near the region's entry)
+}
+
 void PatchGrid::FindWeakAreas() {
   // Cluster weak patches over 6-connectivity.
   std::set<PatchKey, bool (*)(const PatchKey&, const PatchKey&)> visited(
@@ -361,7 +423,7 @@ void PatchGrid::FindWeakAreas() {
       for (int i = 0; i < 5; ++i) sub_sum[i] += p->sub[i];
       const int kf_count = std::max<size_t>(1, p->observing_kfs.size());
       z_sum += p->distance_sum / kf_count;
-      view_sum -= p->normal;  // fallback view direction: into the surface
+      view_sum += p->mean_view_dir;  // mean surface->camera direction
     }
     const double n = static_cast<double>(cluster.size());
     area.centroid = centroid / n;
@@ -389,14 +451,24 @@ void PatchGrid::FindWeakAreas() {
       area.surface_kind = 3;  // slanted: object/furniture
     }
 
-    // Suggested move: sideways relative to the surface (perpendicular to
-    // the normal, horizontal), scaled by the parallax a new view needs.
+    // Suggested move: sideways relative to the surface (perpendicular to the
+    // normal, horizontal). The sign points toward the UNDER-observed side —
+    // the cluster's mean view direction leans back toward where the cameras
+    // already are, so step the other way to add the missing parallax.
     const Eigen::Vector3d up(0, 1, 0);
     Eigen::Vector3d sideways = avg_normal.cross(up);
     if (sideways.norm() < 1e-6) sideways = Eigen::Vector3d::UnitX();
-    area.move_dir = sideways.normalized();
+    sideways.normalize();
+    if (view_sum.norm() > 1e-9) {
+      const double bias = view_sum.normalized().dot(sideways);
+      if (bias > 0) sideways = -sideways;  // cameras lean +sideways -> gap is -
+    }
+    area.move_dir = sideways;
     area.move_dist_m =
         std::clamp(2.0 * z_mean * std::tan(DegToRad(5.0)), 0.3, 1.0);
+
+    // Name the wall relative to where the user has stood in this region.
+    area.surface_side = area.surface_kind == 0 ? WallSide(area) : 0;
 
     area.priority = (100.0 - area.score) * n /
                     (1.0 + area.centroid.norm() / 3.0);
@@ -459,6 +531,7 @@ void PatchGrid::FillSnapshot(std::vector<bs_snap_patch>& patches,
     w.region_id = area.region_id;
     w.deficiency = area.deficiency;
     w.surface_kind = area.surface_kind;
+    w.surface_side = area.surface_side;
     w.move_dir[0] = static_cast<float>(area.move_dir.x());
     w.move_dir[1] = static_cast<float>(area.move_dir.y());
     w.move_dir[2] = static_cast<float>(area.move_dir.z());

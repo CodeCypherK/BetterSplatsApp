@@ -118,6 +118,41 @@ TEST(Readiness, WeakAreaDiagnosesTextureDeficiency) {
   EXPECT_LE(area.move_dist_m, 1.0);
 }
 
+TEST(Readiness, GuidancePointsToUnobservedSide) {
+  MapBuilder b;
+  // Every camera is bunched on the +x side of the wall, so the -x side has no
+  // coverage; guidance must send the user toward -x, not back into the
+  // already-covered +x side.
+  const auto kfs = b.AddArcKeyframes(4, 0.6, /*x_offset=*/1.4);
+  b.AddWallPoints(-0.15, 0.15, 0.02, 0.32, 6, 6, kfs, /*gradient=*/3,
+                  /*angle=*/1.0, /*err=*/1.2);
+
+  PatchGrid grid;
+  grid.Build(b.map);
+  ASSERT_FALSE(grid.weak_areas().empty());
+  const WeakArea& area = grid.weak_areas().front();
+  EXPECT_EQ(area.surface_kind, 0);              // wall (normal along z)
+  EXPECT_LT(area.move_dir.x(), -0.3);           // toward the empty -x side
+  EXPECT_LT(std::abs(area.move_dir.y()), 0.3);  // horizontal
+  EXPECT_NEAR(area.move_dir.norm(), 1.0, 1e-6);
+}
+
+TEST(Readiness, WeakWallNamedBackRelativeToViewer) {
+  MapBuilder b;
+  // Cameras near the origin looking +Z at a low-texture wall straight ahead:
+  // the region's forward axis is +Z, so the weak wall is the "back" wall.
+  const auto kfs = b.AddArcKeyframes(6, 1.2);
+  b.AddWallPoints(-0.15, 0.15, 0.02, 0.32, 6, 6, kfs, /*gradient=*/2,
+                  /*angle=*/5.0, /*err=*/0.6);
+
+  PatchGrid grid;
+  grid.Build(b.map);
+  ASSERT_FALSE(grid.weak_areas().empty());
+  const WeakArea& area = grid.weak_areas().front();
+  EXPECT_EQ(area.surface_kind, 0);  // wall
+  EXPECT_EQ(area.surface_side, 1);  // back wall, ahead of the viewer
+}
+
 TEST(Readiness, FloorClassification) {
   MapBuilder b;
   // Cameras looking down at the floor from above: floor points at y=0

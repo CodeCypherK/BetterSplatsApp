@@ -227,6 +227,7 @@ typedef struct bs_snap_weak_area {
   uint32_t region_id;
   int32_t deficiency;   /* index of argmin sub-score: 0..4 as bs_snap_patch.sub */
   int32_t surface_kind; /* 0 wall, 1 floor, 2 ceiling, 3 object            */
+  int32_t surface_side; /* wall placement: 0 unknown,1 back,2 left,3 right,4 front */
   float move_dir[3];    /* suggested world-space direction (unit)          */
   float move_dist_m;
   float score;          /* aggregate readiness of the cluster              */

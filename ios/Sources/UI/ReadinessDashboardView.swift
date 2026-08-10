@@ -112,12 +112,22 @@ struct ReadinessDashboardView: View {
         return model.snapshot.regions.first { $0.id == area.regionID }?.name
     }
 
+    static func surfaceName(for area: CoreEngine.Snapshot.WeakArea) -> String {
+        guard area.surfaceKind == 0 else {
+            return ["Wall", "Floor", "Ceiling", "Object"][
+                min(3, max(0, area.surfaceKind))]
+        }
+        // Wall: prepend its region-relative placement when known.
+        let side = ["", "Back ", "Left ", "Right ", "Front "][
+            min(4, max(0, area.surfaceSide))]
+        return "\(side)wall"
+    }
+
     static func title(for area: CoreEngine.Snapshot.WeakArea,
                       regionName: String? = nil) -> String {
-        let surface = ["Wall", "Floor", "Ceiling", "Object"][
-            min(3, max(0, area.surfaceKind))]
         let distance = simd_length(area.center)
-        let base = String(format: "%@ · %.1f m away", surface, distance)
+        let base = String(format: "%@ · %.1f m away",
+                          surfaceName(for: area), distance)
         if let regionName { return "\(regionName) — \(base)" }
         return base
     }

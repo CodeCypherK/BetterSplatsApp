@@ -35,8 +35,16 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref_name }}
         run: |
-          gh release create "$TAG" dist/*.ipa \
-            --repo "$GITHUB_REPOSITORY" \
-            --target "$GITHUB_SHA" \
-            --title "BetterSplats $TAG" \
-            --generate-notes
+          # The release may already exist when the tag was created through
+          # the GitHub UI ("draft a new release" fires this workflow via the
+          # tag push) — upload into it instead of failing.
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/*.ipa \
+              --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create "$TAG" dist/*.ipa \
+              --repo "$GITHUB_REPOSITORY" \
+              --target "$GITHUB_SHA" \
+              --title "BetterSplats $TAG" \
+              --generate-notes
+          fi

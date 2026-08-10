@@ -122,6 +122,7 @@ EngineConfig EngineConfig::FromJson(const char* text, bool* ok) {
   get_to(j, "final_merge_min_inlier_frac", c.final_merge_min_inlier_frac);
   get_to(j, "final_component_grow_iters", c.final_component_grow_iters);
   get_to(j, "final_max_components", c.final_max_components);
+  get_to(j, "final_include_scout", c.final_include_scout);
 
   get_to(j, "floater_sigma_gate", c.floater_sigma_gate);
   get_to(j, "floater_min_rays", c.floater_min_rays);

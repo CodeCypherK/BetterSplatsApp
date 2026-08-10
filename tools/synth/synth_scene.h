@@ -95,4 +95,12 @@ std::vector<SE3> OrbitTrajectory(int frame_count, double radius_x, double radius
 std::vector<SE3> WalkthroughTrajectory(int frame_count, double eye_height,
                                        uint32_t seed);
 
+// The optional opening circuit: one fast lap of both rooms hugging the
+// walls with the camera aimed INWARD across each space. Deliberately unlike
+// the capture walk — it maximizes how much of the room each frame sees and
+// how far apart the views are, which is what a localization scaffold needs
+// and the opposite of what splat detail needs. Never reconstructed from.
+std::vector<SE3> ScoutTrajectory(int frame_count, double eye_height,
+                                 uint32_t seed);
+
 }  // namespace bs::synth

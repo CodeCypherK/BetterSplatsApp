@@ -123,6 +123,10 @@ struct EngineConfig {
   int final_component_grow_iters = 4;   // PnP/triangulate passes per component
   int final_max_components = 6;         // recovery attempts per solve
 
+  // Scout-pass frames are a localization scaffold, not reconstruction input.
+  // Set true only to study what they would contribute.
+  bool final_include_scout = false;
+
   // --- floater sweep ---
   float floater_sigma_gate = 4.0f;
   int floater_min_rays = 2;

@@ -390,6 +390,74 @@ std::vector<SE3> OrbitTrajectory(int frame_count, double radius_x, double radius
   return poses;
 }
 
+std::vector<SE3> ScoutTrajectory(int frame_count, double eye_height,
+                                 uint32_t seed) {
+  // Hug the perimeter of both rooms, always looking across the space rather
+  // than along the wall behind you. The look target is the centre of
+  // whichever room you are currently in, so every frame sees a whole room.
+  const std::vector<Eigen::Vector3d> waypoints = {
+      {-2.3, 0, 3.3},   // room A, front-left
+      {-2.3, 0, -3.3},  // room A, back-left  (facing the blank wall's room)
+      {2.3, 0, -3.3},   // room A, back-right
+      {2.6, 0, -0.2},   // toward the doorway
+      {4.0, 0, 0.0},    // through it
+      {5.0, 0, -3.3},   // room B, back-left
+      {8.3, 0, -3.3},   // room B, back-right
+      {8.3, 0, 3.3},    // room B, front-right
+      {5.0, 0, 3.3},    // room B, front-left
+      {4.0, 0, 0.2},    // back through the doorway
+      {2.3, 0, 3.3},    // room A, front-right
+      {-2.3, 0, 3.3},   // home
+  };
+
+  std::vector<double> arc(waypoints.size(), 0.0);
+  for (size_t i = 1; i < waypoints.size(); ++i) {
+    arc[i] = arc[i - 1] + (waypoints[i] - waypoints[i - 1]).norm();
+  }
+  const double total = arc.back();
+
+  auto sample = [&](double s) {
+    const double target = std::clamp(s, 0.0, 1.0) * total;
+    size_t seg = 1;
+    while (seg + 1 < arc.size() && arc[seg] < target) ++seg;
+    const double span = std::max(1e-9, arc[seg] - arc[seg - 1]);
+    const double f = std::clamp((target - arc[seg - 1]) / span, 0.0, 1.0);
+    return waypoints[seg - 1] + f * (waypoints[seg] - waypoints[seg - 1]);
+  };
+
+  std::vector<SE3> poses;
+  poses.reserve(frame_count);
+  std::mt19937 rng(seed);
+  std::normal_distribution<double> gauss(0.0, 1.0);
+  double jitter_y = 0.0;
+
+  for (int i = 0; i < frame_count; ++i) {
+    const double s = static_cast<double>(i) / std::max(1, frame_count - 1);
+    jitter_y = 0.97 * jitter_y + 0.004 * gauss(rng);
+    Eigen::Vector3d position = sample(s);
+    position.y() = eye_height + jitter_y;
+
+    // Aim at the centre of the room we are standing in — that is what
+    // "back to the wall, scanning inward" produces.
+    const Eigen::Vector3d room_centre =
+        position.x() < 3.0 ? Eigen::Vector3d(0.0, eye_height * 0.8, 0.0)
+                           : Eigen::Vector3d(6.0, eye_height * 0.8, 0.0);
+    Eigen::Vector3d forward = room_centre - position;
+    if (forward.norm() < 1e-6) forward = Eigen::Vector3d(0, 0, -1);
+    forward.normalize();
+
+    const Eigen::Vector3d world_up(0, 1, 0);
+    const Eigen::Vector3d right = forward.cross(world_up).normalized();
+    const Eigen::Vector3d down = forward.cross(right).normalized();
+    Eigen::Matrix3d R_cw;
+    R_cw.col(0) = right;
+    R_cw.col(1) = down;
+    R_cw.col(2) = forward;
+    poses.push_back(SE3::FromCamToWorld(Eigen::Quaterniond(R_cw), position));
+  }
+  return poses;
+}
+
 std::vector<SE3> WalkthroughTrajectory(int frame_count, double eye_height,
                                        uint32_t seed) {
   // Closed loop: sweep room A, through the doorway, around room B, back

@@ -41,6 +41,14 @@ struct FrameMeta {
   QualityInfo quality;
   bool is_keyframe = false;
   std::string store_reason = "gate";  // "gate" | "kf" | "burst"
+  // Which capture pass produced this frame. "scout" frames come from the
+  // optional opening circuit — a fast walk of the whole space, back to the
+  // walls, scanning inward. They exist to hold position later, never to be
+  // reconstructed from: too fast, too far from surfaces, too few per room.
+  // The final solve skips them. Absent in older sessions -> "capture".
+  std::string pass = "capture";  // "capture" | "scout"
+
+  bool is_scout() const { return pass == "scout"; }
 
   std::string ToJson() const;
   static std::optional<FrameMeta> FromJson(const std::string& text);

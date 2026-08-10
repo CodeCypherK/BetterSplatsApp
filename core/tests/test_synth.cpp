@@ -222,6 +222,80 @@ TEST_F(SynthTest, WalkthroughClosesItsLoopAcrossBothRooms) {
   EXPECT_LT(gap, 0.35) << "walkthrough must revisit its starting viewpoint";
 }
 
+TEST_F(SynthTest, ScoutCircuitHugsWallsAndFacesInward) {
+  // The scout pass exists to see as much of each room as possible from as
+  // far apart as possible — back to the wall, camera across the space. That
+  // is the opposite of the capture walk, and the reason it makes a good
+  // localization scaffold and a bad reconstruction input.
+  const std::vector<SE3> poses = synth::ScoutTrajectory(120, 1.5, /*seed=*/4);
+  ASSERT_EQ(poses.size(), 120u);
+
+  int facing_inward = 0;
+  int near_perimeter = 0;
+  for (const auto& p : poses) {
+    const Eigen::Vector3d c = p.CameraCenter();
+    // Perimeter: within arm's reach of a wall of the room you are in (room A
+    // spans x in [-3,3], room B x in [3,9], both z in [-4,4]). Crossing from
+    // a doorway to the next wall is a short diagonal through open floor, so
+    // this is a strong majority rather than every single frame.
+    const double x_lo = c.x() < 3.0 ? -3.0 : 3.0;
+    const double x_hi = c.x() < 3.0 ? 3.0 : 9.0;
+    const double to_wall =
+        std::min({std::abs(c.x() - x_lo), std::abs(c.x() - x_hi),
+                  std::abs(c.z() - (-4.0)), std::abs(c.z() - 4.0)});
+    if (to_wall < 1.2) ++near_perimeter;
+
+    // Optical axis points at the centre of the room being stood in.
+    const Eigen::Vector3d centre =
+        c.x() < 3.0 ? Eigen::Vector3d(0, 1.2, 0) : Eigen::Vector3d(6, 1.2, 0);
+    const Eigen::Vector3d forward = p.Inverse().q * Eigen::Vector3d(0, 0, 1);
+    if (forward.dot((centre - c).normalized()) > 0.9) ++facing_inward;
+  }
+  EXPECT_GT(near_perimeter, 100) << "scout should hug the perimeter";
+  EXPECT_GT(facing_inward, 100) << "scout frames should look across the room";
+
+  // Both rooms visited, and the circuit closes.
+  bool room_a = false, room_b = false;
+  for (const auto& p : poses) {
+    if (p.CameraCenter().x() < 0.0) room_a = true;
+    if (p.CameraCenter().x() > 6.0) room_b = true;
+  }
+  EXPECT_TRUE(room_a);
+  EXPECT_TRUE(room_b);
+  EXPECT_LT((poses.back().CameraCenter() - poses.front().CameraCenter()).norm(),
+            0.5);
+}
+
+TEST_F(SynthTest, ScoutFramesAreTaggedAndSeparableFromCapture) {
+  synth::GenerateOptions o;
+  o.out_dir = dir_;
+  o.frame_count = 8;
+  o.scout_frames = 5;
+  o.two_room = true;
+  o.image_width = 160;
+  o.image_height = 120;
+  o.depth_width = 80;
+  o.depth_height = 60;
+  o.seed = 4;
+  ASSERT_TRUE(synth::GenerateSession(o));
+
+  const auto session = SessionReader::Open(dir_);
+  ASSERT_TRUE(session.has_value());
+  int scout = 0, capture = 0;
+  for (const uint32_t id : session->frame_ids()) {
+    const auto meta = session->ReadMeta(id);
+    ASSERT_TRUE(meta.has_value());
+    if (meta->is_scout()) {
+      ++scout;
+      EXPECT_LE(id, 5u) << "scout frames come first";
+    } else {
+      ++capture;
+    }
+  }
+  EXPECT_EQ(scout, 5);
+  EXPECT_EQ(capture, 8);
+}
+
 TEST_F(SynthTest, TwoRoomSceneHasAnOpenDoorway) {
   const synth::Scene scene = synth::MakeTwoRoomScene(4);
   // A ray straight through the doorway from room A must reach room B's far

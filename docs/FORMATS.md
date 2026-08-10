@@ -75,13 +75,34 @@ Invalid samples are NaN (preferred) or 0. Uncompressed size is always
   "exposure": { "duration_s": 0.008, "iso": 200, "bias_ev": 0.0 },
   "quality":  { "lap_var": 312.5, "overexp_frac": 0.003 },
   "is_keyframe": true,
-  "store_reason": "kf"              // "gate" | "kf" | "burst"
+  "store_reason": "kf",             // "gate" | "kf" | "burst"
+  "pass": "capture"                 // "capture" | "scout"; absent => capture
 }
 ```
 
 Per-frame intrinsics are recorded even though AF is locked (OIS and focus
 breathing shift them slightly); the reconstruction uses the session camera
 from `calibration.json` unless per-frame drift exceeds its fit residual.
+
+### Passes
+
+`pass` marks which capture pass produced the frame.
+
+- **`scout`** — the optional opening circuit: one fast lap of the whole
+  space, back to the walls, camera aimed across each room. It exists to
+  build a localization scaffold that later passes hold position against, and
+  to establish the session's world frame and room list up front. Those
+  frames are walked fast, far from every surface, and cover each room only
+  briefly, so **the final solve excludes them** (`final_include_scout`
+  overrides, for study only) and they never appear in `colmap/images/`.
+- **`capture`** — ordinary detail capture, and the default for any frame
+  written before this field existed. These are the frames reconstructed and
+  exported.
+
+Scout frames are still written to RAW like any other: they are real
+measurements, the Linux replay needs them to reproduce a session, and
+"excluded from the reconstruction" is a solve-time decision, never a reason
+to discard captured data.
 
 ## `calibration.json` (per session)
 

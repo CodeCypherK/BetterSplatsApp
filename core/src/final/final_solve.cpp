@@ -5,6 +5,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <map>
 #include <numeric>
 #include <random>
@@ -351,9 +352,33 @@ FinalOutcome RunFinalSolve(const EngineConfig& config,
     }
   }
 
+  // Scout frames are a localization scaffold, not reconstruction input: the
+  // opening circuit is walked fast, far from every surface, and covers each
+  // room only briefly. Their images would drag a splat's appearance and
+  // their geometry adds nothing the capture pass does not cover, so they are
+  // excluded here — which also keeps them out of the exported images/.
+  std::vector<uint32_t> solve_frame_ids;
+  uint32_t scout_skipped = 0;
+  for (const uint32_t frame_id : session->frame_ids()) {
+    if (!config.final_include_scout) {
+      const auto meta = session->ReadMeta(frame_id);
+      if (meta && meta->is_scout()) {
+        ++scout_skipped;
+        continue;
+      }
+    }
+    solve_frame_ids.push_back(frame_id);
+  }
+  if (scout_skipped > 0) {
+    BS_LOGI("final", "excluding %u scout frames; solving on %zu capture frames",
+            scout_skipped, solve_frame_ids.size());
+  }
+  metrics.scout_frames_excluded = scout_skipped;
+  if (solve_frame_ids.size() < 2) return fail("session has <2 capture frames");
+
   // Feature choice: SIFT for the quality preset when the session fits the
   // transient descriptor budget (or forced by config), else ORB.
-  const size_t session_frames = session->frame_ids().size();
+  const size_t session_frames = solve_frame_ids.size();
   const bool use_sift =
       !fast && (config.final_use_sift == 1 ||
                 (config.final_use_sift == 2 &&
@@ -367,7 +392,7 @@ FinalOutcome RunFinalSolve(const EngineConfig& config,
     fs::create_directories(cache_dir, ec);
   }
   const uint64_t config_hash =
-      CacheConfigHash(config, use_sift, fast, session->frame_ids());
+      CacheConfigHash(config, use_sift, fast, solve_frame_ids);
   bool cache_valid = false;
   {
     std::ifstream manifest(cache_dir / "manifest.txt");
@@ -389,7 +414,7 @@ FinalOutcome RunFinalSolve(const EngineConfig& config,
   metrics.images_total = static_cast<uint32_t>(session_frames);
   {
     int done = 0;
-    for (const uint32_t frame_id : session->frame_ids()) {
+    for (const uint32_t frame_id : solve_frame_ids) {
       if (cancelled()) {
         outcome.cancelled = true;
         return outcome;
@@ -659,7 +684,188 @@ FinalOutcome RunFinalSolve(const EngineConfig& config,
     report(BS_STAGE_TRACKS, 1.0f);
   }
 
+  // Depth + solver lookup for one frame, built once. Component recovery and
+  // the BA rounds both need these, and they must be created together: a
+  // frame carrying `depth` without `lookup` silently contributes zero LiDAR
+  // residuals, which un-anchors the geometry.
+  auto ensure_depth = [&](FrameData& frame) {
+    if (frame.depth && frame.lookup) return;
+    const auto meta = session->ReadMeta(frame.frame_id);
+    const auto depth_img = session->ReadDepth(frame.frame_id);
+    if (!meta || !depth_img) return;
+    const Intrinsics kd{meta->depth_intrinsics.fx, meta->depth_intrinsics.fy,
+                        meta->depth_intrinsics.cx, meta->depth_intrinsics.cy,
+                        depth_img->width, depth_img->height};
+    LidarConfidenceOptions lo;
+    lo.sigma_base_m = config.lidar_sigma_base_m;
+    lo.sigma_quadratic = config.lidar_sigma_quadratic;
+    lo.range_min_m = config.lidar_range_min_m;
+    lo.range_full_m = config.lidar_range_full_m;
+    lo.range_zero_m = config.lidar_range_zero_m;
+    frame.depth = std::make_shared<DepthFrame>(*depth_img, kd, lo);
+    frame.lookup = std::make_shared<DepthLookup>(*frame.depth);
+  };
+
+  // One reconstruction component in its own gauge: a seed pair grown by PnP
+  // against its own points, optionally scaled to metres by LiDAR. Used both
+  // to start the model from images alone and to rebuild stretches the live
+  // pass never posed.
+  struct Component {
+    std::unordered_map<int, SE3> pose;                 // frame index -> pose
+    std::unordered_map<int, Eigen::Vector3d> point;    // track index -> X
+    bool metric = false;
+    int seed_a = -1, seed_b = -1;
+  };
+
+  auto build_component =
+      [&](const std::function<bool(int)>& eligible) -> std::optional<Component> {
+    // --- seed: strongest verified pair with real parallax among candidates
+    const PairMatches* seed = nullptr;
+    TwoViewResult seed_rel;
+    size_t seed_score = 0;
+    for (const auto& pm : verified) {
+      if (!eligible(pm.a) || !eligible(pm.b)) continue;
+      if (pm.inliers.size() <= seed_score) continue;
+      std::vector<cv::Point2f> pa, pb;
+      pa.reserve(pm.inliers.size());
+      pb.reserve(pm.inliers.size());
+      for (const auto& m : pm.inliers) {
+        pa.push_back(frames[pm.a].undistorted[m.idx_a]);
+        pb.push_back(frames[pm.b].undistorted[m.idx_b]);
+      }
+      TwoViewOptions tv;
+      tv.ransac_thresh_px = config.final_ransac_px;
+      tv.min_median_tri_angle_deg = config.final_tri_min_angle_deg;
+      const TwoViewResult rel =
+          EstimateRelativePose(pa, pb, frames[pm.a].K, tv);
+      // A plane-dominated pair carries the conjugate-plane ambiguity and may
+      // return the wrong branch — never seed a component from one.
+      if (!rel.ok() || rel.planar_ambiguous) continue;
+      seed = &pm;
+      seed_rel = rel;
+      seed_score = pm.inliers.size();
+    }
+    if (seed == nullptr) return std::nullopt;
+
+    Component comp;
+    comp.seed_a = seed->a;
+    comp.seed_b = seed->b;
+    // Seed frame defines the component's world; the partner's pose is the
+    // relative pose directly (unit baseline until LiDAR sets the scale).
+    comp.pose[seed->a] = SE3::Identity();
+    comp.pose[seed->b] = seed_rel.rel_pose;
+
+    auto retriangulate = [&] {
+      comp.point.clear();
+      for (size_t t = 0; t < tracks.size(); ++t) {
+        if (tracks[t].dead) continue;
+        std::vector<Observation2D> obs;
+        for (const auto& to : tracks[t].observations) {
+          const auto it = comp.pose.find(to.frame_index);
+          if (it == comp.pose.end()) continue;
+          obs.push_back({it->second, frames[to.frame_index].K,
+                         frames[to.frame_index].undistorted[to.feature]});
+        }
+        if (obs.size() < 2) continue;
+        const auto tri = TriangulatePoint(obs);
+        if (!tri || !tri->InFrontOfAll()) continue;
+        if (tri->max_angle_deg < config.final_tri_min_angle_deg) continue;
+        if (tri->max_reproj_error_px > config.final_tri_max_err_px) continue;
+        comp.point[static_cast<int>(t)] = tri->point;
+      }
+    };
+    retriangulate();
+
+    // --- grow: PnP eligible frames against this component's own points
+    for (int iter = 0; iter < config.final_component_grow_iters; ++iter) {
+      int added = 0;
+      for (size_t i = 0; i < frames.size(); ++i) {
+        const int idx = static_cast<int>(i);
+        if (!eligible(idx) || comp.pose.count(idx)) continue;
+        FrameData& frame = frames[i];
+        std::vector<cv::Point3f> object_points;
+        std::vector<cv::Point2f> image_points;
+        for (size_t feat = 0; feat < frame.track_of_feature.size(); ++feat) {
+          const int32_t t = frame.track_of_feature[feat];
+          if (t < 0) continue;
+          const auto it = comp.point.find(t);
+          if (it == comp.point.end()) continue;
+          object_points.emplace_back(static_cast<float>(it->second.x()),
+                                     static_cast<float>(it->second.y()),
+                                     static_cast<float>(it->second.z()));
+          image_points.push_back(frame.undistorted[feat]);
+        }
+        if (static_cast<int>(object_points.size()) <
+            config.final_register_min_inliers) {
+          continue;
+        }
+        cv::Mat camera = (cv::Mat_<double>(3, 3) << frame.K.fx, 0, frame.K.cx, 0,
+                          frame.K.fy, frame.K.cy, 0, 0, 1);
+        cv::Mat rvec, tvec;
+        std::vector<int> inliers;
+        if (!cv::solvePnPRansac(
+                object_points, image_points, camera, cv::noArray(), rvec, tvec,
+                false, 200, static_cast<float>(config.final_register_thresh_px),
+                0.999, inliers, cv::SOLVEPNP_EPNP) ||
+            static_cast<int>(inliers.size()) <
+                config.final_register_min_inliers) {
+          continue;
+        }
+        cv::Mat R;
+        cv::Rodrigues(rvec, R);
+        Eigen::Matrix3d rot;
+        for (int r = 0; r < 3; ++r) {
+          for (int c = 0; c < 3; ++c) rot(r, c) = R.at<double>(r, c);
+        }
+        SE3 pose;
+        pose.q = Eigen::Quaterniond(rot).normalized();
+        pose.t = Eigen::Vector3d(tvec.at<double>(0), tvec.at<double>(1),
+                                 tvec.at<double>(2));
+        comp.pose[idx] = pose;
+        ++added;
+      }
+      retriangulate();
+      if (added == 0) break;
+    }
+
+    // --- metric anchor: LiDAR fixes this component's scale, exactly as it
+    // fixes the live map's gauge at bootstrap.
+    std::vector<double> ratios;
+    for (const auto& [track_index, X] : comp.point) {
+      for (const auto& to : tracks[track_index].observations) {
+        const auto pit = comp.pose.find(to.frame_index);
+        if (pit == comp.pose.end()) continue;
+        FrameData& f = frames[to.frame_index];
+        ensure_depth(f);
+        if (!f.depth) continue;
+        const Eigen::Vector3d xc = pit->second.Apply(X);
+        if (xc.z() < 0.05) continue;
+        const auto& dK = f.depth->K();
+        const int u =
+            static_cast<int>(std::lround(dK.fx * xc.x() / xc.z() + dK.cx));
+        const int v =
+            static_cast<int>(std::lround(dK.fy * xc.y() / xc.z() + dK.cy));
+        if (!f.depth->Valid(u, v)) continue;
+        const double d = f.depth->DepthAt(u, v);
+        if (d > 0.05) ratios.push_back(d / xc.z());
+      }
+    }
+    const ScaleEstimate est = EstimateScale(std::move(ratios));
+    if (est.locked) {
+      for (auto& [_, pose] : comp.pose) pose.t *= est.scale;
+      for (auto& [_, X] : comp.point) X *= est.scale;
+      comp.metric = true;
+    }
+    return comp;
+  };
+
   // ---------------------------------------------------------- S6 pose init
+  //
+  // Live poses are an initialization hint, not a dependency. When the live
+  // pass produced too few to start from — it failed, or the user skipped
+  // straight to a capture pass — the model is bootstrapped from image
+  // geometry instead, which is what "the final solve recomputes everything"
+  // has to mean if a live failure is not to become a final failure.
   {
     const auto live_poses = LoadLivePoses(session_dir);
     int posed = 0;
@@ -671,8 +877,29 @@ FinalOutcome RunFinalSolve(const EngineConfig& config,
         ++posed;
       }
     }
+
+    if (posed < 2) {
+      BS_LOGI("final",
+              "live initialization unusable (%d posed) — bootstrapping the "
+              "model from image geometry",
+              posed);
+      auto unposed = [&](int i) { return !frames[i].posed; };
+      const auto comp = build_component(unposed);
+      if (!comp || comp->pose.size() < 2) {
+        return fail("no usable initial image pair to bootstrap the solve");
+      }
+      // The first component defines the session's world gauge, so its poses
+      // are adopted directly — there is nothing yet to align against.
+      for (const auto& [frame_index, pose] : comp->pose) {
+        frames[frame_index].pose = pose;
+        frames[frame_index].posed = true;
+        ++posed;
+      }
+      metrics.components_recovered = 1;
+      metrics.frames_recovered = static_cast<uint32_t>(comp->pose.size());
+    }
+
     metrics.images_registered = posed;
-    if (posed < 2) return fail("live initialization has <2 posed frames");
     report(BS_STAGE_INIT_POSES, 1.0f);
   }
 
@@ -705,28 +932,6 @@ FinalOutcome RunFinalSolve(const EngineConfig& config,
     report(BS_STAGE_TRIANGULATE, 1.0f);
   }
 
-  // Depth + solver lookup for one frame, built once. Both the component
-  // recovery below and the BA rounds need these, and they must be created
-  // together: a frame carrying `depth` without `lookup` silently contributes
-  // zero LiDAR residuals, which un-anchors the geometry.
-  auto ensure_depth = [&](FrameData& frame) {
-    if (frame.depth && frame.lookup) return;
-    const auto meta = session->ReadMeta(frame.frame_id);
-    const auto depth_img = session->ReadDepth(frame.frame_id);
-    if (!meta || !depth_img) return;
-    const Intrinsics kd{meta->depth_intrinsics.fx, meta->depth_intrinsics.fy,
-                        meta->depth_intrinsics.cx, meta->depth_intrinsics.cy,
-                        depth_img->width, depth_img->height};
-    LidarConfidenceOptions lo;
-    lo.sigma_base_m = config.lidar_sigma_base_m;
-    lo.sigma_quadratic = config.lidar_sigma_quadratic;
-    lo.range_min_m = config.lidar_range_min_m;
-    lo.range_full_m = config.lidar_range_full_m;
-    lo.range_zero_m = config.lidar_range_zero_m;
-    frame.depth = std::make_shared<DepthFrame>(*depth_img, kd, lo);
-    frame.lookup = std::make_shared<DepthLookup>(*frame.depth);
-  };
-
   // ------------------------------------- S7b multi-component recovery
   //
   // Frames the live pass never posed are unreachable by PnP when they see no
@@ -753,163 +958,21 @@ FinalOutcome RunFinalSolve(const EngineConfig& config,
       for (size_t i = 0; i < frames.size(); ++i) remaining += eligible(i) ? 1 : 0;
       if (remaining < config.final_component_min_frames) break;
 
-      // --- seed: strongest verified pair with real parallax, both unposed
-      const PairMatches* seed = nullptr;
-      TwoViewResult seed_rel;
-      size_t seed_score = 0;
-      for (const auto& pm : verified) {
-        if (!eligible(pm.a) || !eligible(pm.b)) continue;
-        if (pm.inliers.size() <= seed_score) continue;
-        std::vector<cv::Point2f> pa, pb;
-        pa.reserve(pm.inliers.size());
-        pb.reserve(pm.inliers.size());
-        for (const auto& m : pm.inliers) {
-          pa.push_back(frames[pm.a].undistorted[m.idx_a]);
-          pb.push_back(frames[pm.b].undistorted[m.idx_b]);
-        }
-        TwoViewOptions tv;
-        tv.ransac_thresh_px = config.final_ransac_px;
-        tv.min_median_tri_angle_deg = config.final_tri_min_angle_deg;
-        const TwoViewResult rel =
-            EstimateRelativePose(pa, pb, frames[pm.a].K, tv);
-        // A plane-dominated pair carries the conjugate-plane ambiguity and
-        // may return the wrong branch — never seed a component from one.
-        if (!rel.ok() || rel.planar_ambiguous) continue;
-        seed = &pm;
-        seed_rel = rel;
-        seed_score = pm.inliers.size();
-      }
-      if (seed == nullptr) {
+      const auto comp = build_component(eligible);
+      if (!comp) {
         // Nothing left that can start a component.
         for (size_t i = 0; i < frames.size(); ++i) {
           if (!frames[i].posed) exhausted[i] = true;
         }
         break;
       }
-
-      // --- component gauge: seed frame at the origin, partner from the pair
-      std::unordered_map<int, SE3> comp_pose;
-      // Seed frame defines the component's world; the partner's pose is the
-      // relative pose directly (unit baseline until LiDAR sets the scale).
-      comp_pose[seed->a] = SE3::Identity();
-      comp_pose[seed->b] = seed_rel.rel_pose;
-
-      auto comp_triangulate = [&](const Track& track,
-                                  Eigen::Vector3d& X) -> bool {
-        std::vector<Observation2D> obs;
-        for (const auto& to : track.observations) {
-          const auto it = comp_pose.find(to.frame_index);
-          if (it == comp_pose.end()) continue;
-          obs.push_back({it->second, frames[to.frame_index].K,
-                         frames[to.frame_index].undistorted[to.feature]});
-        }
-        if (obs.size() < 2) return false;
-        const auto tri = TriangulatePoint(obs);
-        if (!tri || !tri->InFrontOfAll()) return false;
-        if (tri->max_angle_deg < config.final_tri_min_angle_deg) return false;
-        if (tri->max_reproj_error_px > config.final_tri_max_err_px) return false;
-        X = tri->point;
-        return true;
-      };
-
-      std::unordered_map<int, Eigen::Vector3d> comp_point;  // track -> X
-      auto retriangulate_component = [&] {
-        comp_point.clear();
-        for (size_t t = 0; t < tracks.size(); ++t) {
-          if (tracks[t].dead) continue;
-          Eigen::Vector3d X;
-          if (comp_triangulate(tracks[t], X)) comp_point[static_cast<int>(t)] = X;
-        }
-      };
-      retriangulate_component();
-
-      // --- grow: PnP eligible frames against this component's own points
-      for (int iter = 0; iter < config.final_component_grow_iters; ++iter) {
-        int added = 0;
-        for (size_t i = 0; i < frames.size(); ++i) {
-          if (!eligible(static_cast<int>(i))) continue;
-          if (comp_pose.count(static_cast<int>(i))) continue;
-          FrameData& frame = frames[i];
-          std::vector<cv::Point3f> object_points;
-          std::vector<cv::Point2f> image_points;
-          for (size_t feat = 0; feat < frame.track_of_feature.size(); ++feat) {
-            const int32_t t = frame.track_of_feature[feat];
-            if (t < 0) continue;
-            const auto it = comp_point.find(t);
-            if (it == comp_point.end()) continue;
-            object_points.emplace_back(static_cast<float>(it->second.x()),
-                                       static_cast<float>(it->second.y()),
-                                       static_cast<float>(it->second.z()));
-            image_points.push_back(frame.undistorted[feat]);
-          }
-          if (static_cast<int>(object_points.size()) <
-              config.final_register_min_inliers) {
-            continue;
-          }
-          cv::Mat camera = (cv::Mat_<double>(3, 3) << frame.K.fx, 0, frame.K.cx,
-                            0, frame.K.fy, frame.K.cy, 0, 0, 1);
-          cv::Mat rvec, tvec;
-          std::vector<int> inliers;
-          const bool ok = cv::solvePnPRansac(
-              object_points, image_points, camera, cv::noArray(), rvec, tvec,
-              false, 200, static_cast<float>(config.final_register_thresh_px),
-              0.999, inliers, cv::SOLVEPNP_EPNP);
-          if (!ok || static_cast<int>(inliers.size()) <
-                         config.final_register_min_inliers) {
-            continue;
-          }
-          cv::Mat R;
-          cv::Rodrigues(rvec, R);
-          Eigen::Matrix3d rot;
-          for (int r = 0; r < 3; ++r) {
-            for (int c = 0; c < 3; ++c) rot(r, c) = R.at<double>(r, c);
-          }
-          SE3 pose;
-          pose.q = Eigen::Quaterniond(rot).normalized();
-          pose.t = Eigen::Vector3d(tvec.at<double>(0), tvec.at<double>(1),
-                                   tvec.at<double>(2));
-          comp_pose[static_cast<int>(i)] = pose;
-          ++added;
-        }
-        retriangulate_component();
-        if (added == 0) break;
-      }
+      const auto& comp_pose = comp->pose;
+      const auto& comp_point = comp->point;
+      const bool component_is_metric = comp->metric;
 
       if (static_cast<int>(comp_pose.size()) < config.final_component_min_frames) {
-        exhausted[seed->a] = exhausted[seed->b] = true;
+        exhausted[comp->seed_a] = exhausted[comp->seed_b] = true;
         continue;
-      }
-
-      // --- metric anchor: LiDAR fixes this component's scale, exactly as it
-      // fixes the live map's gauge at bootstrap.
-      bool component_is_metric = false;
-      {
-        std::vector<double> ratios;
-        for (const auto& [track_index, X] : comp_point) {
-          for (const auto& to : tracks[track_index].observations) {
-            const auto pit = comp_pose.find(to.frame_index);
-            if (pit == comp_pose.end()) continue;
-            FrameData& f = frames[to.frame_index];
-            ensure_depth(f);
-            if (!f.depth) continue;
-            const Eigen::Vector3d xc = pit->second.Apply(X);
-            if (xc.z() < 0.05) continue;
-            const auto& dK = f.depth->K();
-            const int u = static_cast<int>(
-                std::lround(dK.fx * xc.x() / xc.z() + dK.cx));
-            const int v = static_cast<int>(
-                std::lround(dK.fy * xc.y() / xc.z() + dK.cy));
-            if (!f.depth->Valid(u, v)) continue;
-            const double d = f.depth->DepthAt(u, v);
-            if (d > 0.05) ratios.push_back(d / xc.z());
-          }
-        }
-        const ScaleEstimate est = EstimateScale(std::move(ratios));
-        if (est.locked) {
-          for (auto& [_, pose] : comp_pose) pose.t *= est.scale;
-          for (auto& [_, X] : comp_point) X *= est.scale;
-          component_is_metric = true;
-        }
       }
 
       // --- align: tracks reconstructed in BOTH gauges give the transform
@@ -1291,7 +1354,6 @@ FinalOutcome RunFinalSolve(const EngineConfig& config,
       if (!frame.posed || !frame.depth) continue;
       const cv::Mat color_img = cv::imread(frame.jpeg_path, cv::IMREAD_COLOR);
       const SE3 cam_to_world = frame.pose.Inverse();
-      const auto& dK = frame.depth->K();
       for (int y = 0; y < frame.depth->height(); y += 2) {
         for (int x = 0; x < frame.depth->width(); x += 2) {
           if (frame.depth->ConfidenceAt(x, y) < 0.5) continue;

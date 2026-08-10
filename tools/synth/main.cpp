@@ -33,7 +33,9 @@ void PrintUsage() {
                "  --hard            realistic capture: exposure drift + motion\n"
                "                    blur + heavier noise + coarser depth\n"
                "  --two-room        two rooms joined by a doorway, walked as a\n"
-               "                    closed loop that revisits its start\n");
+               "                    closed loop that revisits its start\n"
+               "  --scout N         prepend an N-frame scout circuit (localization\n"
+               "                    scaffold only; excluded from the final solve)\n");
 }
 
 }  // namespace
@@ -77,6 +79,7 @@ int main(int argc, char** argv) {
     else if (arg == "--motion-blur") options.motion_blur = true;
     else if (arg == "--rgb-noise") options.rgb_noise_scale = std::atof(next("--rgb-noise"));
     else if (arg == "--two-room") options.two_room = true;
+    else if (arg == "--scout") options.scout_frames = std::atoi(next("--scout"));
     else if (arg == "--hard") {
       options.exposure_drift = 0.3;
       options.motion_blur = true;

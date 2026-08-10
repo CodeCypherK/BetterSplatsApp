@@ -50,6 +50,7 @@ std::string FrameMeta::ToJson() const {
                   {"overexp_frac", quality.overexp_frac}};
   j["is_keyframe"] = is_keyframe;
   j["store_reason"] = store_reason;
+  j["pass"] = pass;
   return j.dump(2);
 }
 
@@ -80,6 +81,7 @@ std::optional<FrameMeta> FrameMeta::FromJson(const std::string& text) {
   }
   m.is_keyframe = j.value("is_keyframe", false);
   m.store_reason = j.value("store_reason", "gate");
+  m.pass = j.value("pass", "capture");
   return m;
 }
 

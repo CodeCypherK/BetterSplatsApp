@@ -72,11 +72,22 @@ bool GenerateSession(const GenerateOptions& o) {
 
   const Scene scene = o.two_room ? MakeTwoRoomScene(o.seed, o.blank_wall)
                                  : MakeRoomScene(o.seed, o.blank_wall);
-  const std::vector<SE3> poses =
-      o.two_room
-          ? WalkthroughTrajectory(o.frame_count, 1.5, o.seed ^ 0x7777u)
-          : OrbitTrajectory(o.frame_count, 1.6, 2.2, 1.5, o.seed ^ 0x7777u,
-                            o.sweep_deg);
+  std::vector<SE3> poses;
+  // The scout circuit comes first, so the capture pass can localize against
+  // the scaffold it leaves behind — the order is the whole point.
+  const int scout_count = o.two_room ? std::max(0, o.scout_frames) : 0;
+  if (scout_count > 0) {
+    poses = ScoutTrajectory(scout_count, 1.5, o.seed ^ 0x5C0Fu);
+  }
+  {
+    const std::vector<SE3> capture =
+        o.two_room
+            ? WalkthroughTrajectory(o.frame_count, 1.5, o.seed ^ 0x7777u)
+            : OrbitTrajectory(o.frame_count, 1.6, 2.2, 1.5, o.seed ^ 0x7777u,
+                              o.sweep_deg);
+    poses.insert(poses.end(), capture.begin(), capture.end());
+  }
+  const int total_frames = static_cast<int>(poses.size());
 
   DepthNoise noise;
   noise.sigma_base_m *= o.depth_noise_scale;
@@ -97,9 +108,10 @@ bool GenerateSession(const GenerateOptions& o) {
                            K.fy * xc.y() / xc.z() + K.cy);
   };
 
-  for (int i = 0; i < o.frame_count; ++i) {
+  for (int i = 0; i < total_frames; ++i) {
     const uint32_t frame_id = static_cast<uint32_t>(i + 1);
     const SE3& pose = poses[i];
+    const bool is_scout = i < scout_count;
 
     RenderOptions ropts;
     ropts.noise_sigma = static_cast<float>(1.6 * o.rgb_noise_scale);
@@ -109,7 +121,7 @@ bool GenerateSession(const GenerateOptions& o) {
     ropts.gain = static_cast<float>(std::clamp(gain, 0.35, 1.7));
     // Motion blur from the apparent image motion of the scene-centre point
     // between this frame and the last, times a plausible exposure fraction.
-    if (o.motion_blur && i > 0) {
+    if (o.motion_blur && i > 0 && i != scout_count) {
       const Eigen::Vector3d fwd =
           pose.Inverse().q * Eigen::Vector3d(0, 0, 1);
       const Eigen::Vector3d mid = pose.CameraCenter() + fwd * 2.5;
@@ -145,6 +157,7 @@ bool GenerateSession(const GenerateOptions& o) {
     meta.quality.overexp_frac = 0.0;
     meta.is_keyframe = (o.keyframe_every > 0) && (i % o.keyframe_every == 0);
     meta.store_reason = meta.is_keyframe ? "kf" : "gate";
+    meta.pass = is_scout ? "scout" : "capture";
 
     if (!writer.WriteFrame(meta, jpeg, depth)) return false;
 

@@ -28,6 +28,11 @@ struct GenerateOptions {
   // Two connected rooms walked as a closed loop instead of a single-room
   // orbit: exercises region clustering, inter-room drift and loop closure.
   bool two_room = false;
+
+  // Prepend an opening scout circuit of this many frames (0 = none). Those
+  // frames are tagged pass="scout": a localization scaffold only, excluded
+  // from the final reconstruction. Requires two_room (it walks both rooms).
+  int scout_frames = 0;
 };
 
 // Writes a complete synthetic RAW session (frames/, session.json,

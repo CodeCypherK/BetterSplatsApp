@@ -475,6 +475,8 @@ bool LiveSystem::TrackFrame(const LiveFrameInput& input,
   }
 
   if (local_points.size() < 20) {
+    BS_LOGD("live", "frame %u lost: local map too small (%zu points)",
+            input.frame_id, local_points.size());
     state_ = BS_LIVE_LOST;
     guidance_ = BS_GUIDE_TRACKING_LOST;
     return Relocalize(input, features);
@@ -504,6 +506,13 @@ bool LiveSystem::TrackFrame(const LiveFrameInput& input,
     desc_rows.push_back(mp->descriptor);
   }
   if (predictions.size() < 20) {
+    const Eigen::Vector3d pc = predicted.CameraCenter();
+    const Eigen::Vector3d lc = last_pose_.CameraCenter();
+    BS_LOGD("live",
+            "frame %u lost: only %zu of %zu local points project; "
+            "last C=(%.2f,%.2f,%.2f) pred C=(%.2f,%.2f,%.2f) kf=%u",
+            input.frame_id, predictions.size(), local_points.size(), lc.x(),
+            lc.y(), lc.z(), pc.x(), pc.y(), pc.z(), last_kf_id_);
     state_ = BS_LIVE_LOST;
     guidance_ = BS_GUIDE_TRACKING_LOST;
     return Relocalize(input, features);
@@ -583,6 +592,14 @@ bool LiveSystem::TrackFrame(const LiveFrameInput& input,
   }
 
   if (!pnp_ok) {
+    const Eigen::Vector3d pc = predicted.CameraCenter();
+    const Eigen::Vector3d lc = last_pose_.CameraCenter();
+    BS_LOGD("live",
+            "frame %u lost: PnP failed (%zu projected, %d matched); "
+            "last C=(%.2f,%.2f,%.2f) pred C=(%.2f,%.2f,%.2f) feats=%d r=%.0f",
+            input.frame_id, predictions.size(), last_matches_, lc.x(), lc.y(),
+            lc.z(), pc.x(), pc.y(), pc.z(), features.features.size(),
+            base_radius);
     ++consecutive_lost_;
     state_ = BS_LIVE_LOST;
     guidance_ = BS_GUIDE_TRACKING_LOST;
@@ -615,6 +632,32 @@ bool LiveSystem::TrackFrame(const LiveFrameInput& input,
     pose = PoseFromBlocks(q_param, t_param);
   }
 
+  // Motion plausibility. A high inlier count is not proof of a correct pose:
+  // in a room of repeated texture, PnP RANSAC can find a large consistent
+  // set at a completely wrong place (measured: a 5.9 m single-frame jump
+  // accepted with 92/114 inliers). One such pose is unrecoverable — the
+  // local map then projects outside the frustum, so no later frame can
+  // re-acquire by tracking. A held camera has bounded speed, so a pose that
+  // violates it is rejected here and relocalization takes over instead.
+  if (last_track_time_ >= 0.0 && consecutive_lost_ == 0) {
+    const double dt =
+        std::clamp(input.t_capture - last_track_time_, 1.0 / 60.0, 0.5);
+    if (!MotionIsPlausible(last_pose_, pose, dt, config_.track_max_speed_mps,
+                           config_.track_max_rot_dps)) {
+      BS_LOGD("live",
+              "frame %u rejected: implausible motion %.2f m / %.1f deg in "
+              "%.3f s, %d/%d inliers",
+              input.frame_id,
+              (pose.CameraCenter() - last_pose_.CameraCenter()).norm(),
+              RadToDeg(AngularDistance(pose.q, last_pose_.q)), dt,
+              last_inliers_, last_matches_);
+      ++consecutive_lost_;
+      state_ = BS_LIVE_LOST;
+      guidance_ = BS_GUIDE_TRACKING_LOST;
+      return Relocalize(input, features);
+    }
+  }
+
   // Bookkeeping.
   for (const int idx : inliers) {
     if (MapPoint* mp = map_.FindPoint(match_pids[idx])) ++mp->found_count;
@@ -624,6 +667,7 @@ bool LiveSystem::TrackFrame(const LiveFrameInput& input,
     have_prev_pose_ = true;
   }
   last_pose_ = pose;
+  last_track_time_ = input.t_capture;
   consecutive_lost_ = 0;
   state_ = BS_LIVE_TRACKING;
 
@@ -647,6 +691,26 @@ bool LiveSystem::TrackFrame(const LiveFrameInput& input,
     }
     InsertKeyframe(input, features, associations);
     last_kf_time_ = input.t_capture;
+
+    // Adopt the keyframe's post-BA pose. InsertKeyframe runs local bundle
+    // adjustment, which moves both the keyframe poses and the map points;
+    // `last_pose_` was computed before that and is now expressed against a
+    // map that has since shifted underneath it. Leaving it stale makes the
+    // next frame predict from one gauge and match against another — and a
+    // single large correction is then enough to throw every local point out
+    // of the predicted frustum, which is exactly how tracking used to die
+    // one frame after a keyframe (6 of 492 points projecting, permanently).
+    if (const Keyframe* inserted = map_.FindKeyframe(last_kf_id_)) {
+      const double jump =
+          (inserted->pose.CameraCenter() - last_pose_.CameraCenter()).norm();
+      last_pose_ = inserted->pose;
+      // A large correction also invalidates the constant-velocity estimate,
+      // which was measured across the old gauge.
+      if (jump > 0.02) {
+        velocity_ = SE3::Identity();
+        have_prev_pose_ = false;
+      }
+    }
   }
   return true;
 }
@@ -741,6 +805,7 @@ bool LiveSystem::Relocalize(const LiveFrameInput& input,
     if (!ok || static_cast<int>(inliers.size()) < 30) continue;
 
     last_pose_ = PoseFromRvecTvec(rvec, tvec);
+    last_track_time_ = input.t_capture;
     have_prev_pose_ = false;
     velocity_ = SE3::Identity();
     state_ = BS_LIVE_TRACKING;

@@ -47,6 +47,8 @@ EngineConfig EngineConfig::FromJson(const char* text, bool* ok) {
   get_to(j, "live_pnp_thresh_px", c.live_pnp_thresh_px);
   get_to(j, "live_pnp_min_inliers", c.live_pnp_min_inliers);
   get_to(j, "live_queue_depth", c.live_queue_depth);
+  get_to(j, "track_max_speed_mps", c.track_max_speed_mps);
+  get_to(j, "track_max_rot_dps", c.track_max_rot_dps);
 
   get_to(j, "boot_min_matches", c.boot_min_matches);
   get_to(j, "boot_ransac_px", c.boot_ransac_px);
@@ -60,6 +62,7 @@ EngineConfig EngineConfig::FromJson(const char* text, bool* ok) {
   get_to(j, "kf_translation_depth_frac", c.kf_translation_depth_frac);
   get_to(j, "kf_min_rotation_deg", c.kf_min_rotation_deg);
   get_to(j, "kf_max_overlap", c.kf_max_overlap);
+  get_to(j, "kf_min_tracked_inliers", c.kf_min_tracked_inliers);
   get_to(j, "kf_min_blur_lapvar", c.kf_min_blur_lapvar);
   get_to(j, "kf_max_overexposed_frac", c.kf_max_overexposed_frac);
   get_to(j, "kf_min_interval_s", c.kf_min_interval_s);

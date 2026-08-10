@@ -288,5 +288,60 @@ TEST(Fusion, BundleAdjustmentRecoversMetricScale) {
   EXPECT_LT(RadToDeg(AngularDistance(solved1.q, pose1.q)), 0.2);
 }
 
+
+// A large PnP inlier count is not proof of a correct pose: in a room of
+// repeated texture RANSAC can find a big consistent set somewhere wrong.
+// Accepting one such pose is unrecoverable, because the local map then
+// projects outside the predicted frustum and no later frame can re-acquire
+// by tracking. Measured on a walking sweep: a 5.9 m single-frame jump was
+// accepted with 92/114 inliers, and tracking never came back.
+TEST(Tracking, MotionPlausibilityRejectsImpossibleJumps) {
+  const double dt = 1.0 / 30.0;
+  const double max_speed = 4.0;   // m/s
+  const double max_rot = 300.0;   // deg/s
+
+  SE3 previous;
+  previous.q = Eigen::Quaterniond::Identity();
+  previous.t = Eigen::Vector3d::Zero();
+
+  auto at_center = [](const Eigen::Vector3d& c,
+                      const Eigen::Quaterniond& q = Eigen::Quaterniond::Identity()) {
+    return SE3::FromCamToWorld(q, c);
+  };
+
+  // Ordinary handheld motion at 30 fps: ~3 cm and a degree or two.
+  EXPECT_TRUE(MotionIsPlausible(previous, at_center({0.03, 0.0, 0.0}), dt,
+                                max_speed, max_rot));
+  // The measured failure: 5.9 m in a single frame.
+  EXPECT_FALSE(MotionIsPlausible(previous, at_center({5.9, 0.0, 0.0}), dt,
+                                 max_speed, max_rot));
+  // Just inside and just outside the translation limit.
+  const double limit = max_speed * dt;
+  EXPECT_TRUE(MotionIsPlausible(previous, at_center({limit * 0.95, 0, 0}), dt,
+                                max_speed, max_rot));
+  EXPECT_FALSE(MotionIsPlausible(previous, at_center({limit * 1.05, 0, 0}), dt,
+                                 max_speed, max_rot));
+
+  // Rotation is bounded independently of translation: a 120 deg flip in one
+  // frame is impossible even with the camera centre unmoved.
+  const Eigen::Quaterniond flipped(
+      Eigen::AngleAxisd(DegToRad(120.0), Eigen::Vector3d::UnitY()));
+  EXPECT_FALSE(MotionIsPlausible(previous, at_center({0, 0, 0}, flipped), dt,
+                                 max_speed, max_rot));
+  const Eigen::Quaterniond nudged(
+      Eigen::AngleAxisd(DegToRad(3.0), Eigen::Vector3d::UnitY()));
+  EXPECT_TRUE(MotionIsPlausible(previous, at_center({0, 0, 0}, nudged), dt,
+                                max_speed, max_rot));
+
+  // A longer gap between frames proportionally allows more motion — the
+  // limit is a speed, not a per-frame distance.
+  EXPECT_TRUE(MotionIsPlausible(previous, at_center({0.5, 0, 0}), 0.25,
+                                max_speed, max_rot));
+  // With no usable time reference nothing can be judged, so nothing is
+  // rejected (the caller has not tracked a previous frame yet).
+  EXPECT_TRUE(MotionIsPlausible(previous, at_center({99.0, 0, 0}), 0.0,
+                                max_speed, max_rot));
+}
+
 }  // namespace
 }  // namespace bs

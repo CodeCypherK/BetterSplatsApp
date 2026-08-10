@@ -71,7 +71,8 @@ bool LiveSystem::ShouldInsertKeyframe(const LiveFrameInput& input,
   const double overlap =
       static_cast<double>(tracked_inliers) /
       std::max(1, last_kf->AssociatedCount());
-  const bool losing_overlap = overlap < config_.kf_max_overlap;
+  const bool losing_overlap = overlap < config_.kf_max_overlap ||
+                              tracked_inliers < config_.kf_min_tracked_inliers;
 
   // Forced keyframe when moving continuously without one.
   const bool forced =
@@ -121,6 +122,8 @@ void LiveSystem::InsertKeyframe(
   }
 
   last_kf_id_ = added.kf_id;
+  BS_LOGD("live", "keyframe %u at frame %u (%zu kfs, %zu points)", added.kf_id,
+          added.frame_id, map_.keyframes().size(), map_.points().size());
   EmitDirective(added.frame_id, BS_STORE_KEYFRAME, true);
 
   TriangulateNewPoints(added);

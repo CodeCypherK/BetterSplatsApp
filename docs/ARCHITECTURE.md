@@ -173,23 +173,31 @@ low scores, i.e. a worklist.
 
 ## Known limitations (measured)
 
-**Live tracking is fragile on walking trajectories, which currently caps
-what the scout pass delivers.** The scaffold machinery works end to end —
-the map persists, loads, reports its metric status, and a capture pass has
-been observed relocalizing against scaffold keyframes — but on the two-room
-walkthrough the scout circuit itself loses tracking partway and produces
-only ~14 keyframes over a 38 m lap (one per 2.7 m). ORB does not match
-reliably across viewpoint changes that large, so the capture pass
-relocalizes only intermittently (~2% of frames tracked). Keyframe density
-is not the binding constraint — the scout-specific gates
-(`scout_kf_*_scale`) do not change the count, because insertion is gated by
-tracking succeeding at all.
+**Live tracking is still fragile on walking trajectories, which caps what
+the scout pass delivers.** One cause has been found and fixed: PnP RANSAC
+would occasionally converge on a geometrically consistent but physically
+impossible pose (measured: a 5.9 m single-frame jump accepted with 92 of
+114 inliers). That single bad pose is unrecoverable, because the local map
+then projects outside the predicted frustum and no later frame can
+re-acquire by tracking. `MotionIsPlausible` now rejects poses that exceed a
+hand-held camera's speed, and relocalization takes over instead. On the
+scout circuit that took tracking from frame 49 to frame 135 and doubled the
+scaffold (14 → 28 keyframes, 586 → 1219 points).
 
-So the remaining work is the live tracker itself (motion model and
-relocalization robustness through low-texture stretches), not the scaffold
-around it. The final solve is unaffected either way: it no longer needs
-live poses at all, and reconstructs a two-room walkthrough from images
-alone.
+What remains is a slower failure: as the camera walks and turns, matched
+support decays (measured 53 → 42 → 35 tracked inliers over three frames)
+and then collapses, with hundreds of local points still projecting into
+view but no longer matching. This is an appearance problem, not a geometry
+or keyframe-cadence one — keyframes are inserted every ~5 frames throughout,
+and both loosening the descriptor distance cap (which admits bad matches and
+makes things worse) and the scout keyframe-density knobs leave it unchanged.
+The likely remedies are viewpoint-tolerant association (re-describing map
+points from the newest observation angle, or matching against several stored
+descriptors per point) and occlusion-aware visibility, so that "projects
+into view" means "is actually visible".
+
+The final solve is unaffected either way: it needs no live poses at all and
+reconstructs a two-room walkthrough from images alone.
 
 The two-room walkthrough still does not meet the single-room accuracy
 bounds (≥90% registration is met; <5 cm ATE is not), so it remains a

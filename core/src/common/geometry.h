@@ -88,4 +88,23 @@ inline double AngularDistance(const Eigen::Quaterniond& a,
   return 2.0 * std::acos(dot);
 }
 
+
+// Motion plausibility between two consecutive tracked poses.
+//
+// A large PnP inlier count is not proof of a correct pose: in a scene of
+// repeated texture, RANSAC can find a big consistent set at a completely
+// wrong place. Such a pose is unrecoverable once accepted — the local map
+// then projects outside the predicted frustum, so no later frame can
+// re-acquire by tracking. A hand-held camera has bounded speed, so a pose
+// that violates it is rejected instead. `dt` is seconds between the frames.
+inline bool MotionIsPlausible(const SE3& previous, const SE3& candidate,
+                              double dt, double max_speed_mps,
+                              double max_rot_dps) {
+  if (!(dt > 0.0)) return true;  // no time reference: nothing to judge
+  const double moved =
+      (candidate.CameraCenter() - previous.CameraCenter()).norm();
+  const double turned = RadToDeg(AngularDistance(candidate.q, previous.q));
+  return moved <= max_speed_mps * dt && turned <= max_rot_dps * dt;
+}
+
 }  // namespace bs

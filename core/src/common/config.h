@@ -24,6 +24,14 @@ struct EngineConfig {
   float live_pnp_thresh_px = 2.0f;
   int live_pnp_min_inliers = 15;
   int live_queue_depth = 2;
+  // Motion plausibility. PnP RANSAC can converge on a geometrically
+  // consistent but physically impossible pose — measured on a walkthrough, a
+  // 5.9 m single-frame jump accepted with 92/114 inliers, after which every
+  // local point fell outside the predicted frustum and tracking never
+  // recovered. A held camera does not move faster than this, so a pose that
+  // claims otherwise is rejected and relocalization takes over.
+  float track_max_speed_mps = 4.0f;
+  float track_max_rot_dps = 300.0f;
 
   // --- bootstrap ---
   int boot_min_matches = 80;
@@ -39,6 +47,13 @@ struct EngineConfig {
   float kf_translation_depth_frac = 0.03f;
   float kf_min_rotation_deg = 8.0f;
   float kf_max_overlap = 0.65f;
+  // Absolute floor on tracked support. kf_max_overlap is a RATIO against the
+  // reference keyframe, so a keyframe with few associations keeps the ratio
+  // healthy while the actual number of tracked points collapses — measured
+  // on a walking sweep, support fell 53 -> 42 -> 35 and then to 1 without
+  // ever tripping the ratio gate. Mapping the newly visible region before
+  // support runs out is the whole job of a keyframe.
+  int kf_min_tracked_inliers = 60;
   float kf_min_blur_lapvar = 100.0f;
   float kf_max_overexposed_frac = 0.02f;
   float kf_min_interval_s = 0.15f;

@@ -149,6 +149,9 @@ class LiveSystem {
   uint32_t last_kf_id_ = 0;
   double last_kf_time_ = -1e9;
   int consecutive_lost_ = 0;
+  // Capture time of the last accepted tracked frame, for the motion-
+  // plausibility gate (-1 = no reference yet).
+  double last_track_time_ = -1.0;
   // Rotating start index for the relocalization sweep over older keyframes.
   uint32_t reloc_cursor_ = 0;
 

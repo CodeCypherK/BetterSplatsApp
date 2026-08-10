@@ -2,6 +2,7 @@
 // local bundle adjustment with LiDAR regularization, and point culling.
 
 #include <algorithm>
+#include <cmath>
 #include <set>
 
 #include "common/log.h"
@@ -482,6 +483,32 @@ void LiveSystem::LocalBundleAdjustment(uint32_t center_kf_id) {
   ceres::Solver::Summary summary;
   ceres::Solve(options, &problem, &summary);
 
+  // Validate before adopting. A solver result is evidence, not truth: an
+  // ill-conditioned window can come back with a higher cost or a NaN, and
+  // writing that into the map is unrecoverable — the very next frame
+  // projects its local points somewhere they are not, so tracking cannot
+  // re-acquire. A local refinement should also never teleport a keyframe;
+  // if it wants to, the window was not describing the same place.
+  double worst_shift = 0.0;
+  for (const auto& [kf_id, block] : pose_blocks) {
+    if (fixed.count(kf_id)) continue;
+    const Keyframe* kf = map_.FindKeyframe(kf_id);
+    if (kf == nullptr) continue;
+    const SE3 refined = PoseFromBlocks(block.data(), block.data() + 4);
+    worst_shift = std::max(
+        worst_shift,
+        (refined.CameraCenter() - kf->pose.CameraCenter()).norm());
+  }
+  const bool improved = std::isfinite(summary.final_cost) &&
+                        summary.final_cost <= summary.initial_cost;
+  if (!improved || worst_shift > config_.lba_max_pose_shift_m) {
+    BS_LOGD("live",
+            "LBA kf %u rejected: cost %.3g -> %.3g, worst pose shift %.2f m",
+            center_kf_id, summary.initial_cost, summary.final_cost,
+            worst_shift);
+    return;
+  }
+
   // Write back.
   for (const auto& [kf_id, block] : pose_blocks) {
     if (fixed.count(kf_id)) continue;
@@ -492,7 +519,9 @@ void LiveSystem::LocalBundleAdjustment(uint32_t center_kf_id) {
   }
   for (const auto& [pid, xyz] : point_blocks) {
     if (MapPoint* mp = map_.FindPoint(pid)) {
-      mp->X = Eigen::Vector3d(xyz[0], xyz[1], xyz[2]);
+      const Eigen::Vector3d refined(xyz[0], xyz[1], xyz[2]);
+      if (!refined.allFinite()) continue;
+      mp->X = refined;
     }
   }
   BS_LOGD("live", "LBA kf %u: %d reproj + %d lidar residuals, %d iters",

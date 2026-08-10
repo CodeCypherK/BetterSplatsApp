@@ -79,6 +79,7 @@ EngineConfig EngineConfig::FromJson(const char* text, bool* ok) {
   get_to(j, "lba_min_shared_points", c.lba_min_shared_points);
   get_to(j, "lba_max_iterations", c.lba_max_iterations);
   get_to(j, "lba_huber_px", c.lba_huber_px);
+  get_to(j, "lba_max_pose_shift_m", c.lba_max_pose_shift_m);
 
   get_to(j, "loop_search_radius_m", c.loop_search_radius_m);
   get_to(j, "loop_exclude_recent", c.loop_exclude_recent);

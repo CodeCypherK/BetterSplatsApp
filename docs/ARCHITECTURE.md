@@ -184,17 +184,30 @@ hand-held camera's speed, and relocalization takes over instead. On the
 scout circuit that took tracking from frame 49 to frame 135 and doubled the
 scaffold (14 → 28 keyframes, 586 → 1219 points).
 
-What remains is a slower failure: as the camera walks and turns, matched
-support decays (measured 53 → 42 → 35 tracked inliers over three frames)
-and then collapses, with hundreds of local points still projecting into
-view but no longer matching. This is an appearance problem, not a geometry
-or keyframe-cadence one — keyframes are inserted every ~5 frames throughout,
-and both loosening the descriptor distance cap (which admits bad matches and
-makes things worse) and the scout keyframe-density knobs leave it unchanged.
-The likely remedies are viewpoint-tolerant association (re-describing map
-points from the newest observation angle, or matching against several stored
-descriptors per point) and occlusion-aware visibility, so that "projects
-into view" means "is actually visible".
+What remains is a slower failure, and the measurements now point at its
+cause: **new-point creation starves before the old map leaves view.** On the
+scout circuit the mapper adds ~50 points per keyframe early on, but by the
+last keyframe before the collapse it adds **3**, and the local BA window
+shrinks with it (3741 → 1213 → 949 reprojection residuals over the final
+three keyframes). Tracked support then decays (53 → 42 → 35 inliers) and
+cliffs, with hundreds of stale points still projecting into view but no
+longer matching.
+
+The following were each measured and ruled out, so they are not worth
+re-trying: bootstrap scale (accurate to 0.1% against ground truth),
+descriptor validity, keyframe cadence (one every ~5 frames right through the
+failure, including the frame before it), the descriptor distance cap
+(loosening it admits bad matches and makes things worse), candidate
+selection (the viewing-cone test is neutral), search radius (the 3× retry
+also finds nothing), and local BA divergence (it converges normally and the
+new validation guard never fires).
+
+So the work is in `TriangulateNewPoints`: as the camera turns, the region
+coming into view has no covisible keyframe that already saw it, so there is
+nothing to triangulate against and the map stops growing in the direction
+of travel. Mapping forward — triangulating against the immediately previous
+keyframe regardless of covisibility, and seeding from LiDAR depth where
+visual correspondence is unavailable — is the next thing to try.
 
 The final solve is unaffected either way: it needs no live poses at all and
 reconstructs a two-room walkthrough from images alone.

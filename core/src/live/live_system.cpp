@@ -536,9 +536,19 @@ bool LiveSystem::TrackFrame(const LiveFrameInput& input,
     guidance_ = BS_GUIDE_TRACKING_LOST;
     return Relocalize(input, features);
   }
+  int empty_desc = 0;
   query.descriptors.create(static_cast<int>(desc_rows.size()), 32, CV_8U);
   for (size_t i = 0; i < desc_rows.size(); ++i) {
+    if (desc_rows[i].empty() || desc_rows[i].cols != 32) {
+      ++empty_desc;
+      query.descriptors.row(static_cast<int>(i)).setTo(0);
+      continue;
+    }
     desc_rows[i].copyTo(query.descriptors.row(static_cast<int>(i)));
+  }
+  if (empty_desc > 0) {
+    BS_LOGD("live", "frame %u: %d of %zu query descriptors unusable",
+            input.frame_id, empty_desc, desc_rows.size());
   }
   query.keypoints.resize(desc_rows.size());
 

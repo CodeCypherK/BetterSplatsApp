@@ -77,6 +77,10 @@ struct EngineConfig {
   int lba_min_shared_points = 30;
   int lba_max_iterations = 10;
   float lba_huber_px = 2.0f;
+  // A local refinement that wants to move a keyframe further than this is
+  // not refining — the window was not describing the same place. Its result
+  // is discarded rather than written into the map.
+  float lba_max_pose_shift_m = 0.5f;
 
   // --- loop closure (live) ---
   float loop_search_radius_m = 6.0f;

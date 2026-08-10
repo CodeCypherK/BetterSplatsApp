@@ -671,7 +671,7 @@ bool LiveSystem::TrackFrame(const LiveFrameInput& input,
   if (last_track_time_ >= 0.0 && consecutive_lost_ == 0) {
     const double dt =
         std::clamp(input.t_capture - last_track_time_, 1.0 / 60.0, 0.5);
-    turn_rate_dps = RadToDeg(AngularDistance(pose.q, last_pose_.q)) / dt;
+    turn_rate_dps = TurnRateDps(last_pose_, pose, dt);
     if (!MotionIsPlausible(last_pose_, pose, dt, config_.track_max_speed_mps,
                            config_.track_max_rot_dps)) {
       BS_LOGD("live",

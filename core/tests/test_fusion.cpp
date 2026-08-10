@@ -5,6 +5,7 @@
 
 #include <random>
 
+#include "common/config.h"
 #include "fusion/residuals.h"
 #include "fusion/scale.h"
 #include "io/float16.h"
@@ -341,6 +342,48 @@ TEST(Tracking, MotionPlausibilityRejectsImpossibleJumps) {
   // rejected (the caller has not tracked a previous frame yet).
   EXPECT_TRUE(MotionIsPlausible(previous, at_center({99.0, 0, 0}), 0.0,
                                 max_speed, max_rot));
+}
+
+// The turn rate that drives SLOW DOWN sits far below the rejection bound:
+// the pose is fine, the user is simply outrunning the mapper.
+TEST(MotionTest, TurnRateSeparatesComfortableFromUnmappable) {
+  const double dt = 1.0 / 30.0;
+  const EngineConfig config;
+
+  SE3 previous;
+  previous.q = Eigen::Quaterniond::Identity();
+  previous.t = Eigen::Vector3d::Zero();
+  auto turned = [](double deg) {
+    return SE3::FromCamToWorld(
+        Eigen::Quaterniond(
+            Eigen::AngleAxisd(DegToRad(deg), Eigen::Vector3d::UnitY())),
+        Eigen::Vector3d::Zero());
+  };
+
+  // A degree per frame is a calm scanning pan: 30 deg/s, no warning.
+  EXPECT_NEAR(TurnRateDps(previous, turned(1.0), dt), 30.0, 1e-6);
+  EXPECT_LT(TurnRateDps(previous, turned(1.0), dt), config.track_warn_rot_dps);
+
+  // The measured killer: 4 deg/frame is 120 deg/s. It must warn...
+  const double fast = TurnRateDps(previous, turned(4.0), dt);
+  EXPECT_NEAR(fast, 120.0, 1e-6);
+  EXPECT_GT(fast, config.track_warn_rot_dps);
+  // ...but it is a perfectly makeable motion, so it must NOT be rejected.
+  // Warning and rejecting are different jobs; conflating them would throw
+  // away good poses instead of telling the user to ease off.
+  EXPECT_LT(fast, config.track_max_rot_dps);
+  EXPECT_TRUE(MotionIsPlausible(previous, turned(4.0), dt,
+                                config.track_max_speed_mps,
+                                config.track_max_rot_dps));
+
+  // It is a rate, not a per-frame angle: the same 4 deg over four times the
+  // interval is a quarter of the rate, and comfortable.
+  EXPECT_NEAR(TurnRateDps(previous, turned(4.0), 4.0 * dt), 30.0, 1e-6);
+  EXPECT_LT(TurnRateDps(previous, turned(4.0), 4.0 * dt),
+            config.track_warn_rot_dps);
+
+  // No time reference: nothing to report rather than a divide by zero.
+  EXPECT_EQ(TurnRateDps(previous, turned(90.0), 0.0), 0.0);
 }
 
 }  // namespace

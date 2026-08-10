@@ -67,6 +67,14 @@ non-expert to that data on the first try.
 
 Newest first. One line per session: what changed, what it measured.
 
+- Verified the CI gate against the reshaped trajectories (they changed
+  `bs_synth` output, and the previous push had not run it): live 95% tracked
+  / 3 mm ATE, final **60/60 registered, 1.3 mm ATE, 0.22 px**, hard scene
+  60/60 and 5440 points. Green. Extracted `TurnRateDps` beside
+  `MotionIsPlausible` and covered it: 1 deg/frame = 30 deg/s (quiet),
+  4 deg/frame = 120 deg/s (warns, but stays plausible and is *not* rejected —
+  warning and rejecting are separate jobs).
+
 - `aed20fa` Harness made physically honest (`--speed`/`--pan`/`--fps`, worst-frame
   motion reporting); fixed a 174 deg doorway view flip and an ill-conditioned
   look target. Scout circuit 33% → **86%** tracked, ATE **4.3 cm**, scaffold

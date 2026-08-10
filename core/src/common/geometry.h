@@ -107,4 +107,18 @@ inline bool MotionIsPlausible(const SE3& previous, const SE3& candidate,
   return moved <= max_speed_mps * dt && turned <= max_rot_dps * dt;
 }
 
+// Turn rate between two consecutive tracked poses, degrees per second.
+//
+// Distinct from the plausibility bound above, and far below it. A new map
+// point needs two keyframes that both see it, so the map grows at the rate
+// keyframes accumulate — while a turn sweeps the leading edge of the view
+// across unmapped space at *this* rate. Past roughly 100 deg/s the turn
+// wins and tracking dies, which is well inside what a wrist can do. The
+// pose is perfectly good; the user just needs to be told to slow down.
+inline double TurnRateDps(const SE3& previous, const SE3& candidate,
+                          double dt) {
+  if (!(dt > 0.0)) return 0.0;
+  return RadToDeg(AngularDistance(candidate.q, previous.q)) / dt;
+}
+
 }  // namespace bs

@@ -142,6 +142,8 @@ class LiveSystem {
   uint32_t last_kf_id_ = 0;
   double last_kf_time_ = -1e9;
   int consecutive_lost_ = 0;
+  // Rotating start index for the relocalization sweep over older keyframes.
+  uint32_t reloc_cursor_ = 0;
 
   // Storage gating.
   SE3 last_store_pose_;

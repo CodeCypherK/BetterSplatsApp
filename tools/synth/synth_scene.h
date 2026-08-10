@@ -37,6 +37,11 @@ struct RayHit {
 // floor/ceiling, and two interior boxes.
 Scene MakeRoomScene(uint32_t seed, bool blank_wall = true);
 
+// Two rooms sharing a dividing wall with an open doorway: room A spans
+// x in [-3, 3], room B x in [3, 9], both z in [-4, 4]. Exercises multi-room
+// region clustering and the drift that accumulates walking between spaces.
+Scene MakeTwoRoomScene(uint32_t seed, bool blank_wall = true);
+
 // Nearest intersection of the pixel ray with the scene. `dir_world` must be
 // R_cw * (x_n, y_n, 1) — unnormalized, so `t` is camera-space depth.
 RayHit CastRay(const Scene& scene, const Eigen::Vector3d& center,
@@ -82,5 +87,12 @@ DepthImage RenderDepth(const Scene& scene, const SE3& pose, const Intrinsics& K,
 std::vector<SE3> OrbitTrajectory(int frame_count, double radius_x, double radius_z,
                                  double eye_height, uint32_t seed,
                                  double sweep_deg = 140.0);
+
+// Walks a closed loop through both rooms of MakeTwoRoomScene and returns to
+// the starting viewpoint, so the sequence ends with a genuine revisit for
+// loop closure to find (and for drift to be measured against). The camera
+// looks along travel with a slow yaw sweep, as a person scanning would.
+std::vector<SE3> WalkthroughTrajectory(int frame_count, double eye_height,
+                                       uint32_t seed);
 
 }  // namespace bs::synth

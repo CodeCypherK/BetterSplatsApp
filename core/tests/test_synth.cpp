@@ -191,5 +191,54 @@ TEST_F(SynthTest, GroundTruthPosesAreValidRotations) {
   }
 }
 
+TEST_F(SynthTest, WalkthroughClosesItsLoopAcrossBothRooms) {
+  // The two-room harness is only meaningful if the walk actually visits both
+  // rooms and comes back to where it started — that revisit is what loop
+  // closure has to recognize.
+  const std::vector<SE3> poses =
+      synth::WalkthroughTrajectory(200, 1.5, /*seed=*/4);
+  ASSERT_EQ(poses.size(), 200u);
+
+  bool in_room_a = false, in_room_b = false, through_door = false;
+  for (const auto& p : poses) {
+    const Eigen::Vector3d c = p.CameraCenter();
+    EXPECT_NEAR(c.y(), 1.5, 0.25);                 // eye height, mild jitter
+    EXPECT_GT(p.q.toRotationMatrix().determinant(), 0.99);  // right-handed
+    if (c.x() < 2.0) in_room_a = true;
+    if (c.x() > 4.5) in_room_b = true;
+    // The doorway is the only opening in the divider (z within +-0.55).
+    if (std::abs(c.x() - 3.0) < 0.35) {
+      through_door = true;
+      EXPECT_LT(std::abs(c.z()), 0.55) << "walked through the dividing wall";
+    }
+  }
+  EXPECT_TRUE(in_room_a);
+  EXPECT_TRUE(in_room_b);
+  EXPECT_TRUE(through_door);
+
+  // Closed loop: the last pose returns to the first.
+  const double gap =
+      (poses.back().CameraCenter() - poses.front().CameraCenter()).norm();
+  EXPECT_LT(gap, 0.35) << "walkthrough must revisit its starting viewpoint";
+}
+
+TEST_F(SynthTest, TwoRoomSceneHasAnOpenDoorway) {
+  const synth::Scene scene = synth::MakeTwoRoomScene(4);
+  // A ray straight through the doorway from room A must reach room B's far
+  // wall (x = 9), not stop at the divider (x = 3).
+  const Eigen::Vector3d from(0.0, 1.4, 0.0);
+  const synth::RayHit open =
+      synth::CastRay(scene, from, Eigen::Vector3d(1, 0, 0));
+  ASSERT_GT(open.t, 0.0);
+  EXPECT_GT(open.t, 8.0) << "doorway is blocked";
+
+  // Off to the side of the doorway the divider must block the ray.
+  const Eigen::Vector3d blocked_from(0.0, 1.4, 2.5);
+  const synth::RayHit blocked =
+      synth::CastRay(scene, blocked_from, Eigen::Vector3d(1, 0, 0));
+  ASSERT_GT(blocked.t, 0.0);
+  EXPECT_LT(blocked.t, 3.5) << "divider should block off-doorway rays";
+}
+
 }  // namespace
 }  // namespace bs

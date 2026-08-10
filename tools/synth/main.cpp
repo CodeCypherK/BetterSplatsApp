@@ -31,7 +31,9 @@ void PrintUsage() {
                "  --motion-blur     blur scaled by inter-frame motion\n"
                "  --rgb-noise F     RGB sensor-noise scale (default 1)\n"
                "  --hard            realistic capture: exposure drift + motion\n"
-               "                    blur + heavier noise + coarser depth\n");
+               "                    blur + heavier noise + coarser depth\n"
+               "  --two-room        two rooms joined by a doorway, walked as a\n"
+               "                    closed loop that revisits its start\n");
 }
 
 }  // namespace
@@ -74,6 +76,7 @@ int main(int argc, char** argv) {
     else if (arg == "--exposure-drift") options.exposure_drift = std::atof(next("--exposure-drift"));
     else if (arg == "--motion-blur") options.motion_blur = true;
     else if (arg == "--rgb-noise") options.rgb_noise_scale = std::atof(next("--rgb-noise"));
+    else if (arg == "--two-room") options.two_room = true;
     else if (arg == "--hard") {
       options.exposure_drift = 0.3;
       options.motion_blur = true;

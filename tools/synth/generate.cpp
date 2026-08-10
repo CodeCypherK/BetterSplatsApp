@@ -53,7 +53,10 @@ bool GenerateSession(const GenerateOptions& o) {
   // requested, which is exactly what an AE lock would (or would not) give.
   info.ae_locked = o.exposure_drift == 0.0;
   info.awb_locked = true;
-  info.regions = {{1, "Room 1", false}};
+  info.regions = o.two_room
+                     ? std::vector<RegionEntry>{{1, "Room 1", false},
+                                                {2, "Room 2", false}}
+                     : std::vector<RegionEntry>{{1, "Room 1", false}};
   info.app_version = "synth";
 
   CalibrationInfo calib;
@@ -67,9 +70,13 @@ bool GenerateSession(const GenerateOptions& o) {
   SessionWriter writer;
   if (!SessionWriter::Create(o.out_dir, info, calib, writer)) return false;
 
-  const Scene scene = MakeRoomScene(o.seed, o.blank_wall);
-  const std::vector<SE3> poses = OrbitTrajectory(
-      o.frame_count, 1.6, 2.2, 1.5, o.seed ^ 0x7777u, o.sweep_deg);
+  const Scene scene = o.two_room ? MakeTwoRoomScene(o.seed, o.blank_wall)
+                                 : MakeRoomScene(o.seed, o.blank_wall);
+  const std::vector<SE3> poses =
+      o.two_room
+          ? WalkthroughTrajectory(o.frame_count, 1.5, o.seed ^ 0x7777u)
+          : OrbitTrajectory(o.frame_count, 1.6, 2.2, 1.5, o.seed ^ 0x7777u,
+                            o.sweep_deg);
 
   DepthNoise noise;
   noise.sigma_base_m *= o.depth_noise_scale;

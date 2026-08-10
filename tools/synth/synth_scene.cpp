@@ -140,6 +140,78 @@ Scene MakeRoomScene(uint32_t seed, bool blank_wall) {
   return scene;
 }
 
+Scene MakeTwoRoomScene(uint32_t seed, bool blank_wall) {
+  Scene scene;
+  const double H = 2.5;
+  const double z0 = -4.0, z1 = 4.0, D = z1 - z0;
+  const double ax0 = -3.0, ax1 = 3.0;  // room A
+  const double bx0 = 3.0, bx1 = 9.0;   // room B (shares the wall at x = 3)
+  const double door_half = 0.55, door_h = 2.1;
+
+  auto add = [&](const Eigen::Vector3d& origin, const Eigen::Vector3d& eu,
+                 const Eigen::Vector3d& ev, cv::Vec3f color, float tex,
+                 uint32_t tseed) {
+    scene.planes.push_back({origin, eu, ev, color, tex, tseed});
+  };
+  // Axis-aligned box: five visible faces (no underside), one texture seed
+  // family so the box reads as a single object across views.
+  auto add_box = [&](const Eigen::Vector3d& o, double w, double h, double d,
+                     cv::Vec3f color, float tex, uint32_t tseed) {
+    add({o.x(), o.y() + h, o.z()}, {w, 0, 0}, {0, 0, d}, color, tex, tseed);
+    add(o, {w, 0, 0}, {0, h, 0}, color * 0.9f, tex, tseed ^ 1);
+    add({o.x(), o.y(), o.z() + d}, {w, 0, 0}, {0, h, 0}, color * 0.9f, tex,
+        tseed ^ 2);
+    add(o, {0, 0, d}, {0, h, 0}, color * 0.8f, tex, tseed ^ 3);
+    add({o.x() + w, o.y(), o.z()}, {0, 0, d}, {0, h, 0}, color * 0.8f, tex,
+        tseed ^ 4);
+  };
+
+  // --- room A: floor, ceiling, outer walls ---
+  add({ax0, 0, z0}, {ax1 - ax0, 0, 0}, {0, 0, D}, {0.35f, 0.52f, 0.62f}, 0.65f,
+      seed ^ 11);
+  add({ax0, H, z0}, {ax1 - ax0, 0, 0}, {0, 0, D}, {0.92f, 0.92f, 0.92f}, 0.10f,
+      seed ^ 12);
+  add({ax0, 0, z0}, {ax1 - ax0, 0, 0}, {0, H, 0}, {0.55f, 0.68f, 0.80f}, 0.85f,
+      seed ^ 13);
+  add({ax1, 0, z1}, {ax0 - ax1, 0, 0}, {0, H, 0}, {0.62f, 0.72f, 0.78f}, 0.70f,
+      seed ^ 14);
+  // The (nearly) blank painted wall — LiDAR must carry this surface.
+  add({ax0, 0, z1}, {0, 0, -D}, {0, H, 0}, {0.82f, 0.84f, 0.86f},
+      blank_wall ? 0.04f : 0.6f, seed ^ 15);
+
+  // --- room B: floor, ceiling, outer walls ---
+  add({bx0, 0, z0}, {bx1 - bx0, 0, 0}, {0, 0, D}, {0.40f, 0.48f, 0.58f}, 0.60f,
+      seed ^ 21);
+  add({bx0, H, z0}, {bx1 - bx0, 0, 0}, {0, 0, D}, {0.90f, 0.91f, 0.92f}, 0.12f,
+      seed ^ 22);
+  add({bx0, 0, z0}, {bx1 - bx0, 0, 0}, {0, H, 0}, {0.66f, 0.70f, 0.62f}, 0.80f,
+      seed ^ 23);
+  add({bx1, 0, z1}, {bx0 - bx1, 0, 0}, {0, H, 0}, {0.70f, 0.66f, 0.60f}, 0.75f,
+      seed ^ 24);
+  add({bx1, 0, z0}, {0, 0, D}, {0, H, 0}, {0.58f, 0.74f, 0.80f}, 0.78f,
+      seed ^ 25);
+
+  // --- dividing wall at x = 3, split around an open doorway ---
+  add({ax1, 0, z0}, {0, 0, -door_half - z0}, {0, H, 0}, {0.78f, 0.80f, 0.82f},
+      0.45f, seed ^ 31);
+  add({ax1, 0, door_half}, {0, 0, z1 - door_half}, {0, H, 0},
+      {0.78f, 0.80f, 0.82f}, 0.45f, seed ^ 32);
+  add({ax1, door_h, -door_half}, {0, 0, 2 * door_half}, {0, H - door_h, 0},
+      {0.76f, 0.78f, 0.80f}, 0.40f, seed ^ 33);
+
+  // --- furniture, so both rooms carry parallax-rich near geometry ---
+  add_box({-1.4, 0.0, -3.2}, 1.6, 0.9, 0.5, {0.25f, 0.35f, 0.55f}, 0.80f,
+          seed ^ 77);
+  add_box({0.6, 0.0, 0.8}, 1.2, 0.75, 0.8, {0.45f, 0.58f, 0.70f}, 0.85f,
+          seed ^ 91);
+  add_box({4.6, 0.0, -3.0}, 1.4, 1.1, 0.6, {0.52f, 0.42f, 0.34f}, 0.82f,
+          seed ^ 101);
+  add_box({6.4, 0.0, 1.4}, 1.0, 0.55, 1.0, {0.34f, 0.46f, 0.40f}, 0.78f,
+          seed ^ 111);
+
+  return scene;
+}
+
 RayHit CastRay(const Scene& scene, const Eigen::Vector3d& center,
                const Eigen::Vector3d& dir_world) {
   RayHit best;
@@ -309,6 +381,85 @@ std::vector<SE3> OrbitTrajectory(int frame_count, double radius_x, double radius
     const Eigen::Vector3d right = forward.cross(world_up).normalized();
     const Eigen::Vector3d down = forward.cross(right).normalized();
     Eigen::Matrix3d R_cw;  // camera-to-world: columns are camera axes in world
+    R_cw.col(0) = right;
+    R_cw.col(1) = down;
+    R_cw.col(2) = forward;
+
+    poses.push_back(SE3::FromCamToWorld(Eigen::Quaterniond(R_cw), position));
+  }
+  return poses;
+}
+
+std::vector<SE3> WalkthroughTrajectory(int frame_count, double eye_height,
+                                       uint32_t seed) {
+  // Closed loop: sweep room A, through the doorway, around room B, back
+  // through the doorway, and home to the starting viewpoint. Ending where it
+  // began is the point — that revisit is what loop closure must recognize,
+  // and the drift accumulated around the loop is what it must absorb.
+  const std::vector<Eigen::Vector3d> waypoints = {
+      {0.0, 0, 2.4},    // start, room A
+      {-1.8, 0, 0.6},   // toward the blank left wall
+      {-1.6, 0, -2.6},  // A back-left corner
+      {1.6, 0, -2.6},   // A back-right corner
+      {2.2, 0, -0.4},   // approach the doorway
+      {4.0, 0, 0.0},    // through into room B
+      {5.2, 0, -2.6},   // B back-left
+      {7.8, 0, -2.4},   // B back-right
+      {7.8, 0, 2.4},    // B front-right
+      {5.0, 0, 2.2},    // B front-left
+      {4.0, 0, 0.2},    // back to the doorway
+      {2.0, 0, 0.4},    // back into room A
+      {0.0, 0, 2.4},    // home — same viewpoint as frame 0
+  };
+
+  // Cumulative arc length, so frames are spaced by distance travelled rather
+  // than by waypoint index (constant walking speed).
+  std::vector<double> arc(waypoints.size(), 0.0);
+  for (size_t i = 1; i < waypoints.size(); ++i) {
+    arc[i] = arc[i - 1] + (waypoints[i] - waypoints[i - 1]).norm();
+  }
+  const double total = arc.back();
+
+  std::vector<SE3> poses;
+  poses.reserve(frame_count);
+  std::mt19937 rng(seed);
+  std::normal_distribution<double> gauss(0.0, 1.0);
+  double jitter_y = 0.0;
+
+  auto sample = [&](double s) {  // position at normalized arc length
+    const double target = std::clamp(s, 0.0, 1.0) * total;
+    size_t seg = 1;
+    while (seg + 1 < arc.size() && arc[seg] < target) ++seg;
+    const double span = std::max(1e-9, arc[seg] - arc[seg - 1]);
+    const double f = std::clamp((target - arc[seg - 1]) / span, 0.0, 1.0);
+    return waypoints[seg - 1] + f * (waypoints[seg] - waypoints[seg - 1]);
+  };
+
+  for (int i = 0; i < frame_count; ++i) {
+    const double s = static_cast<double>(i) / std::max(1, frame_count - 1);
+    jitter_y = 0.97 * jitter_y + 0.004 * gauss(rng);
+
+    Eigen::Vector3d position = sample(s);
+    position.y() = eye_height + jitter_y;
+
+    // Heading follows travel; a slow yaw sweep covers the walls to either
+    // side the way a person turns their phone while walking a space.
+    Eigen::Vector3d ahead = sample(std::min(1.0, s + 0.02)) - sample(s);
+    ahead.y() = 0;
+    if (ahead.norm() < 1e-6) ahead = Eigen::Vector3d(0, 0, -1);
+    ahead.normalize();
+    const double yaw = DegToRad(38.0) * std::sin(2.0 * M_PI * 2.5 * s);
+    const Eigen::Vector3d dir(
+        ahead.x() * std::cos(yaw) - ahead.z() * std::sin(yaw), 0.0,
+        ahead.x() * std::sin(yaw) + ahead.z() * std::cos(yaw));
+    const Eigen::Vector3d target =
+        position + 3.0 * dir - Eigen::Vector3d(0, eye_height * 0.22, 0);
+
+    const Eigen::Vector3d forward = (target - position).normalized();
+    const Eigen::Vector3d world_up(0, 1, 0);
+    const Eigen::Vector3d right = forward.cross(world_up).normalized();
+    const Eigen::Vector3d down = forward.cross(right).normalized();
+    Eigen::Matrix3d R_cw;
     R_cw.col(0) = right;
     R_cw.col(1) = down;
     R_cw.col(2) = forward;

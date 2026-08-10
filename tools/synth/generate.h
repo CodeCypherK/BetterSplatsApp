@@ -24,6 +24,10 @@ struct GenerateOptions {
   double exposure_drift = 0.0;   // per-frame gain swing amplitude (0 = off)
   bool motion_blur = false;      // blur scaled by inter-frame image motion
   double rgb_noise_scale = 1.0;  // multiplies base RGB sensor noise
+
+  // Two connected rooms walked as a closed loop instead of a single-room
+  // orbit: exercises region clustering, inter-room drift and loop closure.
+  bool two_room = false;
 };
 
 // Writes a complete synthetic RAW session (frames/, session.json,

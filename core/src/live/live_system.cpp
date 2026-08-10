@@ -621,13 +621,41 @@ bool LiveSystem::TrackFrame(const LiveFrameInput& input,
 bool LiveSystem::Relocalize(const LiveFrameInput& input,
                             const FrameFeatures& features) {
   const auto& kfs = map_.keyframes();
-  const int start = std::max(0, static_cast<int>(kfs.size()) -
-                                    config_.loop_exclude_recent);
-  // Search newest-first across up to 20 keyframes.
-  for (int i = static_cast<int>(kfs.size()) - 1;
-       i >= 0 && i >= static_cast<int>(kfs.size()) - 20; --i) {
+  const int kf_count = static_cast<int>(kfs.size());
+  if (kf_count == 0) {
+    guidance_ = BS_GUIDE_TRACKING_LOST;
+    return false;
+  }
+
+  // Candidate selection. Searching only the newest keyframes recovers from a
+  // momentary glance away, but it cannot recover a walkthrough: no keyframes
+  // are inserted while lost, so that window stays frozen on the very frames
+  // that just failed, and the older keyframes covering the rest of the space
+  // are never retried — including the ones the user walks back into.
+  //
+  // So: always try the newest few, then sweep a cursor across the remainder
+  // of the map, advancing it every attempt. Every keyframe is retried within
+  // a bounded number of frames, at a fixed cost per frame.
+  constexpr int kRecentCandidates = 5;
+  constexpr int kSweepCandidates = 8;
+  std::vector<int> candidates;
+  candidates.reserve(kRecentCandidates + kSweepCandidates);
+  for (int i = kf_count - 1; i >= 0 && i > kf_count - 1 - kRecentCandidates;
+       --i) {
+    candidates.push_back(i);
+  }
+  const int sweep_span = kf_count - static_cast<int>(candidates.size());
+  for (int n = 0; n < std::min(kSweepCandidates, sweep_span); ++n) {
+    candidates.push_back(static_cast<int>(
+        (reloc_cursor_ + static_cast<uint32_t>(n)) % sweep_span));
+  }
+  if (sweep_span > 0) {
+    reloc_cursor_ = (reloc_cursor_ + std::min(kSweepCandidates, sweep_span)) %
+                    static_cast<uint32_t>(sweep_span);
+  }
+
+  for (const int i : candidates) {
     const Keyframe& kf = kfs[i];
-    (void)start;
 
     // Match against the keyframe's associated features only.
     FeatureSet assoc;

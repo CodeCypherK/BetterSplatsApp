@@ -110,6 +110,44 @@ graph; weak clusters generate ranked, directional guidance ("Back wall —
 insufficient visual geometry. Move 1–2 ft left and capture again."). The
 final report (`final/report.json`) recomputes everything from FINAL data.
 
+## Known limitations (measured)
+
+The synthetic harness covers a single-room orbit and, since `--two-room`, a
+closed-loop walkthrough of two rooms joined by a doorway. The walkthrough
+currently **fails**, and the failure is architectural rather than a tuning
+problem. Recorded here so the gap is visible rather than implied by a
+passing single-room test.
+
+Measured on `bs_synth --two-room` (33 m loop, two rooms, returns to its
+start), replayed at realistic frame density:
+
+| | result | bound |
+|---|---|---|
+| live tracking | 17% of frames tracked (accurate when tracked: 2.3 cm) | ≥70% |
+| final solve | 24–57% of frames registered (accurate when registered: 1.1 cm) | ≥90% |
+
+Two distinct causes:
+
+1. **The live map is single-segment.** Tracking dies facing the blank wall,
+   the user walks into a room that was never mapped, and there is nothing to
+   relocalize against. The system waits for relocalization instead of
+   starting a new sub-map (plan risk #4, "segment-and-rejoin").
+   Relocalization itself now sweeps the whole map rather than only the 20
+   newest keyframes, which is necessary but not sufficient.
+
+2. **The final solve initializes poses only from live poses** (S6), and can
+   otherwise only grow the single connected component that PnP can reach.
+   It has no image-based initial-pair bootstrap for frames the live system
+   never posed. This means a live failure propagates into the final result —
+   contrary to the design intent that the final solve recomputes everything
+   and *fixes* live errors. Closing this needs multi-component incremental
+   SfM: seed unposed frames from their own best two-view pair, scale each
+   component metrically from LiDAR, and merge components over shared tracks.
+
+Neither limitation affects single-room captures, which pass all bounds
+clean and under `--hard` degradation. The two-room scene is therefore
+available as a harness but is **not** yet a CI gate.
+
 ## Configuration
 
 All tuning constants live in `bs::EngineConfig`

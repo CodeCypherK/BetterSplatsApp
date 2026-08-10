@@ -17,13 +17,14 @@ session_<yyyyMMdd-HHmmss>_<6hex>/
 │   │   └── meta.json     RAW   per-frame metadata, schema below
 │   └── ...
 ├── live/                 LIVE  engine-owned, disposable
-│   ├── poses.jsonl       one JSON object per processed frame (live pose)
-│   ├── map.bin           live map serialization (resume/init hint)
-│   └── readiness.bin     patch grid serialization
+│   └── poses.jsonl       one JSON object per processed frame (live pose);
+│                         the final solve's only live input (init hint)
 └── final/                FINAL engine-owned, rebuilt from RAW at will
-    ├── features/         cached per-image features
-    ├── matches/          cached verified pairs
-    ├── checkpoint.json   stage checkpoint for resume
+    ├── cache/            resume cache — safe to delete, keyed by manifest
+    │   ├── manifest.txt  config+frame-list hash; mismatch wipes the cache
+    │   ├── feat_NNNNNN.bin   per-frame features (keypoints, descriptors,
+    │   │                     undistorted coords, colors, gradients)
+    │   └── matches.bin   verified pair matches for the whole session
     ├── report.json       readiness + solve quality report
     ├── dense.ply         fused LiDAR cloud (final poses only)
     └── colmap/

@@ -77,6 +77,15 @@ def main() -> int:
             print("ERROR: missing ground truth", file=sys.stderr)
             return 1
 
+        # Snapshot the RAW layer before any engine processing touches the
+        # session — compared again after the final solve.
+        import hashlib
+        digest = hashlib.sha256()
+        for frame_dir in sorted((session / "frames").iterdir()):
+            for name in ("image.jpg", "lidar.depth", "meta.json"):
+                digest.update((frame_dir / name).read_bytes())
+        raw_digest = digest.hexdigest()
+
         # M4: live tracking with ATE bounds against ground truth (--check
         # enforces >=70% tracked, ATE < 0.10 m, mean rot < 2 deg).
         out = subprocess.run(
@@ -105,8 +114,70 @@ def main() -> int:
             print(f"ERROR: two-view check failed:\n{out.stderr}", file=sys.stderr)
             return 1
 
-    print("OK: synth -> reader -> live-replay -> two-view ground-truth check")
-    print("SKIP: final-solve + pycolmap validation activates in M6/M7")
+        # M6/M7: final global reconstruction with ground-truth bounds
+        # (--check: >=90% registration, ATE < 0.05 m, rot < 1 deg), then the
+        # definitive gate — pycolmap must load the export.
+        out = subprocess.run(
+            [str(replay), str(session), "--final", "quality", "--check"],
+            capture_output=True, text=True, timeout=3600,
+        )
+        print(out.stdout.strip()[-2000:])
+        if out.returncode != 0:
+            print(f"ERROR: final solve check failed:\n{out.stderr}",
+                  file=sys.stderr)
+            return 1
+
+        colmap_dir = session / "final" / "colmap"
+        try:
+            import pycolmap
+        except ImportError:
+            print("ERROR: pycolmap unavailable — install it in CI",
+                  file=sys.stderr)
+            return 1
+        rec = pycolmap.Reconstruction(str(colmap_dir))
+        n_images = rec.num_images()
+        n_points = rec.num_points3D()
+        track_len = rec.compute_mean_track_length()
+        reproj = rec.compute_mean_reprojection_error()
+        print(f"pycolmap: {rec.num_cameras()} cameras, {n_images} images, "
+              f"{n_points} points, track {track_len:.2f}, "
+              f"reproj {reproj:.3f} px")
+        if n_images < 0.9 * frames:
+            print(f"ERROR: pycolmap sees only {n_images} images",
+                  file=sys.stderr)
+            return 1
+        if n_points < 500:
+            print(f"ERROR: too few points ({n_points})", file=sys.stderr)
+            return 1
+        if track_len < 2.5:
+            print(f"ERROR: mean track length {track_len:.2f} < 2.5",
+                  file=sys.stderr)
+            return 1
+        if reproj > 1.5:
+            print(f"ERROR: mean reprojection {reproj:.2f} px > 1.5",
+                  file=sys.stderr)
+            return 1
+        if not (session / "final" / "dense.ply").is_file():
+            print("ERROR: dense.ply missing", file=sys.stderr)
+            return 1
+        if not (session / "final" / "report.json").is_file():
+            print("ERROR: report.json missing", file=sys.stderr)
+            return 1
+
+        # Immutability invariant: the full pipeline must leave the RAW layer
+        # byte-identical (live drift never bakes into sensor data).
+        import hashlib
+        digest = hashlib.sha256()
+        for frame_dir in sorted((session / "frames").iterdir()):
+            for name in ("image.jpg", "lidar.depth", "meta.json"):
+                digest.update((frame_dir / name).read_bytes())
+        if digest.hexdigest() != raw_digest:
+            print("ERROR: RAW layer changed during processing!",
+                  file=sys.stderr)
+            return 1
+
+    print("OK: synth -> live -> two-view -> final solve -> pycolmap, "
+          "RAW immutable")
     return 0
 
 

@@ -12,6 +12,8 @@ add_library(bscore STATIC
   src/engine/api.cpp
   src/engine/engine_impl.cpp
   src/engine/selftest.cpp
+  src/final/colmap_export.cpp
+  src/final/final_solve.cpp
   src/fusion/residuals.cpp
   src/fusion/scale.cpp
   src/geometry/triangulation.cpp

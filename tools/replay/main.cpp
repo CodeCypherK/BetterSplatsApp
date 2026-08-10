@@ -5,11 +5,13 @@
 // same engine binary logic that runs on the phone — live pipeline first, then
 // the final solve. No Mac or device required to reproduce engine behavior.
 
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <fstream>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include <opencv2/imgcodecs.hpp>
@@ -28,14 +30,16 @@ namespace {
 void PrintUsage() {
   std::fprintf(stderr,
                "usage: bs_replay <session_dir> [--info] [--live] [--config J]\n"
-               "                 [--two-view [gap]] [--check]\n"
+               "                 [--two-view [gap]] [--final [fast|quality]]\n"
+               "                 [--check]\n"
                "       bs_replay --version | --selftest\n"
                "  --info      print session summary and exit\n"
                "  --live      feed all frames through the live pipeline\n"
                "  --two-view  match frame pairs (gap apart, default 4), estimate\n"
                "              relative pose + triangulate; compares to ground\n"
                "              truth when present\n"
-               "  --check     exit nonzero if two-view errors exceed bounds\n"
+               "  --final     run the full global reconstruction + COLMAP export\n"
+               "  --check     exit nonzero when error bounds are exceeded\n"
                "  --config    engine config JSON string (default {})\n");
 }
 
@@ -208,6 +212,138 @@ int RunTwoView(const bs::SessionReader& session, int gap, bool check) {
                    "CHECK FAILED: pose errors exceed bounds "
                    "(rot %.3f > 1.0 deg or tdir %.2f > 6.0 deg)\n",
                    worst_rot, worst_tdir);
+      return 1;
+    }
+  }
+  return 0;
+}
+
+// Runs the final solve through the engine ABI (worker thread + polling, the
+// same path the app uses), then optionally checks the exported poses
+// against ground truth.
+int RunFinal(const bs::SessionReader& session, const std::string& config,
+             const std::string& preset, bool check) {
+  bs_engine* engine = bs_create(config.c_str());
+  if (engine == nullptr) return 1;
+
+  if (bs_final_start(engine, session.dir().c_str(), preset.c_str()) != BS_OK) {
+    std::fprintf(stderr, "final_start failed: %s\n", bs_last_error(engine));
+    bs_destroy(engine);
+    return 1;
+  }
+
+  int last_stage = -1;
+  bs_final_progress progress{};
+  while (true) {
+    bs_final_poll(engine, &progress);
+    if (progress.stage != last_stage) {
+      last_stage = progress.stage;
+      std::printf("stage %2d  total %3.0f%%  reg %u/%u  points %u  rmse %.2f\n",
+                  progress.stage, 100.0f * progress.total_progress,
+                  progress.images_registered, progress.images_total,
+                  progress.points, progress.reproj_rmse_px);
+      std::fflush(stdout);
+    }
+    if (progress.stage == BS_STAGE_DONE || progress.stage == BS_STAGE_FAILED ||
+        (progress.running == 0 && progress.stage != BS_STAGE_IDLE)) {
+      break;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(150));
+  }
+
+  const bool solved = progress.stage == BS_STAGE_DONE;
+  std::printf("final solve: %s — registered %u/%u, %u points, rmse %.2fpx, "
+              "mean track %.1f\n",
+              solved ? "DONE" : "FAILED", progress.images_registered,
+              progress.images_total, progress.points, progress.reproj_rmse_px);
+  if (!solved) {
+    std::fprintf(stderr, "error: %s\n", bs_last_error(engine));
+    bs_destroy(engine);
+    return 1;
+  }
+  bs_destroy(engine);
+
+  const auto gt = session.ReadGroundTruth();
+  if (!gt) return 0;
+
+  // Parse exported poses and compare with ground truth.
+  std::ifstream images(session.dir() + "/final/colmap/images.txt");
+  if (!images) {
+    std::fprintf(stderr, "missing exported images.txt\n");
+    return 1;
+  }
+  struct Exported {
+    uint32_t id;
+    bs::SE3 pose;
+  };
+  std::vector<Exported> exported;
+  std::string line;
+  while (std::getline(images, line)) {
+    if (line.empty() || line[0] == '#') continue;
+    Exported e;
+    double qw, qx, qy, qz, tx, ty, tz;
+    int camera_id;
+    char name[64];
+    if (std::sscanf(line.c_str(), "%u %lf %lf %lf %lf %lf %lf %lf %d %63s",
+                    &e.id, &qw, &qx, &qy, &qz, &tx, &ty, &tz, &camera_id,
+                    name) != 10) {
+      continue;
+    }
+    e.pose.q = Eigen::Quaterniond(qw, qx, qy, qz).normalized();
+    e.pose.t = Eigen::Vector3d(tx, ty, tz);
+    exported.push_back(e);
+    std::getline(images, line);  // POINTS2D line
+  }
+
+  auto find_gt = [&](uint32_t frame_id) -> std::optional<bs::SE3> {
+    for (const auto& gp : gt->poses) {
+      if (gp.frame_id == frame_id) {
+        bs::SE3 pose;
+        pose.q = Eigen::Quaterniond(gp.q[0], gp.q[1], gp.q[2], gp.q[3]);
+        pose.t = Eigen::Vector3d(gp.t[0], gp.t[1], gp.t[2]);
+        return pose;
+      }
+    }
+    return std::nullopt;
+  };
+
+  if (exported.empty()) return 1;
+  const auto gt_ref = find_gt(exported.front().id);
+  if (!gt_ref) return 1;
+  const bs::SE3 align = exported.front().pose.Inverse() * (*gt_ref);
+
+  double ate_sq = 0, rot_sum = 0;
+  int compared = 0;
+  for (const auto& e : exported) {
+    const auto gt_pose = find_gt(e.id);
+    if (!gt_pose) continue;
+    const bs::SE3 gt_in_final = *gt_pose * align.Inverse();
+    const double err =
+        (e.pose.CameraCenter() - gt_in_final.CameraCenter()).norm();
+    ate_sq += err * err;
+    rot_sum += bs::RadToDeg(bs::AngularDistance(e.pose.q, gt_in_final.q));
+    ++compared;
+  }
+  const double ate = std::sqrt(ate_sq / std::max(1, compared));
+  const double rot = rot_sum / std::max(1, compared);
+  const double reg_frac = static_cast<double>(progress.images_registered) /
+                          std::max(1u, progress.images_total);
+  std::printf("final ATE: RMSE %.4f m, mean rot %.3f deg, %d poses, "
+              "registration %.0f%%\n",
+              ate, rot, compared, 100.0 * reg_frac);
+
+  if (check) {
+    if (reg_frac < 0.9) {
+      std::fprintf(stderr, "CHECK FAILED: registration %.0f%% < 90%%\n",
+                   100.0 * reg_frac);
+      return 1;
+    }
+    if (ate > 0.05) {
+      std::fprintf(stderr, "CHECK FAILED: final ATE %.4f > 0.05 m\n", ate);
+      return 1;
+    }
+    if (rot > 1.0) {
+      std::fprintf(stderr, "CHECK FAILED: final rot err %.3f > 1 deg\n", rot);
       return 1;
     }
   }
@@ -411,8 +547,10 @@ int main(int argc, char** argv) {
   bool do_info = false;
   bool do_live = false;
   bool do_two_view = false;
+  bool do_final = false;
   bool check = false;
   int gap = 4;
+  std::string preset = "quality";
   std::string config = "{}";
   for (int i = 2; i < argc; ++i) {
     const std::string arg = argv[i];
@@ -422,6 +560,9 @@ int main(int argc, char** argv) {
     else if (arg == "--two-view") {
       do_two_view = true;
       if (i + 1 < argc && argv[i + 1][0] != '-') gap = std::atoi(argv[++i]);
+    } else if (arg == "--final") {
+      do_final = true;
+      if (i + 1 < argc && argv[i + 1][0] != '-') preset = argv[++i];
     } else if (arg == "--config" && i + 1 < argc) {
       config = argv[++i];
     } else {
@@ -430,7 +571,7 @@ int main(int argc, char** argv) {
       return 2;
     }
   }
-  if (!do_info && !do_live && !do_two_view) do_info = true;
+  if (!do_info && !do_live && !do_two_view && !do_final) do_info = true;
 
   auto session = bs::SessionReader::Open(session_dir);
   if (!session) {
@@ -440,11 +581,15 @@ int main(int argc, char** argv) {
 
   if (do_info) {
     const int rc = RunInfo(*session);
-    if (rc != 0 || (!do_live && !do_two_view)) return rc;
+    if (rc != 0 || (!do_live && !do_two_view && !do_final)) return rc;
   }
   if (do_two_view) {
     const int rc = RunTwoView(*session, std::max(1, gap), check);
-    if (rc != 0 || !do_live) return rc;
+    if (rc != 0 || (!do_live && !do_final)) return rc;
   }
-  return RunLive(*session, config, check);
+  if (do_live) {
+    const int rc = RunLive(*session, config, check);
+    if (rc != 0 || !do_final) return rc;
+  }
+  return RunFinal(*session, config, preset, check);
 }

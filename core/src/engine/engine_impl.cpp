@@ -21,6 +21,10 @@ Engine::Engine(EngineConfig config) : config_(config) {
 }
 
 Engine::~Engine() {
+  if (final_) {
+    final_->cancel.store(true);
+    if (final_->worker.joinable()) final_->worker.join();
+  }
   if (live_ && live_->state() != BS_LIVE_FINISHED) {
     LiveEnd();
   }
@@ -268,21 +272,87 @@ void Engine::SnapshotRelease(bs_snapshot& snap) {
 }
 
 bs_result Engine::FinalStart(const char* session_dir, const char* preset) {
-  (void)preset;
   std::lock_guard<std::mutex> lock(mutex_);
   if (session_dir == nullptr || session_dir[0] == '\0') {
     return Fail(BS_ERR_INVALID_ARGUMENT, "FinalStart: empty session_dir");
   }
-  return Fail(BS_ERR_NOT_IMPLEMENTED, "FinalStart: final solve lands in M6");
+  if (final_ && final_->running.load()) {
+    return Fail(BS_ERR_BUSY, "FinalStart: a final solve is already running");
+  }
+  if (final_ && final_->worker.joinable()) final_->worker.join();
+
+  final_ = std::make_unique<FinalState>();
+  final_->running.store(true);
+  final_->stage.store(BS_STAGE_FEATURES);
+
+  FinalState* state = final_.get();
+  const std::string dir = session_dir;
+  const std::string preset_str = preset != nullptr ? preset : "quality";
+  const EngineConfig config = config_;
+  state->worker = std::thread([state, dir, preset_str, config] {
+    const FinalOutcome outcome = RunFinalSolve(
+        config, dir, preset_str,
+        [state](bs_final_stage stage, float pct, const FinalMetrics& metrics) {
+          state->stage.store(stage);
+          state->stage_progress.store(pct);
+          std::lock_guard<std::mutex> lock(state->metrics_mutex);
+          state->metrics = metrics;
+        },
+        &state->cancel);
+    {
+      std::lock_guard<std::mutex> lock(state->metrics_mutex);
+      state->outcome = outcome;
+      state->metrics = outcome.metrics;
+    }
+    state->stage.store(outcome.ok
+                           ? BS_STAGE_DONE
+                           : (outcome.cancelled ? BS_STAGE_IDLE
+                                                : BS_STAGE_FAILED));
+    state->running.store(false);
+  });
+  return BS_OK;
 }
 
 bs_result Engine::FinalPoll(bs_final_progress& out) {
   std::memset(&out, 0, sizeof(out));
-  out.stage = BS_STAGE_IDLE;
+  if (!final_) {
+    out.stage = BS_STAGE_IDLE;
+    return BS_OK;
+  }
+  out.stage = final_->stage.load();
+  out.stage_progress = final_->stage_progress.load();
+  out.running = final_->running.load() ? 1 : 0;
+  out.paused_thermal = thermal_level_.load() >= 2 ? 1 : 0;
+  // Rough overall progress: stages weighted equally through EXPORT.
+  const float stage_index = static_cast<float>(
+      std::clamp<int32_t>(out.stage, BS_STAGE_FEATURES, BS_STAGE_DONE) -
+      BS_STAGE_FEATURES);
+  const float stage_span =
+      static_cast<float>(BS_STAGE_DONE - BS_STAGE_FEATURES);
+  out.total_progress =
+      out.stage == BS_STAGE_DONE
+          ? 1.0f
+          : std::min(0.99f, (stage_index + out.stage_progress) / stage_span);
+
+  std::lock_guard<std::mutex> lock(final_->metrics_mutex);
+  out.images_total = final_->metrics.images_total;
+  out.images_registered = final_->metrics.images_registered;
+  out.points = final_->metrics.points;
+  out.reproj_rmse_px = final_->metrics.reproj_rmse_px;
+  out.mean_track_len = final_->metrics.mean_track_len;
+  out.ba_round = final_->metrics.ba_round;
+  if (final_->stage.load() == BS_STAGE_FAILED &&
+      !final_->outcome.error.empty()) {
+    last_error_ = final_->outcome.error;
+  }
   return BS_OK;
 }
 
-bs_result Engine::FinalCancel() { return BS_OK; }
+bs_result Engine::FinalCancel() {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (final_) final_->cancel.store(true);
+  return BS_OK;
+}
 
 bs_result Engine::ThermalHint(int32_t level) {
   if (level < 0 || level > 3) {

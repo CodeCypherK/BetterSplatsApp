@@ -4,10 +4,12 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "bs/bs_api.h"
 #include "common/config.h"
+#include "final/final_solve.h"
 #include "live/live_system.h"
 
 namespace bs {
@@ -66,6 +68,20 @@ class Engine {
     std::vector<bs_snap_region> regions;
     std::vector<bs_snap_weak_area> weak_areas;
   };
+
+  // Final-solve worker state. The pipeline runs on its own thread; the app
+  // polls progress through atomics + a metrics mutex.
+  struct FinalState {
+    std::thread worker;
+    std::atomic<bool> cancel{false};
+    std::atomic<bool> running{false};
+    std::atomic<int32_t> stage{BS_STAGE_IDLE};
+    std::atomic<float> stage_progress{0};
+    std::mutex metrics_mutex;
+    FinalMetrics metrics;
+    FinalOutcome outcome;
+  };
+  std::unique_ptr<FinalState> final_;
 
   std::atomic<int32_t> thermal_level_{0};
 };

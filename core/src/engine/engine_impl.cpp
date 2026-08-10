@@ -42,7 +42,7 @@ const char* Engine::LastError() const {
   return last_error_.c_str();
 }
 
-bs_result Engine::LiveBegin(const char* session_dir) {
+bs_result Engine::LiveBegin(const char* session_dir, bs_pass_kind pass) {
   std::lock_guard<std::mutex> lock(mutex_);
   if (session_dir == nullptr || session_dir[0] == '\0') {
     return Fail(BS_ERR_INVALID_ARGUMENT, "LiveBegin: empty session_dir");
@@ -91,8 +91,9 @@ bs_result Engine::LiveBegin(const char* session_dir) {
   }
 
   live_ = std::make_unique<LiveSystem>(config_);
-  live_->Begin(session_dir_, k1_, k2_);
-  BS_LOGI("engine", "live session started at %s", session_dir);
+  live_->Begin(session_dir_, k1_, k2_, pass);
+  BS_LOGI("engine", "live %s pass started at %s",
+          pass == BS_PASS_SCOUT ? "scout" : "capture", session_dir);
   return BS_OK;
 }
 

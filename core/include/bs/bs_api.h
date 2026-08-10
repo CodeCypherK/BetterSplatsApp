@@ -256,9 +256,22 @@ typedef struct bs_snapshot {
 
 /* ------------------------------------------------------------ live control */
 
+/* Which pass a live session is. The optional SCOUT pass is one fast lap of
+ * the whole space, back to the walls, camera aimed across each room: it
+ * builds a coarse map that later passes hold position against, establishes
+ * the session's world frame and its room list, and is excluded from the
+ * final reconstruction. A CAPTURE pass loads that scaffold when it exists,
+ * so losing tracking is recoverable anywhere the scout walked. */
+typedef enum bs_pass_kind {
+  BS_PASS_CAPTURE = 0,
+  BS_PASS_SCOUT = 1,
+} bs_pass_kind;
+
 /* session_dir: RAW session directory (may be empty at start of capture; the
- * app writes frames/ concurrently). The engine creates/owns live/ inside. */
-bs_result bs_live_begin(bs_engine* e, const char* session_dir);
+ * app writes frames/ concurrently). The engine creates/owns live/ inside.
+ * Frames fed during a SCOUT pass must be stored with pass="scout". */
+bs_result bs_live_begin(bs_engine* e, const char* session_dir,
+                        bs_pass_kind pass);
 
 /* Feed one frame. Returns BS_OK when queued, BS_ERR_BUSY when the live
  * queue was full and the frame was dropped (raw storage is unaffected —

@@ -31,9 +31,10 @@ const char* bs_last_error(const bs_engine* e) {
   return e->impl.LastError();
 }
 
-bs_result bs_live_begin(bs_engine* e, const char* session_dir) {
+bs_result bs_live_begin(bs_engine* e, const char* session_dir,
+                        bs_pass_kind pass) {
   if (e == nullptr) return BS_ERR_INVALID_ARGUMENT;
-  return e->impl.LiveBegin(session_dir);
+  return e->impl.LiveBegin(session_dir, pass);
 }
 
 bs_result bs_live_feed(bs_engine* e, const bs_frame_in* frame) {

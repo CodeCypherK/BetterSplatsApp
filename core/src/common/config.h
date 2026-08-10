@@ -73,6 +73,13 @@ struct EngineConfig {
   float lidar_tex_floor = 0.15f;   // min LiDAR pull on well-textured points
   float lidar_gate_sigmas = 3.0f;  // association gate in sigmas
 
+  // --- scout pass ---
+  // The scout circuit trades frame budget for scaffold density: its frames
+  // are never reconstructed, and how far apart its keyframes sit is what
+  // limits a later pass's ability to relocalize into it.
+  float scout_kf_translation_scale = 0.35f;
+  float scout_kf_rotation_scale = 0.5f;
+
   // --- readiness ---
   float patch_size_m = 0.35f;
   float readiness_weak_threshold = 70.0f;

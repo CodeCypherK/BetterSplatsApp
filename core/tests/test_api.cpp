@@ -64,7 +64,7 @@ TEST(ApiBasics, VersionIsNonEmpty) {
 }
 
 TEST(ApiBasics, NullSafety) {
-  EXPECT_EQ(bs_live_begin(nullptr, "x"), BS_ERR_INVALID_ARGUMENT);
+  EXPECT_EQ(bs_live_begin(nullptr, "x", BS_PASS_CAPTURE), BS_ERR_INVALID_ARGUMENT);
   EXPECT_EQ(bs_live_feed(nullptr, nullptr), BS_ERR_INVALID_ARGUMENT);
   EXPECT_EQ(bs_live_poll_status(nullptr, nullptr), BS_ERR_INVALID_ARGUMENT);
   EXPECT_EQ(bs_final_start(nullptr, "x", "quality"), BS_ERR_INVALID_ARGUMENT);
@@ -87,7 +87,7 @@ TEST_F(ApiTest, LiveLifecycle) {
   ASSERT_EQ(bs_live_poll_status(engine_, &status), BS_OK);
   EXPECT_EQ(status.state, BS_LIVE_IDLE);
 
-  ASSERT_EQ(bs_live_begin(engine_, session_dir_.c_str()), BS_OK);
+  ASSERT_EQ(bs_live_begin(engine_, session_dir_.c_str(), BS_PASS_CAPTURE), BS_OK);
   EXPECT_TRUE(fs::exists(fs::path(session_dir_) / "live"));
 
   for (uint32_t id = 1; id <= 5; ++id) {
@@ -110,8 +110,8 @@ TEST_F(ApiTest, LiveStateMachineRejectsBadTransitions) {
   EXPECT_EQ(bs_live_feed(engine_, &f), BS_ERR_INVALID_STATE);
   EXPECT_EQ(bs_live_end(engine_), BS_ERR_INVALID_STATE);
 
-  ASSERT_EQ(bs_live_begin(engine_, session_dir_.c_str()), BS_OK);
-  EXPECT_EQ(bs_live_begin(engine_, session_dir_.c_str()), BS_ERR_INVALID_STATE);
+  ASSERT_EQ(bs_live_begin(engine_, session_dir_.c_str(), BS_PASS_CAPTURE), BS_OK);
+  EXPECT_EQ(bs_live_begin(engine_, session_dir_.c_str(), BS_PASS_CAPTURE), BS_ERR_INVALID_STATE);
 
   // Non-increasing frame ids are rejected.
   f = MakeFrame(7);

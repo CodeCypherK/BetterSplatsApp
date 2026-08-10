@@ -46,7 +46,10 @@ class LiveSystem {
   explicit LiveSystem(const EngineConfig& config);
   ~LiveSystem();
 
-  void Begin(const std::string& session_dir, double k1, double k2);
+  // `pass` selects scout (build a scaffold) or capture (localize into the
+  // scaffold left by a previous scout pass, when one exists).
+  void Begin(const std::string& session_dir, double k1, double k2,
+             bs_pass_kind pass = BS_PASS_CAPTURE);
 
   // Late distortion injection: the device app delivers the calibration LUT
   // with the first frames, after Begin. Only meaningful before bootstrap
@@ -124,6 +127,10 @@ class LiveSystem {
   EngineConfig config_;
   std::string session_dir_;
   double k1_ = 0, k2_ = 0;
+  bs_pass_kind pass_ = BS_PASS_CAPTURE;
+  // Keyframes at the head of the map that came from a loaded scaffold. They
+  // define the session gauge and are never optimized.
+  uint32_t scaffold_keyframes_ = 0;
 
   bs_live_state state_ = BS_LIVE_IDLE;
   LiveMap map_;

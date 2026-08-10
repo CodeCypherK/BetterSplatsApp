@@ -50,12 +50,22 @@ bool LiveSystem::ShouldInsertKeyframe(const LiveFrameInput& input,
       median_depth = depths[depths.size() / 2];
     }
   }
-  const double needed_translation =
+  double needed_translation =
       std::max(static_cast<double>(config_.kf_min_translation_m),
                config_.kf_translation_depth_frac * median_depth);
+  double needed_rotation = config_.kf_min_rotation_deg;
+  if (pass_ == BS_PASS_SCOUT) {
+    // A scaffold's whole value is how reliably a later pass can relocalize
+    // into it, and that is bounded by how far apart its keyframes are: ORB
+    // stops matching well across a large viewpoint change. The scout pass is
+    // cheap in every other respect (its frames are never reconstructed), so
+    // spend that budget on keyframe density.
+    needed_translation *= config_.scout_kf_translation_scale;
+    needed_rotation *= config_.scout_kf_rotation_scale;
+  }
 
-  const bool moved = translation > needed_translation ||
-                     rotation_deg > config_.kf_min_rotation_deg;
+  const bool moved =
+      translation > needed_translation || rotation_deg > needed_rotation;
 
   // ...or tracked support decaying versus the reference keyframe.
   const double overlap =
@@ -339,6 +349,13 @@ void LiveSystem::LocalBundleAdjustment(uint32_t center_kf_id) {
   std::vector<uint32_t> window{center_kf_id};
   for (const auto& [kf_id, _] :
        map_.Covisible(center_kf_id, config_.lba_min_shared_points)) {
+    // Scaffold keyframes from a previous pass are the session's reference
+    // frame — this pass localizes INTO them, so they never enter the
+    // optimization window. Where they observe window points they still join
+    // the problem below as fixed observers, which is what pins this pass to
+    // the gauge every other pass shares.
+    const Keyframe* candidate = map_.FindKeyframe(kf_id);
+    if (candidate != nullptr && candidate->from_scaffold) continue;
     window.push_back(kf_id);
     if (static_cast<int>(window.size()) >= config_.lba_window) break;
   }
@@ -439,9 +456,19 @@ void LiveSystem::LocalBundleAdjustment(uint32_t center_kf_id) {
 
   for (auto& [kf_id, block] : pose_blocks) {
     problem.SetManifold(block.data(), new ceres::EigenQuaternionManifold);
-    if (fixed.count(kf_id)) {
+    const Keyframe* kf = map_.FindKeyframe(kf_id);
+    if (fixed.count(kf_id) || (kf != nullptr && kf->from_scaffold)) {
       problem.SetParameterBlockConstant(block.data());
       problem.SetParameterBlockConstant(block.data() + 4);
+    }
+  }
+  // Scaffold points are part of the same reference: new observations of them
+  // constrain this pass's poses, but must not move the map underneath.
+  for (auto& [pid, xyz] : point_blocks) {
+    const auto it = map_.points().find(pid);
+    if (it != map_.points().end() && it->second.from_scaffold &&
+        problem.HasParameterBlock(xyz.data())) {
+      problem.SetParameterBlockConstant(xyz.data());
     }
   }
 

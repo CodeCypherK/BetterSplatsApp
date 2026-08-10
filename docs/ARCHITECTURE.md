@@ -141,15 +141,55 @@ Measured on `bs_synth --two-room` (33 m closed loop through a doorway):
 registration 57% → **92%**, and geometry (RMSE after optimal alignment to
 ground truth) 0.50 m → **~0.20 m**, with global scale within 1%.
 
+## The scout pass
+
+Instead of segmenting the live map and stitching sub-maps after the fact,
+the user may walk the space once before capturing anything: a fast lap of
+every room, back to the walls, camera aimed inward. That circuit is a
+**localization scaffold** — its job is to make sure there is always
+something to hold position against, so the "walked into a room nothing has
+mapped" failure mostly cannot arise.
+
+The geometry that makes a good scaffold is the opposite of the geometry
+that makes good splat input: whole-room visibility, wide baselines, very
+few frames per room, all of it walked fast and far from every surface. So
+scout frames are tagged `pass="scout"` and the final solve excludes them
+(docs/FORMATS.md). They still go to RAW like every other measurement —
+replay needs them, and "not reconstructed from" is a solve-time decision,
+never a licence to discard captured data.
+
+Mechanically: the scout pass writes `live/map.bin` (keyframes with
+descriptors, points, associations, plus whether LiDAR actually made it
+metric — a scaffold that never locked scale must not hand a metric gauge to
+the next pass). A capture pass loads it, starts in LOST, and relocalizes
+into it, so the session keeps one world frame across passes. Scaffold
+keyframes and points are held **constant** in local BA: this pass localizes
+into the reference, it does not get to move it.
+
+Two further payoffs beyond localization: the session's world frame is
+established once, and the readiness room list exists before detail capture
+starts — finish the circuit and the dashboard already reads "Room 1…N" with
+low scores, i.e. a worklist.
+
 ## Known limitations (measured)
 
-**The live map is still single-segment.** Tracking dies facing the blank
-wall, and the system waits for relocalization instead of starting a new
-sub-map (plan risk #4, "segment-and-rejoin"), so a two-room walkthrough
-tracks only ~17% of frames live — accurately (2.3 cm) but intermittently.
-Relocalization now sweeps the whole map rather than only the 20 newest
-keyframes, which is necessary but not sufficient. The final solve no longer
-depends on this, which is why the reconstruction survives it.
+**Live tracking is fragile on walking trajectories, which currently caps
+what the scout pass delivers.** The scaffold machinery works end to end —
+the map persists, loads, reports its metric status, and a capture pass has
+been observed relocalizing against scaffold keyframes — but on the two-room
+walkthrough the scout circuit itself loses tracking partway and produces
+only ~14 keyframes over a 38 m lap (one per 2.7 m). ORB does not match
+reliably across viewpoint changes that large, so the capture pass
+relocalizes only intermittently (~2% of frames tracked). Keyframe density
+is not the binding constraint — the scout-specific gates
+(`scout_kf_*_scale`) do not change the count, because insertion is gated by
+tracking succeeding at all.
+
+So the remaining work is the live tracker itself (motion model and
+relocalization robustness through low-texture stretches), not the scaffold
+around it. The final solve is unaffected either way: it no longer needs
+live poses at all, and reconstructs a two-room walkthrough from images
+alone.
 
 The two-room walkthrough still does not meet the single-room accuracy
 bounds (≥90% registration is met; <5 cm ATE is not), so it remains a

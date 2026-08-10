@@ -35,6 +35,11 @@ struct Keyframe {
   std::shared_ptr<DepthFrame> depth;
   std::shared_ptr<DepthLookup> depth_lookup;
 
+  // Loaded from a previous pass's map (the scout circuit) rather than
+  // tracked in this one. The scaffold defines the session's world frame, so
+  // optimization treats it as a constant reference instead of drifting it.
+  bool from_scaffold = false;
+
   int AssociatedCount() const {
     int n = 0;
     for (const int32_t id : point_ids) n += id >= 0;
@@ -54,6 +59,7 @@ struct MapPoint {
   int visible_count = 0;  // predicted in frustum
   int found_count = 0;    // matched as inlier
   uint8_t rgb[3] = {180, 180, 180};
+  bool from_scaffold = false;  // see Keyframe::from_scaffold
 
   double TextureWeightNow(double tex_floor) const;
 };

@@ -351,22 +351,26 @@ int RunFinal(const bs::SessionReader& session, const std::string& config,
   return 0;
 }
 
-int RunLive(const bs::SessionReader& session, const std::string& config,
-            bool check) {
+// Feeds the frames of one pass through a fresh engine. The scout pass runs
+// first and leaves live/map.bin behind; the capture pass then loads it, which
+// is exactly the sequence the app performs.
+int FeedPass(const bs::SessionReader& session, const std::string& config,
+             bs_pass_kind pass, const std::vector<uint32_t>& frame_ids,
+             bs_live_status& status_out) {
   bs_engine* engine = bs_create(config.c_str());
   if (engine == nullptr) {
     std::fprintf(stderr, "engine creation failed\n");
     return 1;
   }
 
-  if (bs_live_begin(engine, session.dir().c_str()) != BS_OK) {
+  if (bs_live_begin(engine, session.dir().c_str(), pass) != BS_OK) {
     std::fprintf(stderr, "live_begin failed: %s\n", bs_last_error(engine));
     bs_destroy(engine);
     return 1;
   }
 
   uint32_t fed = 0;
-  for (const uint32_t frame_id : session.frame_ids()) {
+  for (const uint32_t frame_id : frame_ids) {
     const auto meta = session.ReadMeta(frame_id);
     const auto depth = session.ReadDepth(frame_id);
     const auto jpeg = session.ReadImageBytes(frame_id);
@@ -411,19 +415,53 @@ int RunLive(const bs::SessionReader& session, const std::string& config,
     }
   }
 
-  bs_live_status status{};
-  bs_live_poll_status(engine, &status);
-  std::printf("live replay: fed %u frames, engine processed %u, state=%d, "
+  bs_live_poll_status(engine, &status_out);
+  std::printf("%s pass: fed %u frames, engine processed %u, state=%d, "
               "keyframes=%u, points=%u, scale_locked=%d\n",
-              fed, status.frames_processed, status.state, status.keyframes,
-              status.map_points, status.scale_locked);
+              pass == BS_PASS_SCOUT ? "scout" : "live", fed,
+              status_out.frames_processed, status_out.state,
+              status_out.keyframes, status_out.map_points,
+              status_out.scale_locked);
 
   const bs_result end = bs_live_end(engine);
   if (end != BS_OK) {
     std::fprintf(stderr, "live_end failed: %s\n", bs_last_error(engine));
   }
   bs_destroy(engine);
-  if (end != BS_OK) return 1;
+  return end == BS_OK ? 0 : 1;
+}
+
+int RunLive(const bs::SessionReader& session, const std::string& config,
+            bool check) {
+  // Split the session by pass. A scout circuit runs first and writes the
+  // scaffold; the capture pass then loads it — the same order the app uses,
+  // so replay reproduces on-device behavior rather than approximating it.
+  std::vector<uint32_t> scout_ids, capture_ids;
+  for (const uint32_t frame_id : session.frame_ids()) {
+    const auto meta = session.ReadMeta(frame_id);
+    if (meta && meta->is_scout()) {
+      scout_ids.push_back(frame_id);
+    } else {
+      capture_ids.push_back(frame_id);
+    }
+  }
+
+  bs_live_status status{};
+  if (!scout_ids.empty()) {
+    bs_live_status scout_status{};
+    if (FeedPass(session, config, BS_PASS_SCOUT, scout_ids, scout_status) != 0) {
+      return 1;
+    }
+  }
+  if (capture_ids.empty()) {
+    std::fprintf(stderr, "session has no capture frames\n");
+    return 1;
+  }
+  if (FeedPass(session, config, BS_PASS_CAPTURE, capture_ids, status) != 0) {
+    return 1;
+  }
+  const uint32_t fed = status.frames_processed;
+  (void)fed;
 
   // Compare live poses against ground truth (synthetic sessions). The live
   // map's world frame is anchored at the first keyframe, so poses compare

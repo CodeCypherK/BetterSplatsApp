@@ -26,7 +26,7 @@ class Engine {
   Engine(const Engine&) = delete;
   Engine& operator=(const Engine&) = delete;
 
-  bs_result LiveBegin(const char* session_dir);
+  bs_result LiveBegin(const char* session_dir, bs_pass_kind pass);
   bs_result LiveFeed(const bs_frame_in& frame);
   bs_result LivePollStatus(bs_live_status& out);
   bs_result LiveEnd();

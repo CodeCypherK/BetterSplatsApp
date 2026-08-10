@@ -14,6 +14,7 @@
 #include "geometry/two_view.h"
 #include "io/float16.h"
 #include "io/session_schema.h"
+#include "live/map_io.h"
 #include "vision/matching.h"
 
 namespace bs {
@@ -56,13 +57,45 @@ LiveSystem::LiveSystem(const EngineConfig& config) : config_(config) {}
 
 LiveSystem::~LiveSystem() = default;
 
-void LiveSystem::Begin(const std::string& session_dir, double k1, double k2) {
+void LiveSystem::Begin(const std::string& session_dir, double k1, double k2,
+                       bs_pass_kind pass) {
   session_dir_ = session_dir;
   k1_ = k1;
   k2_ = k2;
+  pass_ = pass;
   state_ = BS_LIVE_INITIALIZING;
   guidance_ = BS_GUIDE_NONE;
-  BS_LOGI("live", "begin (k1=%.4f k2=%.4f)", k1, k2);
+
+  // A capture pass starts from the scout circuit's map when there is one.
+  // The scaffold already covers the whole space and is already metric, so
+  // this pass never has to bootstrap its own gauge: it relocalizes into the
+  // session's existing world frame and keeps it. That is the entire point of
+  // walking the place first — tracking loss becomes recoverable anywhere,
+  // instead of stranding the user in a room nothing has mapped.
+  scaffold_keyframes_ = 0;
+  if (pass_ == BS_PASS_CAPTURE) {
+    const std::string map_path =
+        (fs::path(session_dir_) / "live" / "map.bin").string();
+    bool scaffold_metric = false;
+    if (fs::exists(map_path) && ReadLiveMap(map_path, map_, &scaffold_metric)) {
+      scaffold_keyframes_ = static_cast<uint32_t>(map_.keyframes().size());
+      if (scaffold_keyframes_ > 0) {
+        // The scaffold's gauge IS the session gauge — but only inherit a
+        // metric claim the scout pass actually earned.
+        scale_locked_ = scaffold_metric;
+        // Nothing is tracked yet, but there is a map to find ourselves in,
+        // so start in the state whose job is exactly that.
+        state_ = BS_LIVE_LOST;
+        guidance_ = BS_GUIDE_TRACKING_LOST;
+        BS_LOGI("live", "loaded scaffold: %u keyframes, %zu points, %s",
+                scaffold_keyframes_, map_.points().size(),
+                scaffold_metric ? "metric" : "scale NOT locked");
+      }
+    }
+  }
+
+  BS_LOGI("live", "begin %s (k1=%.4f k2=%.4f)",
+          pass_ == BS_PASS_SCOUT ? "scout" : "capture", k1, k2);
 }
 
 std::shared_ptr<DepthFrame> LiveSystem::MakeDepthFrame(
@@ -836,6 +869,21 @@ bool LiveSystem::End() {
 
   std::error_code ec;
   fs::create_directories(fs::path(session_dir_) / "live", ec);
+
+  // A scout pass exists to leave this behind. Everything else in live/ is
+  // disposable because it can be recomputed from RAW; the scaffold has to
+  // persist because the next pass needs it before it has reconstructed
+  // anything of its own.
+  if (pass_ == BS_PASS_SCOUT && !map_.keyframes().empty()) {
+    const std::string map_path =
+        (fs::path(session_dir_) / "live" / "map.bin").string();
+    if (WriteLiveMap(map_, map_path, scale_locked_)) {
+      BS_LOGI("live", "scout scaffold written: %zu keyframes, %zu points",
+              map_.keyframes().size(), map_.points().size());
+    } else {
+      BS_LOGW("live", "failed to write scout scaffold to %s", map_path.c_str());
+    }
+  }
   std::ofstream out(fs::path(session_dir_) / "live" / "poses.jsonl",
                     std::ios::trunc);
   if (!out) return false;

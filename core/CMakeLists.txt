@@ -27,6 +27,7 @@ add_library(bscore STATIC
   src/live/live_map.cpp
   src/live/live_mapper.cpp
   src/live/live_system.cpp
+  src/live/map_io.cpp
   src/readiness/patch_grid.cpp
   src/vision/features.cpp
   src/vision/matching.cpp

@@ -37,8 +37,11 @@ final class CoreEngine: @unchecked Sendable {
     // MARK: - Live session
 
     @discardableResult
-    func liveBegin(sessionDir: String) -> bs_result {
-        bs_live_begin(handle, sessionDir)
+    /// `pass` selects the scout circuit (build a localization scaffold) or
+    /// ordinary capture (localize into the scaffold, when one exists).
+    func liveBegin(sessionDir: String, pass: bs_pass_kind = BS_PASS_CAPTURE)
+        -> bs_result {
+        bs_live_begin(handle, sessionDir, pass)
     }
 
     /// Feeds one frame. `frame` must be fully populated with pointers that

@@ -11,6 +11,7 @@ add_executable(bs_tests
   test_fusion.cpp
   test_lidar.cpp
   test_lut_fit.cpp
+  test_map_io.cpp
   test_matching.cpp
   test_readiness.cpp
   test_session_io.cpp

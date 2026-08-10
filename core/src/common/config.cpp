@@ -90,6 +90,8 @@ EngineConfig EngineConfig::FromJson(const char* text, bool* ok) {
   get_to(j, "lidar_gate_sigmas", c.lidar_gate_sigmas);
 
   get_to(j, "patch_size_m", c.patch_size_m);
+  get_to(j, "scout_kf_translation_scale", c.scout_kf_translation_scale);
+  get_to(j, "scout_kf_rotation_scale", c.scout_kf_rotation_scale);
   get_to(j, "readiness_weak_threshold", c.readiness_weak_threshold);
 
   get_to(j, "final_sift_features", c.final_sift_features);

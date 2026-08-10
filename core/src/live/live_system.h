@@ -1,6 +1,7 @@
 #pragma once
 
 #include <deque>
+#include <map>
 #include <optional>
 #include <string>
 #include <vector>
@@ -63,8 +64,12 @@ class LiveSystem {
                     std::vector<bs_snap_camera>& cameras) const;
 
   const PatchGrid& readiness() const { return readiness_; }
-  void RenameRegion(const std::string& name) { region_name_ = name; }
-  const std::string& region_name() const { return region_name_; }
+  void RenameRegion(uint32_t region_id, const std::string& name) {
+    region_names_[region_id] = name;
+  }
+  const std::map<uint32_t, std::string>& region_names() const {
+    return region_names_;
+  }
 
   // Flushes live/poses.jsonl + summary; returns false on IO failure.
   bool End();
@@ -161,7 +166,7 @@ class LiveSystem {
   double BlurThreshold(double fraction) const;
 
   PatchGrid readiness_;
-  std::string region_name_ = "Room 1";
+  std::map<uint32_t, std::string> region_names_;
   uint32_t loop_links_ = 0;
 };
 

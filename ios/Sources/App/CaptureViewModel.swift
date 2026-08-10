@@ -6,6 +6,10 @@ import Observation
 /// MainActor view model. Built once per session; @unchecked Sendable because
 /// mutable state is guarded by `lock` and the rest is immutable or actors.
 final class FrameFeedContext: @unchecked Sendable {
+    /// Hard cap on stored frames (~1.3 MB each ≈ 1.2 GB); UI warns earlier.
+    static let storedFrameCap = 900
+    static let storedFrameWarn = 700
+
     let store: SessionStore
     let encoder = JpegEncoder()
     let encodeQueue = DispatchQueue(label: "bs.jpeg", qos: .utility)
@@ -16,6 +20,7 @@ final class FrameFeedContext: @unchecked Sendable {
     var nextFrameId: UInt32 = 1
     var lastStoreTime: Double = -1
     var encodesInFlight = 0
+    var storeCommits = 0
 
     init(store: SessionStore, previewRenderer: VideoPreviewRenderer,
          videoDims: (width: Int, height: Int)) {
@@ -45,10 +50,13 @@ final class FrameFeedContext: @unchecked Sendable {
         lock.lock()
         let elapsed = frame.tCapture - lastStoreTime
         let busy = encodesInFlight >= 2
-        let shouldStore = !busy && elapsed >= 0.30 && stats.overexposedFraction < 0.10
+        let capped = storeCommits >= Self.storedFrameCap
+        let shouldStore = !busy && !capped && elapsed >= 0.30
+            && stats.overexposedFraction < 0.10
         if shouldStore {
             lastStoreTime = frame.tCapture
             encodesInFlight += 1
+            storeCommits += 1
         }
         lock.unlock()
         guard shouldStore else { return }
@@ -78,7 +86,12 @@ final class FrameFeedContext: @unchecked Sendable {
                 encodesInFlight -= 1
                 lock.unlock()
             }
-            guard let jpeg = encoder.encode(pixelBuffer) else { return }
+            guard let jpeg = encoder.encode(pixelBuffer) else {
+                lock.lock()
+                storeCommits -= 1  // failed encode gives its cap slot back
+                lock.unlock()
+                return
+            }
             let payload = SessionStore.FramePayload(
                 frameId: frameId, jpeg: jpeg, depthF16: depth.f16,
                 depthWidth: depth.width, depthHeight: depth.height, meta: meta)
@@ -178,6 +191,7 @@ final class CaptureViewModel {
     private(set) var framesSeen: UInt32 = 0
     private(set) var framesStored: UInt32 = 0
     private(set) var megabytesWritten: Double = 0
+    private(set) var storageNote: String?
     private(set) var readinessOverall: Float = 0
     private(set) var snapshot = CoreEngine.Snapshot()
 
@@ -261,6 +275,16 @@ final class CaptureViewModel {
                 self.framesStored = await context.store.storedFrames
                 self.megabytesWritten =
                     Double(await context.store.storedBytes) / 1_048_576.0
+                let stored = Int(self.framesStored)
+                if stored >= FrameFeedContext.storedFrameCap {
+                    self.storageNote =
+                        "Storage limit reached — stop and reconstruct"
+                } else if stored >= FrameFeedContext.storedFrameWarn {
+                    self.storageNote = "Storage: \(stored)/"
+                        + "\(FrameFeedContext.storedFrameCap) frames"
+                } else {
+                    self.storageNote = nil
+                }
                 self.snapshotTick += 1
                 if self.snapshotTick % 5 == 0 {  // ~2 Hz snapshot refresh
                     self.refreshSnapshot()
@@ -274,8 +298,8 @@ final class CaptureViewModel {
         mapRenderer.update(with: snapshot)
     }
 
-    func renameRegion(name: String) {
-        _ = CoreEngine.shared.renameRegion(id: 1, name: name)
+    func renameRegion(id: UInt32, name: String) {
+        _ = CoreEngine.shared.renameRegion(id: id, name: name)
         refreshSnapshot()
     }
 

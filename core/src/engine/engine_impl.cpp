@@ -236,7 +236,7 @@ bs_result Engine::SnapshotAcquire(bs_snapshot& out) {
     live_->FillSnapshot(storage->points, storage->cameras);
     live_->readiness().FillSnapshot(storage->patches, storage->regions,
                                     storage->weak_areas,
-                                    live_->region_name().c_str());
+                                    live_->region_names());
   }
 
   out._h = storage;
@@ -372,12 +372,10 @@ bs_result Engine::RegionRename(uint32_t region_id, const char* utf8_name) {
   if (!live_) {
     return Fail(BS_ERR_INVALID_STATE, "RegionRename: no live session");
   }
-  if (region_id != 1) {
-    return Fail(BS_ERR_INVALID_ARGUMENT,
-                "RegionRename: unknown region id (auto-clustering into "
-                "multiple regions is a later milestone)");
+  if (region_id == 0) {
+    return Fail(BS_ERR_INVALID_ARGUMENT, "RegionRename: region ids start at 1");
   }
-  live_->RenameRegion(utf8_name);
+  live_->RenameRegion(region_id, utf8_name);
   return BS_OK;
 }
 

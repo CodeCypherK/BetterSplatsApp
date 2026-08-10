@@ -6,6 +6,7 @@ import SwiftUI
 struct ReadinessDashboardView: View {
     let model: CaptureViewModel
     @State private var renameText = ""
+    @State private var renameRegionID: UInt32 = 0
     @State private var renaming = false
 
     private static let axisNames = ["Geometry", "Camera poses", "Texture",
@@ -31,6 +32,7 @@ struct ReadinessDashboardView: View {
                             .foregroundStyle(scoreColor(region.score))
                         Button {
                             renameText = region.name
+                            renameRegionID = region.id
                             renaming = true
                         } label: {
                             Image(systemName: "pencil")
@@ -69,7 +71,8 @@ struct ReadinessDashboardView: View {
                             HStack {
                                 Image(systemName: "exclamationmark.triangle.fill")
                                     .foregroundStyle(.orange)
-                                Text(Self.title(for: area))
+                                Text(Self.title(for: area,
+                                                regionName: regionName(for: area)))
                                     .font(.subheadline.weight(.medium))
                                 Spacer()
                                 Text("\(Int(area.score))%")
@@ -90,7 +93,11 @@ struct ReadinessDashboardView: View {
         .onAppear { model.refreshSnapshot() }
         .alert("Rename region", isPresented: $renaming) {
             TextField("Name", text: $renameText)
-            Button("Rename") { model.renameRegion(name: renameText) }
+            Button("Rename") {
+                if renameRegionID != 0 {
+                    model.renameRegion(id: renameRegionID, name: renameText)
+                }
+            }
             Button("Cancel", role: .cancel) {}
         }
     }
@@ -99,11 +106,20 @@ struct ReadinessDashboardView: View {
         score >= 85 ? .green : (score >= 60 ? .orange : .red)
     }
 
-    static func title(for area: CoreEngine.Snapshot.WeakArea) -> String {
+    /// Region name shown on weak areas only once there are several rooms.
+    private func regionName(for area: CoreEngine.Snapshot.WeakArea) -> String? {
+        guard model.snapshot.regions.count > 1 else { return nil }
+        return model.snapshot.regions.first { $0.id == area.regionID }?.name
+    }
+
+    static func title(for area: CoreEngine.Snapshot.WeakArea,
+                      regionName: String? = nil) -> String {
         let surface = ["Wall", "Floor", "Ceiling", "Object"][
             min(3, max(0, area.surfaceKind))]
         let distance = simd_length(area.center)
-        return String(format: "%@ · %.1f m away", surface, distance)
+        let base = String(format: "%@ · %.1f m away", surface, distance)
+        if let regionName { return "\(regionName) — \(base)" }
+        return base
     }
 
     static func advice(for area: CoreEngine.Snapshot.WeakArea) -> String {

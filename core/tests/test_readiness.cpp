@@ -12,13 +12,15 @@ namespace {
 struct MapBuilder {
   LiveMap map;
 
-  std::vector<uint32_t> AddArcKeyframes(int count, double spread_x) {
+  std::vector<uint32_t> AddArcKeyframes(int count, double spread_x,
+                                        double x_offset = 0.0) {
     std::vector<uint32_t> ids;
     for (int i = 0; i < count; ++i) {
       Keyframe kf;
       kf.frame_id = static_cast<uint32_t>(i + 1);
       const double x =
-          count == 1 ? 0.0 : -spread_x / 2 + spread_x * i / (count - 1);
+          (count == 1 ? 0.0 : -spread_x / 2 + spread_x * i / (count - 1)) +
+          x_offset;
       kf.pose.q = Eigen::Quaterniond::Identity();
       kf.pose.t = -Eigen::Vector3d(x, 0, 0);  // camera at (x,0,0) facing +Z
       kf.K = {600, 600, 479.5, 359.5, 960, 720};
@@ -160,7 +162,7 @@ TEST(Readiness, EmptyMapIsSafe) {
   std::vector<bs_snap_patch> patches;
   std::vector<bs_snap_region> regions;
   std::vector<bs_snap_weak_area> weak;
-  grid.FillSnapshot(patches, regions, weak, "Room 1");
+  grid.FillSnapshot(patches, regions, weak, {});
   EXPECT_TRUE(patches.empty());
   EXPECT_TRUE(regions.empty());
 }
@@ -175,14 +177,54 @@ TEST(Readiness, SnapshotCarriesRegionAndScores) {
   std::vector<bs_snap_patch> patches;
   std::vector<bs_snap_region> regions;
   std::vector<bs_snap_weak_area> weak;
-  grid.FillSnapshot(patches, regions, weak, "Kitchen");
+  grid.FillSnapshot(patches, regions, weak, {{1, "Kitchen"}});
 
   ASSERT_EQ(regions.size(), 1u);
   EXPECT_STREQ(regions[0].name, "Kitchen");
+  EXPECT_EQ(regions[0].region_id, 1u);
   EXPECT_EQ(regions[0].patch_count, patches.size());
   EXPECT_NEAR(regions[0].score, grid.OverallScore(), 1e-4);
   ASSERT_FALSE(patches.empty());
   EXPECT_GT(patches[0].extent, 0.0f);
+  EXPECT_EQ(patches[0].region_id, 1u);
+}
+
+TEST(Readiness, DistantClustersFormSeparateRegions) {
+  MapBuilder b;
+  // Room A: strong wall near the origin. Room B: 10 m away (beyond the
+  // 2 m clustering distance, zero covisibility), blank wall -> weak.
+  const auto kfs_a = b.AddArcKeyframes(3, 1.0);
+  const auto kfs_b = b.AddArcKeyframes(3, 1.0, /*x_offset=*/10.0);
+  b.AddWallPoints(0.02, 0.32, 0.02, 0.32, 7, 7, kfs_a, /*gradient=*/30,
+                  /*angle=*/6.0, /*err=*/0.5);
+  b.AddWallPoints(10.02, 10.12, 0.02, 0.32, 7, 7, kfs_b, /*gradient=*/0.5,
+                  /*angle=*/6.0, /*err=*/0.5);
+
+  PatchGrid grid;
+  grid.Build(b.map);
+  ASSERT_EQ(grid.regions().size(), 2u);
+  // Discovery order: earliest keyframe's component is region 1.
+  EXPECT_EQ(grid.regions()[0].id, 1u);
+  EXPECT_EQ(grid.regions()[1].id, 2u);
+  // Scores stay separated per room instead of averaging together.
+  EXPECT_GT(grid.regions()[0].score, 60.0f);
+  EXPECT_LT(grid.regions()[1].score, 45.0f);
+  uint32_t patch_total = 0;
+  for (const auto& r : grid.regions()) patch_total += r.patch_count;
+  EXPECT_EQ(patch_total, grid.patches().size());
+
+  // The weak area lands in room B.
+  ASSERT_FALSE(grid.weak_areas().empty());
+  EXPECT_EQ(grid.weak_areas().front().region_id, 2u);
+
+  // Renames apply per id; unnamed regions fall back to "Room N".
+  std::vector<bs_snap_patch> patches;
+  std::vector<bs_snap_region> regions;
+  std::vector<bs_snap_weak_area> weak;
+  grid.FillSnapshot(patches, regions, weak, {{2, "Bedroom"}});
+  ASSERT_EQ(regions.size(), 2u);
+  EXPECT_STREQ(regions[0].name, "Room 1");
+  EXPECT_STREQ(regions[1].name, "Bedroom");
 }
 
 }  // namespace

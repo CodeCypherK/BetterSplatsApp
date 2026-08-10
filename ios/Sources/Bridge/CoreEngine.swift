@@ -101,6 +101,7 @@ final class CoreEngine: @unchecked Sendable {
         struct WeakArea {
             let center: SIMD3<Float>
             let radiusM: Float
+            let regionID: UInt32
             let deficiency: Int  // 0 geom, 1 pose, 2 texture, 3 lidar, 4 view
             let surfaceKind: Int // 0 wall, 1 floor, 2 ceiling, 3 object
             let moveDir: SIMD3<Float>
@@ -169,6 +170,7 @@ final class CoreEngine: @unchecked Sendable {
                 let w = weak[i]
                 snap.weakAreas.append(Snapshot.WeakArea(
                     center: SIMD3(w.cx, w.cy, w.cz), radiusM: w.radius_m,
+                    regionID: w.region_id,
                     deficiency: Int(w.deficiency),
                     surfaceKind: Int(w.surface_kind),
                     moveDir: SIMD3(w.move_dir.0, w.move_dir.1, w.move_dir.2),

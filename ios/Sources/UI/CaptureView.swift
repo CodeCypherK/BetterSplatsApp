@@ -56,6 +56,17 @@ struct CaptureView: View {
             .padding(.vertical, 5)
             .background(.ultraThinMaterial, in: Capsule())
 
+            if let note = model.storageNote {
+                Label(note, systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(
+                        Int(model.framesStored) >= FrameFeedContext.storedFrameCap
+                        ? Color.red : Color.orange)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 5)
+                    .background(.ultraThinMaterial, in: Capsule())
+            }
+
             HStack(spacing: 10) {
                 NavigationLink {
                     ReadinessDashboardView(model: model)

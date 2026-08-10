@@ -14,6 +14,23 @@ namespace {
 
 double Sat(double x) { return std::min(1.0, std::max(0.0, x)); }
 
+struct KfUnionFind {
+  std::map<uint32_t, uint32_t> parent;
+  uint32_t Find(uint32_t a) {
+    auto it = parent.find(a);
+    if (it == parent.end()) {
+      parent[a] = a;
+      return a;
+    }
+    while (it->second != a) {
+      a = it->second;
+      it = parent.find(a);
+    }
+    return a;
+  }
+  void Union(uint32_t a, uint32_t b) { parent[Find(a)] = Find(b); }
+};
+
 }  // namespace
 
 PatchGrid::PatchGrid(const ReadinessOptions& options) : options_(options) {}
@@ -22,12 +39,60 @@ double PatchGrid::PatchArea() const {
   return options_.patch_size_m * options_.patch_size_m;
 }
 
+std::map<uint32_t, uint32_t> PatchGrid::ClusterRegions(
+    const LiveMap& map) const {
+  // Covisibility counted from point observations directly (not the
+  // per-keyframe association lists) so clustering works on any map that
+  // carries observations, however it was assembled.
+  std::unordered_map<uint64_t, int> pair_count;
+  for (const auto& [_, mp] : map.points()) {
+    for (size_t i = 0; i < mp.observations.size(); ++i) {
+      for (size_t j = i + 1; j < mp.observations.size(); ++j) {
+        uint32_t a = mp.observations[i].first;
+        uint32_t b = mp.observations[j].first;
+        if (a == b) continue;
+        if (a > b) std::swap(a, b);
+        ++pair_count[(static_cast<uint64_t>(a) << 32) | b];
+      }
+    }
+  }
+
+  KfUnionFind uf;
+  for (const auto& kf : map.keyframes()) uf.Find(kf.kf_id);
+  for (const auto& [key, count] : pair_count) {
+    if (count < options_.region_min_shared_points) continue;
+    const uint32_t a = static_cast<uint32_t>(key >> 32);
+    const uint32_t b = static_cast<uint32_t>(key & 0xffffffffu);
+    const Keyframe* ka = map.FindKeyframe(a);
+    const Keyframe* kb = map.FindKeyframe(b);
+    if (ka == nullptr || kb == nullptr) continue;
+    if ((ka->pose.CameraCenter() - kb->pose.CameraCenter()).norm() <
+        options_.region_max_kf_distance_m) {
+      uf.Union(a, b);
+    }
+  }
+  // Region ids in discovery order (smallest keyframe id first).
+  std::map<uint32_t, uint32_t> root_to_region;
+  std::map<uint32_t, uint32_t> region_of_kf;
+  uint32_t next_region = 1;
+  for (const auto& kf : map.keyframes()) {
+    const uint32_t root = uf.Find(kf.kf_id);
+    auto [it, inserted] = root_to_region.emplace(root, next_region);
+    if (inserted) ++next_region;
+    region_of_kf[kf.kf_id] = it->second;
+  }
+  return region_of_kf;
+}
+
 void PatchGrid::Build(const LiveMap& map) {
   patches_.clear();
   weak_areas_.clear();
+  regions_.clear();
   overall_ = 0;
   std::memset(overall_sub_, 0, sizeof(overall_sub_));
   if (map.points().empty()) return;
+
+  const std::map<uint32_t, uint32_t> region_of_kf = ClusterRegions(map);
 
   has_lidar_ = false;
   for (const auto& kf : map.keyframes()) {
@@ -133,20 +198,50 @@ void PatchGrid::Build(const LiveMap& map) {
       }
     }
 
+    // Region: majority vote over observing keyframes.
+    std::map<uint32_t, int> votes;
+    for (const uint32_t kf_id : patch.observing_kfs) {
+      const auto it = region_of_kf.find(kf_id);
+      if (it != region_of_kf.end()) ++votes[it->second];
+    }
+    if (!votes.empty()) {
+      patch.region_id =
+          std::max_element(votes.begin(), votes.end(),
+                           [](const auto& a, const auto& b) {
+                             return a.second < b.second;
+                           })
+              ->first;
+    }
+
     ScorePatch(patch);
   }
 
-  // Aggregate: area-weighted mean (uniform patch area here).
+  // Aggregates: overall and per region (uniform patch area).
   double score_sum = 0;
   double sub_sum[5] = {0, 0, 0, 0, 0};
+  std::map<uint32_t, RegionAggregate> region_agg;
+  std::map<uint32_t, double> region_sub_sums[5];
   for (const auto& [_, patch] : patches_) {
     score_sum += patch.score;
     for (int i = 0; i < 5; ++i) sub_sum[i] += patch.sub[i];
+    RegionAggregate& agg = region_agg[patch.region_id];
+    agg.id = patch.region_id;
+    agg.score += patch.score;
+    ++agg.patch_count;
+    for (int i = 0; i < 5; ++i) region_sub_sums[i][patch.region_id] += patch.sub[i];
   }
   const double n = static_cast<double>(patches_.size());
   overall_ = static_cast<float>(score_sum / n);
   for (int i = 0; i < 5; ++i) {
     overall_sub_[i] = static_cast<float>(sub_sum[i] / n);
+  }
+  for (auto& [id, agg] : region_agg) {
+    agg.score /= static_cast<float>(agg.patch_count);
+    for (int i = 0; i < 5; ++i) {
+      agg.sub[i] = static_cast<float>(region_sub_sums[i][id] / agg.patch_count);
+    }
+    agg.area_m2 = agg.patch_count * PatchArea();
+    regions_.push_back(agg);
   }
 
   FindWeakAreas();
@@ -243,6 +338,16 @@ void PatchGrid::FindWeakAreas() {
 
     WeakArea area;
     area.patch_count = static_cast<int>(cluster.size());
+    {
+      std::map<uint32_t, int> region_votes;
+      for (const Patch* p : cluster) ++region_votes[p->region_id];
+      area.region_id =
+          std::max_element(region_votes.begin(), region_votes.end(),
+                           [](const auto& a, const auto& b) {
+                             return a.second < b.second;
+                           })
+              ->first;
+    }
     Eigen::Vector3d centroid = Eigen::Vector3d::Zero();
     Eigen::Vector3d normal = Eigen::Vector3d::Zero();
     double sub_sum[5] = {0, 0, 0, 0, 0};
@@ -310,7 +415,7 @@ void PatchGrid::FindWeakAreas() {
 void PatchGrid::FillSnapshot(std::vector<bs_snap_patch>& patches,
                              std::vector<bs_snap_region>& regions,
                              std::vector<bs_snap_weak_area>& weak,
-                             const char* region_name) const {
+                             const std::map<uint32_t, std::string>& names) const {
   patches.reserve(patches_.size());
   for (const auto& [_, p] : patches_) {
     bs_snap_patch sp{};
@@ -323,20 +428,24 @@ void PatchGrid::FillSnapshot(std::vector<bs_snap_patch>& patches,
     sp.extent = static_cast<float>(options_.patch_size_m);
     sp.score = p.score;
     for (int i = 0; i < 5; ++i) sp.sub[i] = p.sub[i];
-    sp.region_id = 1;
+    sp.region_id = p.region_id;
     patches.push_back(sp);
   }
 
-  if (!patches_.empty()) {
+  regions.reserve(regions_.size());
+  for (const auto& agg : regions_) {
     bs_snap_region region{};
-    region.region_id = 1;
-    std::snprintf(region.name, sizeof(region.name), "%s",
-                  region_name != nullptr ? region_name : "Room 1");
-    region.score = overall_;
-    for (int i = 0; i < 5; ++i) region.sub[i] = overall_sub_[i];
-    region.area_m2 =
-        static_cast<float>(patches_.size() * PatchArea());
-    region.patch_count = static_cast<uint32_t>(patches_.size());
+    region.region_id = agg.id;
+    const auto it = names.find(agg.id);
+    if (it != names.end()) {
+      std::snprintf(region.name, sizeof(region.name), "%s", it->second.c_str());
+    } else {
+      std::snprintf(region.name, sizeof(region.name), "Room %u", agg.id);
+    }
+    region.score = agg.score;
+    for (int i = 0; i < 5; ++i) region.sub[i] = agg.sub[i];
+    region.area_m2 = static_cast<float>(agg.area_m2);
+    region.patch_count = agg.patch_count;
     regions.push_back(region);
   }
 
@@ -347,7 +456,7 @@ void PatchGrid::FillSnapshot(std::vector<bs_snap_patch>& patches,
     w.cy = static_cast<float>(area.centroid.y());
     w.cz = static_cast<float>(area.centroid.z());
     w.radius_m = static_cast<float>(area.radius_m);
-    w.region_id = 1;
+    w.region_id = area.region_id;
     w.deficiency = area.deficiency;
     w.surface_kind = area.surface_kind;
     w.move_dir[0] = static_cast<float>(area.move_dir.x());

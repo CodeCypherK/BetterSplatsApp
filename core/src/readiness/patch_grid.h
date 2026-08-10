@@ -1,6 +1,8 @@
 #pragma once
 
 #include <cstdint>
+#include <map>
+#include <string>
 #include <unordered_map>
 #include <vector>
 
@@ -52,6 +54,7 @@ struct Patch {
   int lidar_samples = 0;
   double lidar_conf_sum = 0;
 
+  uint32_t region_id = 1;
   float sub[5] = {0, 0, 0, 0, 0};
   float score = 0;
 };
@@ -66,11 +69,15 @@ struct ReadinessOptions {
   double capture_focal_px = 1450.0;
   double view_angle_full_deg = 25.0;
   int max_weak_areas = 5;
+  // Region clustering: keyframes this covisible AND this close share a room.
+  int region_min_shared_points = 15;
+  double region_max_kf_distance_m = 2.0;
 };
 
 struct WeakArea {
   Eigen::Vector3d centroid;
   double radius_m = 0;
+  uint32_t region_id = 1;
   int deficiency = 0;     // argmin sub-score index
   int surface_kind = 0;   // 0 wall, 1 floor, 2 ceiling, 3 object
   Eigen::Vector3d move_dir = Eigen::Vector3d::UnitX();
@@ -78,6 +85,17 @@ struct WeakArea {
   float score = 0;
   double priority = 0;
   int patch_count = 0;
+};
+
+// Region = connected component of the keyframe covisibility graph
+// (edges: enough shared points AND spatially close), i.e. "Room 1..N" in
+// discovery order. Patches inherit the majority region of their observers.
+struct RegionAggregate {
+  uint32_t id = 1;
+  float score = 0;
+  float sub[5] = {0, 0, 0, 0, 0};
+  double area_m2 = 0;
+  uint32_t patch_count = 0;
 };
 
 class PatchGrid {
@@ -91,24 +109,29 @@ class PatchGrid {
     return patches_;
   }
   const std::vector<WeakArea>& weak_areas() const { return weak_areas_; }
+  const std::vector<RegionAggregate>& regions() const { return regions_; }
 
   // Area-weighted aggregate over all patches, 0-100.
   float OverallScore() const { return overall_; }
   float SubScore(int axis) const { return overall_sub_[axis]; }
   double PatchArea() const;
 
+  // `names`: user renames per region id; unmatched ids get "Room N".
   void FillSnapshot(std::vector<bs_snap_patch>& patches,
                     std::vector<bs_snap_region>& regions,
                     std::vector<bs_snap_weak_area>& weak,
-                    const char* region_name) const;
+                    const std::map<uint32_t, std::string>& names) const;
 
  private:
   void ScorePatch(Patch& patch) const;
   void FindWeakAreas();
+  // Fills region_of_kf via union-find over the covisibility graph.
+  std::map<uint32_t, uint32_t> ClusterRegions(const LiveMap& map) const;
 
   ReadinessOptions options_;
   std::unordered_map<PatchKey, Patch, PatchKeyHash> patches_;
   std::vector<WeakArea> weak_areas_;
+  std::vector<RegionAggregate> regions_;
   float overall_ = 0;
   float overall_sub_[5] = {0, 0, 0, 0, 0};
   // False when no keyframe carries depth (LiDAR-less map): the lidar axis

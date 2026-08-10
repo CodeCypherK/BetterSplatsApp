@@ -62,10 +62,22 @@ if [[ -z "$framework" ]]; then
   exit 1
 fi
 rm -rf "$DEPS/opencv2.framework"
-cp -R "$framework" "$DEPS/opencv2.framework"
+# -RL: dereference symlinks — framework layouts may route Headers through a
+# symlink, and the extraction source tree is deleted below.
+cp -RL "$framework" "$DEPS/opencv2.framework"
 
 rm -rf "$DEPS/include/opencv2"
-cp -R "$DEPS/opencv2.framework/Headers" "$DEPS/include/opencv2"
+if [[ -f "$DEPS/opencv2.framework/Headers/core.hpp" ]]; then
+  cp -RL "$DEPS/opencv2.framework/Headers" "$DEPS/include/opencv2"
+elif [[ -f "$DEPS/opencv2.framework/Headers/opencv2/core.hpp" ]]; then
+  cp -RL "$DEPS/opencv2.framework/Headers/opencv2" "$DEPS/include/opencv2"
+fi
+if [[ ! -f "$DEPS/include/opencv2/core.hpp" ]]; then
+  echo "ERROR: OpenCV headers not extracted (no core.hpp); framework contents:"
+  ls -la "$DEPS/opencv2.framework" | head -20
+  ls -la "$DEPS/opencv2.framework/Headers" 2>/dev/null | head -20
+  exit 1
+fi
 echo "OpenCV -> ios-deps/opencv2.framework (headers in ios-deps/include/opencv2)"
 
 # ----------------------------------------------------------------- 2. Eigen

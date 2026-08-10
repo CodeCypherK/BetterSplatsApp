@@ -176,8 +176,58 @@ def main() -> int:
                   file=sys.stderr)
             return 1
 
+    # Real-world robustness: the SAME pipeline must survive a hard capture —
+    # auto-exposure drift, motion blur, heavy RGB noise, coarse depth — within
+    # the same --check bounds (live >=70%/0.10m/2deg, final >=90%/0.05m/1deg).
+    # This guards every push against realism regressions, not just clean synth.
+    with tempfile.TemporaryDirectory(prefix="bs_validate_hard_") as tmp:
+        hard = Path(tmp) / "session"
+        out = subprocess.run(
+            [str(synth), str(hard), "--frames", "60", "--width", "640",
+             "--height", "480", "--seed", "5", "--sweep", "60", "--hard"],
+            capture_output=True, text=True, timeout=600,
+        )
+        if out.returncode != 0:
+            print(f"ERROR: hard bs_synth failed:\n{out.stdout}{out.stderr}",
+                  file=sys.stderr)
+            return 1
+
+        out = subprocess.run(
+            [str(replay), str(hard), "--live", "--check"],
+            capture_output=True, text=True, timeout=1800,
+        )
+        print("hard: " + out.stdout.strip().splitlines()[-1])
+        if out.returncode != 0:
+            print(f"ERROR: hard live check failed:\n{out.stderr}",
+                  file=sys.stderr)
+            return 1
+
+        out = subprocess.run(
+            [str(replay), str(hard), "--final", "quality", "--check"],
+            capture_output=True, text=True, timeout=3600,
+        )
+        print("hard: " + out.stdout.strip().splitlines()[-1])
+        if out.returncode != 0:
+            print(f"ERROR: hard final solve check failed:\n{out.stderr}",
+                  file=sys.stderr)
+            return 1
+
+        rec = pycolmap.Reconstruction(str(hard / "final" / "colmap"))
+        print(f"hard pycolmap: {rec.num_images()} images, "
+              f"{rec.num_points3D()} points, "
+              f"track {rec.compute_mean_track_length():.2f}, "
+              f"reproj {rec.compute_mean_reprojection_error():.3f} px")
+        if rec.num_images() < 0.9 * frames:
+            print(f"ERROR: hard export sees only {rec.num_images()} images",
+                  file=sys.stderr)
+            return 1
+        if rec.num_points3D() < 500:
+            print(f"ERROR: hard export too few points ({rec.num_points3D()})",
+                  file=sys.stderr)
+            return 1
+
     print("OK: synth -> live -> two-view -> final solve -> pycolmap, "
-          "RAW immutable")
+          "RAW immutable; hard-scene pipeline within bounds")
     return 0
 
 

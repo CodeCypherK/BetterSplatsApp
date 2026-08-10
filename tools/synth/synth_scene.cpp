@@ -167,7 +167,30 @@ RayHit CastRay(const Scene& scene, const Eigen::Vector3d& center,
   return best;
 }
 
-cv::Mat RenderImage(const Scene& scene, const SE3& pose, const Intrinsics& K) {
+namespace {
+
+// Linear (directional) motion-blur kernel of the given length and angle.
+cv::Mat MotionBlurKernel(double length_px, double angle_rad) {
+  const int n = std::max(3, static_cast<int>(std::round(length_px)) | 1);  // odd
+  cv::Mat k = cv::Mat::zeros(n, n, CV_32F);
+  const double c = n / 2.0;
+  const double dx = std::cos(angle_rad), dy = std::sin(angle_rad);
+  const int steps = n * 2;
+  for (int s = 0; s <= steps; ++s) {
+    const double t = static_cast<double>(s) / steps - 0.5;  // [-0.5, 0.5]
+    const int x = static_cast<int>(std::round(c + t * (n - 1) * dx));
+    const int y = static_cast<int>(std::round(c + t * (n - 1) * dy));
+    if (x >= 0 && x < n && y >= 0 && y < n) k.at<float>(y, x) += 1.0f;
+  }
+  const double sum = cv::sum(k)[0];
+  if (sum > 0) k /= sum;
+  return k;
+}
+
+}  // namespace
+
+cv::Mat RenderImage(const Scene& scene, const SE3& pose, const Intrinsics& K,
+                    const RenderOptions& opts) {
   cv::Mat img(K.height, K.width, CV_8UC3, cv::Scalar(18, 16, 14));
   const SE3 cam_to_world = pose.Inverse();
   const Eigen::Vector3d center = pose.CameraCenter();
@@ -185,19 +208,25 @@ cv::Mat RenderImage(const Scene& scene, const SE3& pose, const Intrinsics& K) {
       const float shade = std::clamp(1.15f - 0.05f * static_cast<float>(hit.t),
                                      0.55f, 1.0f);
       for (int c = 0; c < 3; ++c) {
-        const float value =
-            255.0f * plane.base_color[c] * (0.45f + 1.1f * tex) * shade;
+        const float value = 255.0f * plane.base_color[c] * (0.45f + 1.1f * tex) *
+                            shade * opts.gain;
         row[x][c] = static_cast<uint8_t>(std::clamp(value, 0.0f, 255.0f));
       }
     }
   }
 
+  // Motion blur (directional) before the optical PSF, matching physics.
+  if (opts.motion_blur_px >= 1.0f) {
+    const cv::Mat k = MotionBlurKernel(opts.motion_blur_px, opts.motion_blur_angle);
+    cv::filter2D(img, img, -1, k, cv::Point(-1, -1), 0, cv::BORDER_REFLECT);
+  }
+
   // Mild optical blur + sensor noise for realism (deterministic noise).
-  cv::GaussianBlur(img, img, cv::Size(3, 3), 0.6);
+  cv::GaussianBlur(img, img, cv::Size(3, 3), opts.blur_sigma);
   cv::Mat noise(img.size(), CV_16SC3);
   cv::RNG rng(0xBEEF ^ static_cast<uint64_t>(K.width) ^
               static_cast<uint64_t>(pose.t.norm() * 1e6));
-  rng.fill(noise, cv::RNG::NORMAL, 0, 1.6);
+  rng.fill(noise, cv::RNG::NORMAL, 0, opts.noise_sigma);
   cv::Mat img16;
   img.convertTo(img16, CV_16SC3);
   img16 += noise;

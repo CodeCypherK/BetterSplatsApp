@@ -79,11 +79,36 @@ bool GenerateSession(const GenerateOptions& o) {
   GroundTruth gt;
   const double dt = 1.0 / 30.0;
 
+  // Projects a world point into a world-to-camera pose (pixels).
+  auto project = [&K](const SE3& p, const Eigen::Vector3d& X) {
+    const Eigen::Vector3d xc = p.Apply(X);
+    return Eigen::Vector2d(K.fx * xc.x() / xc.z() + K.cx,
+                           K.fy * xc.y() / xc.z() + K.cy);
+  };
+
   for (int i = 0; i < o.frame_count; ++i) {
     const uint32_t frame_id = static_cast<uint32_t>(i + 1);
     const SE3& pose = poses[i];
 
-    const cv::Mat img = RenderImage(scene, pose, K);
+    RenderOptions ropts;
+    ropts.noise_sigma = static_cast<float>(1.6 * o.rgb_noise_scale);
+    // Auto-exposure drift: a smooth deterministic gain swing per frame.
+    const double gain =
+        1.0 + o.exposure_drift * std::sin(0.35 * i + 0.5 * (o.seed & 7));
+    ropts.gain = static_cast<float>(std::clamp(gain, 0.35, 1.7));
+    // Motion blur from the apparent image motion of the scene-centre point
+    // between this frame and the last, times a plausible exposure fraction.
+    if (o.motion_blur && i > 0) {
+      const Eigen::Vector3d fwd =
+          pose.Inverse().q * Eigen::Vector3d(0, 0, 1);
+      const Eigen::Vector3d mid = pose.CameraCenter() + fwd * 2.5;
+      const Eigen::Vector2d flow = project(pose, mid) - project(poses[i - 1], mid);
+      const double len = std::clamp(flow.norm() * 0.5, 0.0, 20.0);
+      ropts.motion_blur_px = static_cast<float>(len);
+      ropts.motion_blur_angle = std::atan2(flow.y(), flow.x());
+    }
+
+    const cv::Mat img = RenderImage(scene, pose, K, ropts);
     const DepthImage depth =
         RenderDepth(scene, pose, Kd, noise, o.seed ^ (frame_id * 2654435761u));
 
@@ -102,7 +127,9 @@ bool GenerateSession(const GenerateOptions& o) {
     meta.t_depth = i * dt;
     meta.intrinsics = {K.fx, K.fy, K.cx, K.cy, K.width, K.height};
     meta.depth_intrinsics = {Kd.fx, Kd.fy, Kd.cx, Kd.cy, Kd.width, Kd.height};
-    meta.exposure = {1.0 / 120.0, 100.0, 0.0};
+    // Record the applied gain as exposure duration so a photometric
+    // normalizer downstream has an honest signal to work from.
+    meta.exposure = {ropts.gain / 120.0, 100.0, 0.0};
     meta.quality.lap_var = LaplacianVariance(gray);
     meta.quality.overexp_frac = 0.0;
     meta.is_keyframe = (o.keyframe_every > 0) && (i % o.keyframe_every == 0);

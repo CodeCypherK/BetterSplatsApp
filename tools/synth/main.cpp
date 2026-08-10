@@ -26,7 +26,12 @@ void PrintUsage() {
                "  --seed S          scene/trajectory seed (default 7)\n"
                "  --no-blank-wall   texture every wall\n"
                "  --depth-noise F   depth noise scale, 0 = perfect (default 1)\n"
-               "  --jpeg-quality Q  (default 88)\n");
+               "  --jpeg-quality Q  (default 88)\n"
+               "  --exposure-drift F  per-frame gain swing amplitude (default 0)\n"
+               "  --motion-blur     blur scaled by inter-frame motion\n"
+               "  --rgb-noise F     RGB sensor-noise scale (default 1)\n"
+               "  --hard            realistic capture: exposure drift + motion\n"
+               "                    blur + heavier noise + coarser depth\n");
 }
 
 }  // namespace
@@ -66,6 +71,15 @@ int main(int argc, char** argv) {
     else if (arg == "--sweep") options.sweep_deg = std::atof(next("--sweep"));
     else if (arg == "--depth-noise") options.depth_noise_scale = std::atof(next("--depth-noise"));
     else if (arg == "--jpeg-quality") options.jpeg_quality = std::atoi(next("--jpeg-quality"));
+    else if (arg == "--exposure-drift") options.exposure_drift = std::atof(next("--exposure-drift"));
+    else if (arg == "--motion-blur") options.motion_blur = true;
+    else if (arg == "--rgb-noise") options.rgb_noise_scale = std::atof(next("--rgb-noise"));
+    else if (arg == "--hard") {
+      options.exposure_drift = 0.3;
+      options.motion_blur = true;
+      options.rgb_noise_scale = 2.5;
+      options.depth_noise_scale = 1.5;
+    }
     else {
       std::fprintf(stderr, "unknown option: %s\n", arg.c_str());
       PrintUsage();

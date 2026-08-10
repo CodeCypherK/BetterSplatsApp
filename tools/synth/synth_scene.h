@@ -45,8 +45,20 @@ RayHit CastRay(const Scene& scene, const Eigen::Vector3d& center,
 // Procedural texture value in [0,1] at plane-local meters (u,v).
 float TextureValue(const TexturedPlane& plane, double u, double v);
 
+// Photometric/optical realism knobs for RenderImage. The defaults reproduce
+// the original clean render exactly (mild blur + light sensor noise), so
+// existing goldens are unaffected unless a knob is changed.
+struct RenderOptions {
+  float gain = 1.0f;            // multiplicative exposure/gain (AE drift)
+  float noise_sigma = 1.6f;     // RGB sensor noise stddev, DN
+  float blur_sigma = 0.6f;      // isotropic optical blur, px
+  float motion_blur_px = 0.0f;  // linear motion-blur length, px (0 = none)
+  double motion_blur_angle = 0.0;  // motion-blur direction, radians
+};
+
 // Renders a BGR uint8 image of the scene from `pose` (world-to-camera).
-cv::Mat RenderImage(const Scene& scene, const SE3& pose, const Intrinsics& K);
+cv::Mat RenderImage(const Scene& scene, const SE3& pose, const Intrinsics& K,
+                    const RenderOptions& opts = {});
 
 struct DepthNoise {
   double sigma_base_m = 0.004;

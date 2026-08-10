@@ -19,6 +19,11 @@ struct GenerateOptions {
   double sweep_deg = 140.0;        // total orbit arc over the sequence
   int keyframe_every = 5;
   int jpeg_quality = 88;
+
+  // --- real-world realism (all default to the original clean render) ---
+  double exposure_drift = 0.0;   // per-frame gain swing amplitude (0 = off)
+  bool motion_blur = false;      // blur scaled by inter-frame image motion
+  double rgb_noise_scale = 1.0;  // multiplies base RGB sensor noise
 };
 
 // Writes a complete synthetic RAW session (frames/, session.json,

@@ -26,6 +26,7 @@ session_<yyyyMMdd-HHmmss>_<6hex>/
     │   │                     undistorted coords, colors, gradients)
     │   └── matches.bin   verified pair matches for the whole session
     ├── report.json       readiness + solve quality report
+    ├── transforms.json   nerfstudio/instant-ngp poses+intrinsics (gsplat-ready)
     ├── dense.ply         fused LiDAR cloud (final poses only)
     └── colmap/
         ├── cameras.txt
@@ -153,3 +154,15 @@ One line per processed frame:
   cloned from RAW, never re-encoded).
 - Only feature-tracked points appear in `points3D.txt`; fused LiDAR geometry
   ships separately as `dense.ply`.
+
+## `transforms.json` (nerfstudio / instant-ngp)
+
+A convenience mirror of the COLMAP poses for Gaussian-splat trainers that
+read the NeRF format directly. Top level carries the shared intrinsics
+(`fl_x fl_y cx cy w h k1 k2 p1 p2`, `camera_model: "OPENCV"`); `frames[]`
+holds one `{ file_path: "images/<name>", transform_matrix: 4×4 }` per
+registered image. Each `transform_matrix` is **camera-to-world** in the
+OpenGL/NeRF convention (camera looks down −Z, +Y up) — the COLMAP
+world-to-camera pose inverted with its Y and Z axes negated. Derived from the
+same solve as `colmap/`, so the two always agree (CI cross-checks camera
+centres to < 1 mm).

@@ -219,6 +219,58 @@ std::string ValidateColmapDir(const std::string& dir) {
   return "";
 }
 
+bool WriteTransformsJson(const ColmapModel& model, const std::string& path) {
+  std::ofstream out(path, std::ios::trunc);
+  if (!out) return false;
+  out.setf(std::ios::fmtflags(0), std::ios::floatfield);
+  out.precision(12);
+
+  const ColmapCamera& cam = model.camera;
+  auto param = [&](size_t i) { return i < cam.params.size() ? cam.params[i] : 0.0; };
+  const double fx = param(0), fy = param(1), cx = param(2), cy = param(3);
+  // OPENCV model carries k1 k2 p1 p2 after fx fy cx cy; PINHOLE has none.
+  const bool opencv = cam.model == "OPENCV";
+  const double k1 = opencv ? param(4) : 0.0;
+  const double k2 = opencv ? param(5) : 0.0;
+  const double p1 = opencv ? param(6) : 0.0;
+  const double p2 = opencv ? param(7) : 0.0;
+
+  out << "{\n";
+  out << "  \"camera_model\": \"OPENCV\",\n";
+  out << "  \"fl_x\": " << fx << ",\n  \"fl_y\": " << fy << ",\n";
+  out << "  \"cx\": " << cx << ",\n  \"cy\": " << cy << ",\n";
+  out << "  \"w\": " << cam.width << ",\n  \"h\": " << cam.height << ",\n";
+  out << "  \"k1\": " << k1 << ",\n  \"k2\": " << k2 << ",\n";
+  out << "  \"p1\": " << p1 << ",\n  \"p2\": " << p2 << ",\n";
+  out << "  \"frames\": [\n";
+
+  for (size_t i = 0; i < model.images.size(); ++i) {
+    const ColmapImage& img = model.images[i];
+    // world->camera (COLMAP, +Z forward/+Y down) -> camera->world, then flip
+    // the Y and Z axes to reach the OpenGL/NeRF convention (+Y up, -Z fwd).
+    const Eigen::Matrix3d R = img.pose.q.toRotationMatrix();
+    const Eigen::Matrix3d Rwc = R.transpose();
+    const Eigen::Vector3d c = -Rwc * img.pose.t;
+    Eigen::Matrix3d m = Rwc;
+    m.col(1) = -m.col(1);
+    m.col(2) = -m.col(2);
+
+    out << "    {\n";
+    out << "      \"file_path\": \"images/" << img.name << "\",\n";
+    out << "      \"transform_matrix\": [\n";
+    for (int r = 0; r < 3; ++r) {
+      out << "        [" << m(r, 0) << ", " << m(r, 1) << ", " << m(r, 2)
+          << ", " << c(r) << "],\n";
+    }
+    out << "        [0.0, 0.0, 0.0, 1.0]\n";
+    out << "      ]\n";
+    out << "    }" << (i + 1 < model.images.size() ? "," : "") << "\n";
+  }
+
+  out << "  ]\n}\n";
+  return static_cast<bool>(out);
+}
+
 bool WriteBinaryPly(const std::string& path,
                     const std::vector<Eigen::Vector3f>& points,
                     const std::vector<std::array<uint8_t, 3>>& colors) {

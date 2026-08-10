@@ -164,6 +164,39 @@ def main() -> int:
             print("ERROR: report.json missing", file=sys.stderr)
             return 1
 
+        # transforms.json must exist and its camera centres must agree with
+        # the actual COLMAP reconstruction (the two are derived independently,
+        # so this catches any convention bug in the NeRF export).
+        import json
+        tj = session / "final" / "transforms.json"
+        if not tj.is_file():
+            print("ERROR: transforms.json missing", file=sys.stderr)
+            return 1
+        transforms = json.loads(tj.read_text())
+        if len(transforms["frames"]) != n_images:
+            print(f"ERROR: transforms.json has {len(transforms['frames'])} "
+                  f"frames, pycolmap has {n_images} images", file=sys.stderr)
+            return 1
+        centers = {img.name: img.projection_center()
+                   for img in rec.images.values()}
+        max_center_delta = 0.0
+        for fr in transforms["frames"]:
+            name = fr["file_path"].split("/")[-1]
+            if name not in centers:
+                print(f"ERROR: transforms.json frame {name} not in model",
+                      file=sys.stderr)
+                return 1
+            tm = fr["transform_matrix"]
+            pc = centers[name]
+            delta = sum((tm[r][3] - float(pc[r])) ** 2 for r in range(3)) ** 0.5
+            max_center_delta = max(max_center_delta, delta)
+        if max_center_delta > 1e-3:
+            print(f"ERROR: transforms.json centres disagree with COLMAP "
+                  f"(max {max_center_delta:.2e} m)", file=sys.stderr)
+            return 1
+        print(f"transforms.json: {len(transforms['frames'])} frames, "
+              f"max centre delta {max_center_delta:.2e} m")
+
         # Immutability invariant: the full pipeline must leave the RAW layer
         # byte-identical (live drift never bakes into sensor data).
         import hashlib

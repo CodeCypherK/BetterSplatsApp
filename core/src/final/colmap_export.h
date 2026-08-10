@@ -67,4 +67,11 @@ bool WriteBinaryPly(const std::string& path,
                     const std::vector<Eigen::Vector3f>& points,
                     const std::vector<std::array<uint8_t, 3>>& colors);
 
+// Writes a nerfstudio/instant-ngp `transforms.json` beside the COLMAP model
+// so the export drops straight into gsplat/nerfstudio with no conversion.
+// Poses are camera-to-world in the OpenGL/NeRF convention (camera looks down
+// -Z, +Y up); intrinsics use the shared OPENCV model. file_path entries point
+// at images/<name>. Returns false on IO failure.
+bool WriteTransformsJson(const ColmapModel& model, const std::string& path);
+
 }  // namespace bs

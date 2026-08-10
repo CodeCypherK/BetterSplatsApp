@@ -3,6 +3,8 @@
 #include <filesystem>
 #include <fstream>
 
+#include <nlohmann/json.hpp>
+
 #include "final/colmap_export.h"
 
 namespace bs {
@@ -114,6 +116,54 @@ TEST_F(ColmapExportTest, ValidationCatchesDanglingTrackReference) {
   append << "99 1 2 3 10 10 10 0.5 77 0\n";
   append.close();
   EXPECT_NE(ValidateColmapDir(out), "");
+}
+
+TEST_F(ColmapExportTest, TransformsJsonRecoversColmapPose) {
+  ColmapModel model = MakeModel();
+  model.camera.model = "OPENCV";
+  model.camera.params = {500.0, 505.0, 319.5, 239.5, -0.02, 0.003, 0.0, 0.0};
+  const std::string path = dir_ + "/transforms.json";
+  ASSERT_TRUE(WriteTransformsJson(model, path));
+
+  std::ifstream in(path);
+  nlohmann::json j;
+  in >> j;
+
+  EXPECT_EQ(j.at("camera_model"), "OPENCV");
+  EXPECT_DOUBLE_EQ(j.at("fl_x").get<double>(), 500.0);
+  EXPECT_DOUBLE_EQ(j.at("fl_y").get<double>(), 505.0);
+  EXPECT_DOUBLE_EQ(j.at("k1").get<double>(), -0.02);
+  ASSERT_EQ(j.at("frames").size(), model.images.size());
+
+  for (size_t i = 0; i < model.images.size(); ++i) {
+    const auto& frame = j["frames"][i];
+    EXPECT_EQ(frame.at("file_path"), "images/" + model.images[i].name);
+    const auto& tm = frame.at("transform_matrix");
+
+    // Reconstruct the 3x3 rotation and translation from the JSON.
+    Eigen::Matrix3d m;
+    Eigen::Vector3d c;
+    for (int r = 0; r < 3; ++r) {
+      for (int col = 0; col < 3; ++col) m(r, col) = tm[r][col].get<double>();
+      c(r) = tm[r][3].get<double>();
+    }
+    // Bottom row is homogeneous.
+    EXPECT_DOUBLE_EQ(tm[3][3].get<double>(), 1.0);
+
+    // Expected: camera-to-world with Y/Z axes flipped (NeRF convention), and
+    // translation equal to the COLMAP camera centre C = -R^T t.
+    const Eigen::Matrix3d R = model.images[i].pose.q.toRotationMatrix();
+    const Eigen::Matrix3d Rwc = R.transpose();
+    const Eigen::Vector3d expected_c = -Rwc * model.images[i].pose.t;
+    Eigen::Matrix3d expected_m = Rwc;
+    expected_m.col(1) = -expected_m.col(1);
+    expected_m.col(2) = -expected_m.col(2);
+
+    EXPECT_LT((c - expected_c).norm(), 1e-9);
+    EXPECT_LT((m - expected_m).norm(), 1e-9);
+    // The NeRF frame must stay right-handed (det +1).
+    EXPECT_NEAR(m.determinant(), 1.0, 1e-9);
+  }
 }
 
 TEST_F(ColmapExportTest, PlyRoundTripHeader) {

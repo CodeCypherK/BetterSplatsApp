@@ -1122,6 +1122,14 @@ FinalOutcome RunFinalSolve(const EngineConfig& config,
     const std::string invalid = ValidateColmapDir(colmap_dir);
     if (!invalid.empty()) return fail("COLMAP self-validation: " + invalid);
 
+    // Drop a nerfstudio/instant-ngp transforms.json beside the model so the
+    // export feeds gsplat/nerfstudio directly, no COLMAP conversion step.
+    const std::string transforms_path =
+        (fs::path(session_dir) / "final" / "transforms.json").string();
+    if (!WriteTransformsJson(model, transforms_path)) {
+      return fail("transforms.json export failed");
+    }
+
     // Metrics reflect the exported model, not the last BA round's live map.
     metrics.points = static_cast<uint32_t>(model.points.size());
     double track_len_sum = 0;

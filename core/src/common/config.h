@@ -32,6 +32,11 @@ struct EngineConfig {
   // claims otherwise is rejected and relocalization takes over.
   float track_max_speed_mps = 4.0f;
   float track_max_rot_dps = 300.0f;
+  // Viewing-cone test for tracking candidates: cos of the largest angle
+  // between the current viewing direction and one this point was observed
+  // from (0.5 = 60 deg). ORB is not viewpoint-invariant, so points mapped
+  // from far-off angles are not matchable and only crowd the search.
+  double track_max_view_cos = 0.5;
 
   // --- bootstrap ---
   int boot_min_matches = 80;

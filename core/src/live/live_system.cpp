@@ -499,6 +499,25 @@ bool LiveSystem::TrackFrame(const LiveFrameInput& input,
         px.x() > input.K.width + margin || px.y() > input.K.height + margin) {
       continue;
     }
+    // Viewing-cone test: a point is only a candidate when seen from a
+    // direction close to one it was actually observed from. ORB descriptors
+    // are not viewpoint-invariant, so a point mapped from across the room is
+    // not matchable from here — including it only crowds the search and
+    // wastes the ratio test on a candidate that cannot match.
+    {
+      const Eigen::Vector3d here =
+          (mp->X - predicted.CameraCenter()).normalized();
+      double best_cos = -2.0;
+      for (const auto& [obs_kf_id, _f] : mp->observations) {
+        const Keyframe* okf = map_.FindKeyframe(obs_kf_id);
+        if (okf == nullptr) continue;
+        const Eigen::Vector3d there =
+            (mp->X - okf->pose.CameraCenter()).normalized();
+        best_cos = std::max(best_cos, here.dot(there));
+      }
+      if (best_cos < config_.track_max_view_cos) continue;
+    }
+
     ++mp->visible_count;
     predictions.emplace_back(static_cast<float>(px.x()),
                              static_cast<float>(px.y()));

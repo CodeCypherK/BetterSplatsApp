@@ -344,7 +344,7 @@ Three different limits apply, and they are frequently confused:
 
 | limit | value | what sets it |
 |---|---|---|
-| frames per capture | 1200 (warn 900) | usability and disk, not correctness |
+| frames per capture | **200 target, 500 cap** | what one room needs |
 | frames per project | free disk | ~1.3 MB/frame, so 5,000 frames ≈ 6.5 GB |
 | frames per **solve** | ~900-1200 | resident feature memory, measured below |
 
@@ -353,6 +353,23 @@ frame, so a house is ten linked sessions of a few hundred frames each and the
 project total is bounded by the phone's free space. The capture UI warns on
 **actual free disk** rather than only a frame count, because a capture that
 dies on a write halfway through a room loses the room.
+
+Both ends of the capture band are surfaced, and they must not look alike —
+one says keep going, the other says stop. Under 200 is ordinary progress, not
+a warning; it is also the case people actually hit, and it is invisible
+without being told, since a thin capture looks fine at the time and only
+shows up as holes in the trained splat hours later.
+
+**What makes 500 enough is that storage is gated on movement, not on a
+clock.** It was a flat 0.30 s cadence, which stored 3.3 frames for every
+second the camera was running — so pausing to think, or turning on the spot,
+spent the room's budget on viewpoints the solve already had. The gate now
+also requires 5 cm of travel or 5 degrees of rotation since the last stored
+frame, matching the engine's own `store_min_translation_m` /
+`store_min_rotation_deg`, with a 3 s backstop for slow deliberate movement.
+When there is no pose to compare against — tracking lost, or before bootstrap
+— the frame is KEPT: losing a real viewpoint is worse than keeping a
+redundant one.
 
 The solve limit is the real one, and it is memory. `final_solve` holds every
 frame's features resident from extraction (S1) through track building (S5),

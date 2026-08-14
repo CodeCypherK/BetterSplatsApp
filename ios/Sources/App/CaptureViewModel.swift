@@ -1,30 +1,39 @@
 import AVFoundation
 import Foundation
 import Observation
+import simd
 
 /// Everything the capture-queue frame handler needs, detached from the
 /// MainActor view model. Built once per session; @unchecked Sendable because
 /// mutable state is guarded by `lock` and the rest is immutable or actors.
 final class FrameFeedContext: @unchecked Sendable {
-    /// Hard cap on stored frames for ONE capture, and the point the UI starts
-    /// warning.
+    /// The band one capture should land in: **200 is the minimum worth
+    /// training a room from, 500 is the ceiling.**
     ///
-    /// This bounds a single capture, not a project. A house is captured as a
-    /// chain of sessions — 10 or so captures of 200-500 frames each — and the
-    /// chain shares one world frame, so the project total is however many
-    /// frames the phone has room for, not this number.
+    /// This bounds a single capture, not a project. A house is a chain of
+    /// sessions — around ten captures of 200-500 frames — sharing one world
+    /// frame, so the project total is bounded by free disk, not by this.
     ///
-    /// 900 was originally chosen for the FINAL SOLVE's memory, which holds
-    /// every frame's features resident from extraction through track
-    /// building: measured at 1.24 MB/frame, so 900 frames is ~1.1 GB of
-    /// descriptors alone, already at the edge of what iOS will let an app
-    /// hold. Chaining decoupled the two — captures are solved per session or
-    /// per room, not all at once — so this is now a disk-and-usability
-    /// bound rather than a memory one, and the memory ceiling lives with the
-    /// solve where it belongs. See docs/ARCHITECTURE.md, "How big a project
-    /// can get".
-    static let storedFrameCap = 1200
-    static let storedFrameWarn = 900
+    /// Comfortably under the final solve's memory ceiling too, which is a
+    /// separate limit for a separate reason: the solve holds every frame's
+    /// features resident, measured at 1.24 MB/frame. See
+    /// docs/ARCHITECTURE.md, "How big a project can get".
+    static let storedFrameCap = 500
+    static let storedFrameWarn = 450
+    static let storedFrameTarget = 200
+
+    /// Motion gate, matching the engine's own store thresholds
+    /// (`store_min_translation_m`, `store_min_rotation_deg`). Storage exists
+    /// to give the final solve NEW viewpoints; a frame taken from where the
+    /// last one was taken is a duplicate, and with a 500-frame budget a
+    /// duplicate is not free — it is a viewpoint somewhere else that never
+    /// gets captured.
+    static let storeMinTranslationM = 0.05
+    static let storeMinRotationDeg = 5.0
+    /// Store anyway after this long. Covers the case where there is no pose
+    /// to compare against (tracking lost) and the case of genuinely slow,
+    /// deliberate movement — when in doubt, keep the frame.
+    static let storeMaxIntervalS = 3.0
 
     /// Refuse to start storing when the device is this close to full. A
     /// capture that dies on a write halfway through a room is worse than one
@@ -47,6 +56,25 @@ final class FrameFeedContext: @unchecked Sendable {
     /// `storeCommits` only so the UI can say which half of the budget the
     /// user has spent — both halves share one session and one disk cap.
     var scoutCommits = 0
+
+    /// Latest live pose, published by the polling loop for the storage gate.
+    /// Guarded by `lock`: written on the main actor, read on the capture
+    /// queue. Up to ~100 ms stale, which at walking pace is a few
+    /// centimetres — fine for a 5 cm decision, and stale in the safe
+    /// direction (it under-reports movement, so it stores more rather than
+    /// less).
+    private var latestCentre: SIMD3<Double>?
+    private var latestRotation: simd_quatd?
+    /// Pose of the last frame actually written, to measure movement against.
+    private var lastStoredCentre: SIMD3<Double>?
+    private var lastStoredRotation: simd_quatd?
+
+    func publishPose(_ viewer: ViewerPose?) {
+        lock.lock()
+        latestCentre = viewer?.center
+        latestRotation = viewer?.rotation
+        lock.unlock()
+    }
 
     /// "capture" or "scout", stamped into each frame's meta as it is written.
     /// Read and written under `lock` because the pass flips on the main
@@ -78,19 +106,46 @@ final class FrameFeedContext: @unchecked Sendable {
         feedEngine(frame, frameId: frameId, depth: depth)
         previewRenderer.enqueue(frame.pixelBuffer)
 
-        // Adaptive storage gate (M1: cadence + exposure sanity; the engine's
-        // motion-aware store directives take over in M4). Raw storage is
-        // never dropped for backpressure — the gate only thins cadence when
-        // the encoder can't keep up, and that surfaces in the UI meter.
+        // Storage gate: cadence floor, exposure sanity, and MOVEMENT.
+        //
+        // The movement term is what makes a 500-frame budget go far. On a
+        // pure clock this stored 3.3 frames every second the camera was
+        // running, so pausing to think, or turning on the spot to look at
+        // something, spent the room's budget on views the solve already had.
+        // Storage exists to give the final solve new viewpoints; a frame from
+        // where the last one was taken is a duplicate, and a duplicate is not
+        // free — it is a viewpoint elsewhere that never gets captured.
+        //
+        // Raw storage is still never dropped for backpressure: the gate only
+        // thins cadence when the encoder cannot keep up, and that surfaces in
+        // the UI meter.
         lock.lock()
         let elapsed = frame.tCapture - lastStoreTime
         let busy = encodesInFlight >= 2
         let capped = storeCommits >= Self.storedFrameCap
-        let shouldStore = !busy && !capped && elapsed >= 0.30
+        // No pose (tracking lost, or before bootstrap) means we cannot tell
+        // whether anything changed — so keep the frame. Losing a real
+        // viewpoint is worse than keeping a redundant one.
+        var moved = true
+        if let centre = latestCentre, let rotation = latestRotation,
+           let lastCentre = lastStoredCentre, let lastRotation = lastStoredRotation {
+            let step = simd_distance(centre, lastCentre)
+            // Angle between two orientations is 2·acos(|q0·q1|). Taken on the
+            // underlying 4-vectors, and abs() because q and -q are the same
+            // rotation — without it a sign flip reads as a 180 degree turn.
+            let dot = abs(simd_dot(rotation.vector, lastRotation.vector))
+            let turn = 2 * acos(min(1.0, dot)) * 180 / .pi
+            moved = step >= Self.storeMinTranslationM
+                || turn >= Self.storeMinRotationDeg
+                || elapsed >= Self.storeMaxIntervalS
+        }
+        let shouldStore = !busy && !capped && elapsed >= 0.30 && moved
             && stats.overexposedFraction < 0.10
         let framePass = passName
         if shouldStore {
             lastStoreTime = frame.tCapture
+            lastStoredCentre = latestCentre
+            lastStoredRotation = latestRotation
             encodesInFlight += 1
             storeCommits += 1
             if framePass == "scout" { scoutCommits += 1 }
@@ -484,6 +539,8 @@ final class CaptureViewModel {
                 else { continue }
                 let status = CoreEngine.shared.livePollStatus()
                 self.viewer = ViewerPose(status: status)
+                // The storage gate needs this on the capture queue.
+                context.publishPose(self.viewer)
                 self.recovery = RecoveryHint(status: status)
                 self.framesSeen = status.frames_fed
                 // The recovery hint is a better version of the same message,
@@ -508,11 +565,19 @@ final class CaptureViewModel {
                         Double(free) / 1_073_741_824)
                 } else if stored >= FrameFeedContext.storedFrameCap {
                     self.storageNote =
-                        "Capture limit reached — stop, then continue this "
-                        + "project in a new capture"
+                        "Capture full — stop here, then continue this project "
+                        + "in a new capture"
                 } else if stored >= FrameFeedContext.storedFrameWarn {
-                    self.storageNote = "Capture: \(stored)/"
-                        + "\(FrameFeedContext.storedFrameCap) frames"
+                    self.storageNote = "Nearly full: \(stored)/"
+                        + "\(FrameFeedContext.storedFrameCap) — finish up"
+                } else if stored < FrameFeedContext.storedFrameTarget {
+                    // The under-covered case is the one people actually hit,
+                    // and it is invisible without being told: the capture
+                    // looks fine, and the thinness only shows up as holes in
+                    // the trained splat hours later.
+                    self.storageNote = "\(stored)/"
+                        + "\(FrameFeedContext.storedFrameTarget) frames — keep "
+                        + "going for full coverage"
                 } else {
                     self.storageNote = nil
                 }

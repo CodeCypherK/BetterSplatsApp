@@ -247,12 +247,20 @@ struct CaptureView: View {
             .padding(.vertical, 5)
             .background(.ultraThinMaterial, in: Capsule())
 
+            // Too thin and too full are opposite problems and must not look
+            // alike: one says keep going, the other says stop. Below target
+            // is ordinary progress, not a warning — nobody should feel they
+            // are doing something wrong thirty seconds into a room.
             if let note = model.storageNote {
-                Label(note, systemImage: "exclamationmark.triangle.fill")
+                let stored = Int(model.framesStored)
+                let underTarget = stored < FrameFeedContext.storedFrameTarget
+                Label(note, systemImage: underTarget
+                      ? "circle.dotted" : "exclamationmark.triangle.fill")
                     .font(.caption.weight(.medium))
                     .foregroundStyle(
-                        Int(model.framesStored) >= FrameFeedContext.storedFrameCap
-                        ? Color.red : Color.orange)
+                        underTarget ? Color.secondary
+                        : (stored >= FrameFeedContext.storedFrameCap
+                           ? Color.red : Color.orange))
                     .padding(.horizontal, 12)
                     .padding(.vertical, 5)
                     .background(.ultraThinMaterial, in: Capsule())

@@ -85,6 +85,24 @@ struct RegionEntry {
   bool renamed = false;
 };
 
+// A surface measured at capture time by pointing the phone at it, held in
+// that frame's CAMERA coordinates and paired with its frame id.
+//
+// Storing it in the sensor's own frame is what keeps it a measurement.
+// The world plane is derived whenever one is needed, from the frame's
+// current pose — so the final solve moving that frame moves the floor with
+// it, instead of leaving a stale world plane behind that quietly encodes
+// whatever the live tracker believed at the time.
+struct SurfaceCalibration {
+  bool present = false;
+  uint32_t frame_id = 0;
+  double normal[3] = {0, 0, -1};  // faces the camera
+  double offset_m = 0;            // camera's distance from the surface
+  double rmse_m = 0;
+  double incidence_deg = 0;  // how far off square the phone was held
+  int inliers = 0;
+};
+
 struct SessionInfo {
   int schema_version = kSchemaVersion;
   std::string session_id;
@@ -108,6 +126,10 @@ struct SessionInfo {
   uint32_t frame_count = 0;
   std::vector<uint32_t> keyframe_ids;
   std::vector<RegionEntry> regions;
+  // Optional capture-time calibration. Absent in sessions recorded before
+  // the app offered it, and absent whenever the user skipped the step, so
+  // the final solve falls back to inferring the floor from the geometry.
+  SurfaceCalibration floor_calibration;
   std::string app_version;
 
   std::string ToJson() const;

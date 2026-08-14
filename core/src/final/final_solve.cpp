@@ -1333,7 +1333,40 @@ FinalOutcome RunFinalSolve(const EngineConfig& config,
 
     LevelingOptions level_options;
     level_options.align_walls = config.final_square_walls;
-    leveling = EstimateLeveling(level_points, level_cameras, level_options);
+
+    // A floor the user pointed at beats one found by searching. Every
+    // ambiguity the search reasons around — floor against ceiling, a lone
+    // plane, a floor too sparsely tracked to find — was settled at capture
+    // time, and the depth sensor saw a dense sheet of it from a metre away.
+    // The calibration is stored in its frame's camera coordinates, so it
+    // needs that frame's FINAL pose to become a world plane, which is
+    // exactly why it is resolved here rather than at capture.
+    const SurfaceCalibration& floor_cal = session->info().floor_calibration;
+    const FrameData* calibration_frame = nullptr;
+    if (floor_cal.present) {
+      for (const auto& frame : frames) {
+        if (frame.posed && frame.frame_id == floor_cal.frame_id) {
+          calibration_frame = &frame;
+          break;
+        }
+      }
+      if (calibration_frame == nullptr) {
+        BS_LOGW("final",
+                "floor calibration names frame %u, which this solve did not "
+                "register; falling back to finding the floor",
+                floor_cal.frame_id);
+      }
+    }
+
+    if (calibration_frame != nullptr) {
+      leveling = LevelingFromMeasuredFloor(
+          Eigen::Vector3d(floor_cal.normal[0], floor_cal.normal[1],
+                          floor_cal.normal[2]),
+          floor_cal.offset_m, calibration_frame->pose, level_points,
+          level_cameras, level_options);
+    } else {
+      leveling = EstimateLeveling(level_points, level_cameras, level_options);
+    }
 
     if (leveling.floor_found) {
       const SE3 inverse = leveling.transform.Inverse();
@@ -1603,6 +1636,8 @@ FinalOutcome RunFinalSolve(const EngineConfig& config,
                << "  \"ba_rounds\": " << metrics.ba_round << ",\n"
                << "  \"levelled\": " << (leveling.floor_found ? "true" : "false")
                << ",\n"
+               << "  \"floor_measured\": "
+               << (leveling.floor_measured ? "true" : "false") << ",\n"
                << "  \"level_rotation_deg\": " << leveling.rotation_deg << ",\n"
                << "  \"level_floor_rmse_m\": " << leveling.floor_rmse_m << ",\n"
                << "  \"level_camera_height_m\": " << leveling.camera_height_m

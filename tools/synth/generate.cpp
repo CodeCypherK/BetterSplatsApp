@@ -8,6 +8,7 @@
 #include <opencv2/imgproc.hpp>
 
 #include "common/config.h"
+#include "lidar/plane_fit.h"
 #include "common/geometry.h"
 #include "io/session_writer.h"
 #include "synth_scene.h"
@@ -131,7 +132,64 @@ bool GenerateSession(const GenerateOptions& o) {
   };
 
   std::vector<SE3> poses;
-  // The scout circuit comes first, so the capture pass can localize against
+
+  // Floor calibration frames, first, and REAL: the app has the user aim at
+  // the floor for a moment before capturing, so those are ordinary captured
+  // frames with ordinary poses. Rendering the plane from a pose that is not
+  // in the session would be worse than useless — the calibration is stored
+  // in camera coordinates and only means anything alongside the pose of the
+  // camera that took it, so the solve would apply it against whatever that
+  // frame id actually turned out to be. (Measured, doing exactly that put
+  // the floor 1.1 m out.)
+  //
+  // The phone sweeps smoothly from looking down to the first capture pose,
+  // which is both what a person does and what keeps the calibration frame
+  // connected enough for the solve to register it.
+  int calib_count = 0;
+  int calib_frame_index = 0;
+  if (o.floor_calibration) {
+    const std::vector<SE3> shape = capture_shape(64);
+    const SE3& first = shape.front();
+    const Eigen::Vector3d centre = first.CameraCenter();
+    const Eigen::Vector3d down(0, -1, 0);
+    const Eigen::Vector3d side =
+        down.cross(first.Inverse().q * Eigen::Vector3d(0, 0, 1)).normalized();
+    Eigen::Matrix3d R_down;
+    R_down.col(0) = side;
+    R_down.col(1) = down.cross(side).normalized();
+    R_down.col(2) = down;
+    const Eigen::Quaterniond looking_down(R_down);
+
+    calib_count = 24;
+    // Calibrate from the LAST frame still aimed at the floor, not the first.
+    // Both see the same floor, but the last one is a short sweep away from
+    // the capture pose and shares structure with it, so the solve can
+    // actually register it — and a calibration attached to a frame the
+    // solve drops is a calibration that does nothing. Measured, frame 1 of
+    // the sweep went unregistered and the levelling fell back to inference.
+    calib_frame_index = static_cast<int>(0.33 * (calib_count - 1));
+    for (int i = 0; i < calib_count; ++i) {
+      const double s = static_cast<double>(i) / (calib_count - 1);
+      // Dwell on the floor for the first third, then raise to the capture
+      // pose — the shape of the real gesture.
+      const double raise = std::clamp((s - 0.33) / 0.67, 0.0, 1.0);
+      const Eigen::Quaterniond q_cw =
+          looking_down.slerp(raise, first.Inverse().q).normalized();
+      // Move while sweeping. Rotating on the spot gives no parallax, so
+      // nothing triangulates and the solve cannot register these frames at
+      // all — measured, every calibration frame went unregistered and the
+      // levelling silently fell back to inference. A person lowers the
+      // phone to look down and lifts it as they start, so the centre moves
+      // through a modest arc.
+      const Eigen::Vector3d drop(0.0, -0.22 * std::cos(s * M_PI * 0.5), 0.0);
+      const Eigen::Vector3d step = side * (0.18 * s);
+      poses.push_back(SE3::FromCamToWorld(q_cw, centre + drop + step));
+    }
+    std::printf("floor calibration: %d frames aimed at the floor\n",
+                calib_count);
+  }
+
+  // The scout circuit comes next, so the capture pass can localize against
   // the scaffold it leaves behind — the order is the whole point.
   int scout_count = o.two_room ? std::max(0, o.scout_frames) : 0;
   if (scout_count > 0) {
@@ -175,7 +233,7 @@ bool GenerateSession(const GenerateOptions& o) {
   for (int i = 0; i < total_frames; ++i) {
     const uint32_t frame_id = static_cast<uint32_t>(i + 1);
     const SE3& pose = poses[i];
-    const bool is_scout = i < scout_count;
+    const bool is_scout = i >= calib_count && i < calib_count + scout_count;
 
     RenderOptions ropts;
     ropts.noise_sigma = static_cast<float>(1.6 * o.rgb_noise_scale);
@@ -194,7 +252,8 @@ bool GenerateSession(const GenerateOptions& o) {
     // spread stayed at 1.2x either way — and its only measurable effect was
     // to break the hard-scene bound through an amplitude that was guessed
     // rather than measured off a device. See docs/ARCHITECTURE.md.
-    if (o.motion_blur && i > 0 && i != scout_count) {
+    if (o.motion_blur && i > 0 && i != calib_count &&
+        i != calib_count + scout_count) {
       const Eigen::Vector3d fwd =
           pose.Inverse().q * Eigen::Vector3d(0, 0, 1);
       const Eigen::Vector3d mid = pose.CameraCenter() + fwd * 2.5;
@@ -233,6 +292,31 @@ bool GenerateSession(const GenerateOptions& o) {
     meta.pass = is_scout ? "scout" : "capture";
 
     if (!writer.WriteFrame(meta, jpeg, depth)) return false;
+
+    // Measure the floor from this frame's own depth, exactly as the app
+    // does: the same bytes that were just written to RAW, through the same
+    // fitter, stored in this frame's camera coordinates.
+    if (o.floor_calibration && i == calib_frame_index) {
+      const DepthFrame calibration_frame(depth, Kd);
+      const DepthPlane plane = FitDepthPlane(calibration_frame);
+      if (plane.valid) {
+        SurfaceCalibration cal;
+        cal.present = true;
+        cal.frame_id = frame_id;
+        for (int c = 0; c < 3; ++c) cal.normal[c] = plane.normal[c];
+        cal.offset_m = plane.offset;
+        cal.rmse_m = plane.rmse_m;
+        cal.incidence_deg = plane.incidence_deg;
+        cal.inliers = plane.inliers;
+        writer.info().floor_calibration = cal;
+        std::printf("floor calibration: frame %u, %.3f m above it, rmse "
+                    "%.3f m, %.1f deg off square, %d inliers\n",
+                    cal.frame_id, cal.offset_m, cal.rmse_m, cal.incidence_deg,
+                    cal.inliers);
+      } else {
+        std::printf("floor calibration: no plane found, skipping\n");
+      }
+    }
 
     GroundTruthPose gtp;
     gtp.frame_id = frame_id;

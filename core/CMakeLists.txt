@@ -15,6 +15,7 @@ add_library(bscore STATIC
   src/final/colmap_export.cpp
   src/final/model_split.cpp
   src/final/level.cpp
+  src/lidar/plane_fit.cpp
   src/final/component_align.cpp
   src/final/final_solve.cpp
   src/fusion/residuals.cpp

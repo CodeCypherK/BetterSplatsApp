@@ -39,6 +39,9 @@ void PrintUsage() {
                "  --rgb-noise F     RGB sensor-noise scale (default 1)\n"
                "  --hard            realistic capture: exposure drift + motion\n"
                "                    blur + heavier noise + coarser depth\n"
+               "  --floor-calib     measure a floor plane from depth and record\n"
+               "                    it in session.json, as the app does when the\n"
+               "                    user points the phone at the floor first\n"
                "  --two-room        two rooms joined by a doorway, walked as a\n"
                "                    closed loop that revisits its start\n"
                "  --scout N         prepend an N-frame scout circuit (localization\n"
@@ -90,6 +93,7 @@ int main(int argc, char** argv) {
     else if (arg == "--motion-blur") options.motion_blur = true;
     else if (arg == "--rgb-noise") options.rgb_noise_scale = std::atof(next("--rgb-noise"));
     else if (arg == "--two-room") options.two_room = true;
+    else if (arg == "--floor-calib") options.floor_calibration = true;
     else if (arg == "--scout") options.scout_frames = std::atoi(next("--scout"));
     else if (arg == "--hard") {
       options.exposure_drift = 0.3;

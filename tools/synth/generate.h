@@ -42,6 +42,13 @@ struct GenerateOptions {
   // orbit: exercises region clustering, inter-room drift and loop closure.
   bool two_room = false;
 
+  // Write a floor calibration into session.json, as the app does when the
+  // user points the phone at the floor before capturing. Measured from the
+  // rendered depth of the chosen frame, so it exercises the real path
+  // rather than asserting the answer.
+  bool floor_calibration = false;
+  int floor_calibration_frame = 1;
+
   // Prepend an opening scout circuit of this many frames (0 = none). Those
   // frames are tagged pass="scout": a localization scaffold only, excluded
   // from the final reconstruction. Requires two_room (it walks both rooms).

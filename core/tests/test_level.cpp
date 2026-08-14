@@ -204,6 +204,47 @@ TEST(LevelTest, ASinglePlaneIsAmbiguousAndSaysSoOrLeavesItAlone) {
   }
 }
 
+// The measured path: a plane the depth sensor saw, in its own camera
+// coordinates, plus that frame's pose. No searching, no ambiguity to reason
+// around — the answer should come out exact.
+TEST(LevelTest, MeasuredFloorLevelsExactly) {
+  const Room room = MakeRoom(/*tilt_deg=*/12.0, /*yaw_deg=*/64.0);
+
+  // The calibration frame: 1.45 m up, aimed straight down at the floor. In
+  // ITS camera coordinates the floor's normal comes back along the lens.
+  const Eigen::Quaterniond world(
+      Eigen::AngleAxisd(DegToRad(12.0),
+                        Eigen::Vector3d(1, 0, 0.3).normalized()) *
+      Eigen::AngleAxisd(DegToRad(64.0), Eigen::Vector3d::UnitY()));
+  const Eigen::Vector3d centre = world * Eigen::Vector3d(0.5, 1.45, -1.0);
+  Eigen::Matrix3d R_cw;
+  const Eigen::Vector3d down = (world * Eigen::Vector3d(0, -1, 0)).normalized();
+  const Eigen::Vector3d side =
+      down.cross(world * Eigen::Vector3d(0, 0, 1)).normalized();
+  R_cw.col(0) = side;
+  R_cw.col(1) = down.cross(side).normalized();
+  R_cw.col(2) = down;
+  const SE3 pose = SE3::FromCamToWorld(Eigen::Quaterniond(R_cw), centre);
+
+  const Leveling level = LevelingFromMeasuredFloor(
+      Eigen::Vector3d(0, 0, -1), 1.45, pose, room.points, room.cameras);
+
+  ASSERT_TRUE(level.floor_found);
+  EXPECT_TRUE(level.floor_measured) << "should report where the floor came from";
+
+  double lowest = 1e9;
+  int on_floor = 0;
+  for (const auto& p : room.points) {
+    const Eigen::Vector3d q = level.transform.Apply(p);
+    lowest = std::min(lowest, q.y());
+    if (std::abs(q.y()) < 0.01) ++on_floor;
+  }
+  EXPECT_GT(on_floor, 1000) << "the floor should land on y = 0";
+  EXPECT_GT(lowest, -0.02);
+  EXPECT_NEAR(level.camera_height_m, 1.5, 0.02);
+  EXPECT_LT(level.camera_height_spread_m, 0.05);
+}
+
 TEST(LevelTest, DeterministicAcrossRuns) {
   const Room room = MakeRoom(7.0, 14.0);
   const Leveling a = EstimateLeveling(room.points, room.cameras);

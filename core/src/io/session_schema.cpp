@@ -161,6 +161,17 @@ std::string SessionInfo::ToJson() const {
     regions_json.push_back({{"id", r.id}, {"name", r.name}, {"renamed", r.renamed}});
   }
   j["regions"] = regions_json;
+
+  if (floor_calibration.present) {
+    j["floor_calibration"] = {
+        {"frame_id", floor_calibration.frame_id},
+        {"normal", {floor_calibration.normal[0], floor_calibration.normal[1],
+                    floor_calibration.normal[2]}},
+        {"offset_m", floor_calibration.offset_m},
+        {"rmse_m", floor_calibration.rmse_m},
+        {"incidence_deg", floor_calibration.incidence_deg},
+        {"inliers", floor_calibration.inliers}};
+  }
   j["app_version"] = app_version;
   return j.dump(2);
 }
@@ -203,6 +214,21 @@ std::optional<SessionInfo> SessionInfo::FromJson(const std::string& text) {
   s.frame_count = j.value("frame_count", 0u);
   if (j.contains("keyframe_ids")) {
     s.keyframe_ids = j["keyframe_ids"].get<std::vector<uint32_t>>();
+  }
+  if (j.contains("floor_calibration")) {
+    const auto& f = j["floor_calibration"];
+    SurfaceCalibration cal;
+    cal.frame_id = f.value("frame_id", 0u);
+    if (f.contains("normal") && f["normal"].size() == 3) {
+      for (int i = 0; i < 3; ++i) cal.normal[i] = f["normal"][i].get<double>();
+    }
+    cal.offset_m = f.value("offset_m", 0.0);
+    cal.rmse_m = f.value("rmse_m", 0.0);
+    cal.incidence_deg = f.value("incidence_deg", 0.0);
+    cal.inliers = f.value("inliers", 0);
+    // A calibration is only usable if it names a frame and a real surface.
+    cal.present = cal.frame_id != 0 && cal.offset_m > 0.0;
+    s.floor_calibration = cal;
   }
   if (j.contains("regions")) {
     for (const auto& r : j["regions"]) {

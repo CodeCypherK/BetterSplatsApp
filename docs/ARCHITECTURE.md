@@ -171,6 +171,53 @@ established once, and the readiness room list exists before detail capture
 starts — finish the circuit and the dashboard already reads "Room 1…N" with
 low scores, i.e. a worklist.
 
+## Floor calibration: measuring the floor instead of guessing it
+
+Everything the levelling search has to reason around — floor against
+ceiling, a lone ambiguous plane, a floor too sparsely tracked to find — is
+answered in a couple of seconds if the user simply points the phone at the
+floor before capturing. They know which surface it is, and the depth sensor
+sees a dense sheet of it from a metre away: measured on the harness,
+**17,000 inliers at 11 mm RMSE** against a few hundred sparse points at
+23 mm from the search.
+
+The plane is stored in that frame's **camera** coordinates, paired with its
+frame id, never in world coordinates. That keeps it a measurement — an
+immutable fact about what the sensor saw — which the *current* pose estimate
+turns into a world plane whenever one is needed. Storing a world plane would
+bake in whatever the live tracker believed at capture time and go stale the
+moment the final solve moved that frame.
+
+Two mistakes are worth recording, because both produce a confident wrong
+answer rather than an error:
+
+- **The calibration must name a frame that is really in the session.** The
+  first version measured the plane from a fabricated straight-down pose and
+  filed it under frame 1, whose real pose looks outward. The solve dutifully
+  applied a camera-space plane against the wrong camera and put the floor
+  **1.1 m out**. A calibration only means anything alongside the pose of the
+  camera that took it.
+- **The calibration frames need parallax.** Sweeping the phone from
+  floor-ward to forward while standing still is pure rotation, so nothing
+  triangulates and the solve registers none of those frames — the levelling
+  then falls back to inference without anything looking wrong. Moving while
+  sweeping, which is what a person does anyway, took registration from
+  **71/84 to 84/84**.
+
+On the same scene, with truth at 1.5 m: the measured floor puts the cameras
+at **1.496 m** and the floor within 11 mm of `y = 0`; the inferred floor
+puts them at 1.447 m. The solve prefers the calibration when its frame
+registered, and says so in `report.json` as `floor_measured`; when the frame
+was dropped it warns and falls back, which is verified rather than assumed.
+
+`bs_synth --floor-calib` renders the gesture as real frames and measures the
+plane from the same depth bytes it wrote to RAW, so the harness exercises
+the actual path rather than asserting the answer.
+
+**Not yet on the phone.** The engine, the format and the solve are done; the
+capture UI that prompts "point at the floor" and calls the fitter is the
+remaining piece.
+
 ## Levelling: putting the reconstruction the right way up
 
 Image-only structure from motion has no gravity. The world frame is anchored

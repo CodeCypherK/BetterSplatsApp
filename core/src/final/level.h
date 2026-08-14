@@ -78,6 +78,10 @@ struct LevelingOptions {
 
 struct Leveling {
   bool floor_found = false;
+  // True when the floor came from a capture-time calibration rather than
+  // from searching the reconstruction. Worth reporting: the two have very
+  // different failure modes.
+  bool floor_measured = false;
   bool walls_squared = false;
   // world_levelled = transform.Apply(world_raw). Rigid: rotation + offset.
   SE3 transform;
@@ -99,6 +103,24 @@ struct Leveling {
   double camera_height_m = 0;
   double camera_height_spread_m = 0;
 };
+
+// Builds the transform from a floor that was MEASURED at capture time
+// rather than inferred: the plane as the depth sensor saw it, in the
+// calibration frame's camera coordinates, plus that frame's final pose.
+//
+// This is strictly better than inference when it is available. Every
+// ambiguity the search has to reason around — floor against ceiling, a lone
+// plane, a floor too sparsely tracked to find — was settled at capture time
+// by a person pointing the phone at the floor, and the depth sensor saw a
+// dense sheet of it from a metre away instead of a scattering of features
+// at a glancing angle. Walls are still squared from the geometry, since
+// that part has no ambiguity once the floor is known.
+Leveling LevelingFromMeasuredFloor(const Eigen::Vector3d& camera_normal,
+                                   double camera_offset_m,
+                                   const SE3& calibration_pose,
+                                   const std::vector<Eigen::Vector3d>& points,
+                                   const std::vector<Eigen::Vector3d>& camera_centres,
+                                   const LevelingOptions& options = {});
 
 // Estimates the transform from a reconstruction's points and camera centres.
 // Returns floor_found = false and an identity transform when no plane fits

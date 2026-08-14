@@ -24,6 +24,17 @@ non-expert to that data on the first try.
 
 ## Now
 
+- [ ] **Floor-calibration capture UI.** The engine side is done and tested:
+      `FitDepthPlane` measures the plane from one depth frame, session.json
+      carries it in camera coordinates, and the solve prefers it over
+      inference (measured: cameras at 1.496 m vs 1.447 m inferred, truth
+      1.5). What is missing is the prompt — "point at the floor" — plus the
+      confidence readout and a retry when the fit refuses. Two constraints
+      the UI must respect, both learned the hard way: the calibration has to
+      name a frame that is genuinely stored in the session, and the user has
+      to be MOVING while they sweep the phone up, or those frames have no
+      parallax and the solve drops them.
+
 - [ ] **Capture-pass tracking: 62% and worth pushing further.** The
       relocalization anchor bug (below) took this from 12% to 62% with ATE
       0.218 -> 0.075 m. What is left is genuine: the pass still loses
@@ -92,6 +103,15 @@ These cannot be settled on synthetic data. Each names what to look for.
 ## Log
 
 Newest first. One line per session: what changed, what it measured.
+
+- **Floor calibration**: measure the floor from one LiDAR frame at capture
+  time instead of inferring it afterwards. 17k inliers at 11 mm rmse vs a
+  few hundred sparse points at 23 mm. Cameras land at **1.496 m** (truth
+  1.5) against 1.447 m from inference. Stored in camera coordinates + frame
+  id so the world plane is derived from the final pose. Two wrong turns:
+  filing the plane against a frame whose real pose differed put the floor
+  1.1 m out, and a pure-rotation calibration sweep has no parallax so the
+  solve registered none of it (71/84 -> 84/84 once the sweep moves).
 
 - **Levelling (S8b)**: find the floor, level it to y=0, square the dominant
   walls to the axes — one rigid transform over poses and points, applied

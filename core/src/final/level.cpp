@@ -49,6 +49,128 @@ Eigen::Quaterniond RotationBetween(const Eigen::Vector3d& from,
 
 }  // namespace
 
+namespace {
+
+// Everything that happens once the floor plane is known, whether it was
+// measured at capture time or inferred from the geometry: level it, square
+// the walls, and report the honest quality signals.
+void FinishLeveling(const Eigen::Vector3d& floor_normal, double floor_offset,
+                    const std::vector<Eigen::Vector3d>& points,
+                    const std::vector<Eigen::Vector3d>& camera_centres,
+                    const LevelingOptions& options, Leveling& out) {
+  // --- level it: floor normal to +Y, floor to y = 0 ---
+  const Eigen::Vector3d up(0, 1, 0);
+  out.rotation_deg =
+      RadToDeg(std::acos(std::clamp(floor_normal.dot(up), -1.0, 1.0)));
+  const Eigen::Quaterniond level_rotation = RotationBetween(floor_normal, up);
+
+  SE3 transform;
+  transform.q = level_rotation;
+  transform.t = Eigen::Vector3d(0, floor_offset, 0);
+  out.floor_found = true;
+
+  // --- square the walls to the axes ---
+  //
+  // With the floor level, walls are vertical, so the problem collapses to
+  // one angle. Points in the wall band project onto the ground plane as
+  // lines; rotating the frame until those lines fall along the axes is a
+  // Manhattan-frame fit. Scoring by the sum of squared histogram counts
+  // rewards exactly that concentration — a wall square to the axis dumps
+  // all its points into a handful of bins.
+  if (options.align_walls) {
+    std::vector<Eigen::Vector2d> ground;
+    ground.reserve(points.size());
+    for (const auto& p : points) {
+      const Eigen::Vector3d q = transform.Apply(p);
+      if (q.y() < options.wall_band_lo_m || q.y() > options.wall_band_hi_m) {
+        continue;
+      }
+      ground.emplace_back(q.x(), q.z());
+    }
+
+    if (static_cast<int>(ground.size()) >= options.min_wall_points) {
+      const double bin = std::max(0.01, options.wall_bin_m);
+      double best_theta = 0, best_score = -1;
+      for (double theta = 0; theta < 90.0; theta += options.wall_step_deg) {
+        const double r = DegToRad(theta);
+        const double cs = std::cos(r), sn = std::sin(r);
+        std::unordered_map<int, int> hist_u, hist_v;
+        for (const auto& g : ground) {
+          const double u = g.x() * cs + g.y() * sn;
+          const double v = -g.x() * sn + g.y() * cs;
+          ++hist_u[static_cast<int>(std::floor(u / bin))];
+          ++hist_v[static_cast<int>(std::floor(v / bin))];
+        }
+        double score = 0;
+        for (const auto& [_, n] : hist_u) score += static_cast<double>(n) * n;
+        for (const auto& [_, n] : hist_v) score += static_cast<double>(n) * n;
+        if (score > best_score) {
+          best_score = score;
+          best_theta = theta;
+        }
+      }
+      // Rotate the world by +theta about up, which is what carries the wall
+      // direction onto the axis the search found it near.
+      const Eigen::Quaterniond square(
+          Eigen::AngleAxisd(DegToRad(best_theta), up));
+      transform.q = (square * transform.q).normalized();
+      transform.t = square * transform.t;
+      out.walls_squared = true;
+      out.wall_turn_deg = best_theta;
+    }
+  }
+
+  out.transform = transform;
+
+  // Camera heights above the levelled floor: the honest check on whether the
+  // fit describes the scan or merely the largest plane in it.
+  {
+    std::vector<double> heights;
+    heights.reserve(camera_centres.size());
+    for (const auto& c : camera_centres) heights.push_back(transform.Apply(c).y());
+    std::sort(heights.begin(), heights.end());
+    out.camera_height_m = heights[heights.size() / 2];
+    std::vector<double> deviation;
+    deviation.reserve(heights.size());
+    for (const double h : heights) {
+      deviation.push_back(std::abs(h - out.camera_height_m));
+    }
+    std::sort(deviation.begin(), deviation.end());
+    out.camera_height_spread_m = 1.4826 * deviation[deviation.size() / 2];
+  }
+}
+
+}  // namespace
+
+Leveling LevelingFromMeasuredFloor(
+    const Eigen::Vector3d& camera_normal, double camera_offset_m,
+    const SE3& calibration_pose, const std::vector<Eigen::Vector3d>& points,
+    const std::vector<Eigen::Vector3d>& camera_centres,
+    const LevelingOptions& options) {
+  Leveling out;
+  out.transform = SE3::Identity();
+  if (camera_offset_m <= 0 || camera_centres.empty()) return out;
+
+  // Camera-space plane into world space through the calibration frame's
+  // final pose. The normal rotates; the offset is re-anchored on where that
+  // camera actually ended up.
+  const Eigen::Vector3d world_normal =
+      (calibration_pose.q.conjugate() * camera_normal).normalized();
+  const Eigen::Vector3d centre = calibration_pose.CameraCenter();
+  const double world_offset = -world_normal.dot(centre) + camera_offset_m;
+
+  out.floor_found = true;
+  out.floor_measured = true;
+  FinishLeveling(world_normal, world_offset, points, camera_centres, options,
+                 out);
+  BS_LOGI("level",
+          "floor from capture-time calibration: cameras %.2f m above it "
+          "(spread %.3f m)%s",
+          out.camera_height_m, out.camera_height_spread_m,
+          out.walls_squared ? ", walls squared" : "");
+  return out;
+}
+
 Leveling EstimateLeveling(const std::vector<Eigen::Vector3d>& points,
                           const std::vector<Eigen::Vector3d>& camera_centres,
                           const LevelingOptions& options) {
@@ -244,88 +366,9 @@ Leveling EstimateLeveling(const std::vector<Eigen::Vector3d>& points,
         std::sqrt(sq / std::max<size_t>(1, inlier_indices.size()));
   }
 
-  // --- level it: floor normal to +Y, floor to y = 0 ---
-  const Eigen::Vector3d up(0, 1, 0);
-  out.rotation_deg =
-      RadToDeg(std::acos(std::clamp(best.normal.dot(up), -1.0, 1.0)));
-  const Eigen::Quaterniond level_rotation = RotationBetween(best.normal, up);
-
-  SE3 transform;
-  transform.q = level_rotation;
-  transform.t = Eigen::Vector3d(0, best.offset, 0);
+  FinishLeveling(best.normal, best.offset, points, camera_centres,
+                 options, out);
   out.floor_found = true;
-
-  // --- square the walls to the axes ---
-  //
-  // With the floor level, walls are vertical, so the problem collapses to
-  // one angle. Points in the wall band project onto the ground plane as
-  // lines; rotating the frame until those lines fall along the axes is a
-  // Manhattan-frame fit. Scoring by the sum of squared histogram counts
-  // rewards exactly that concentration — a wall square to the axis dumps
-  // all its points into a handful of bins.
-  if (options.align_walls) {
-    std::vector<Eigen::Vector2d> ground;
-    ground.reserve(points.size());
-    for (const auto& p : points) {
-      const Eigen::Vector3d q = transform.Apply(p);
-      if (q.y() < options.wall_band_lo_m || q.y() > options.wall_band_hi_m) {
-        continue;
-      }
-      ground.emplace_back(q.x(), q.z());
-    }
-
-    if (static_cast<int>(ground.size()) >= options.min_wall_points) {
-      const double bin = std::max(0.01, options.wall_bin_m);
-      double best_theta = 0, best_score = -1;
-      for (double theta = 0; theta < 90.0; theta += options.wall_step_deg) {
-        const double r = DegToRad(theta);
-        const double cs = std::cos(r), sn = std::sin(r);
-        std::unordered_map<int, int> hist_u, hist_v;
-        for (const auto& g : ground) {
-          const double u = g.x() * cs + g.y() * sn;
-          const double v = -g.x() * sn + g.y() * cs;
-          ++hist_u[static_cast<int>(std::floor(u / bin))];
-          ++hist_v[static_cast<int>(std::floor(v / bin))];
-        }
-        double score = 0;
-        for (const auto& [_, n] : hist_u) score += static_cast<double>(n) * n;
-        for (const auto& [_, n] : hist_v) score += static_cast<double>(n) * n;
-        if (score > best_score) {
-          best_score = score;
-          best_theta = theta;
-        }
-      }
-      // Rotate the world by +theta about up, which is what carries the wall
-      // direction onto the axis the search found it near.
-      const Eigen::Quaterniond square(
-          Eigen::AngleAxisd(DegToRad(best_theta), up));
-      transform.q = (square * transform.q).normalized();
-      transform.t = square * transform.t;
-      out.walls_squared = true;
-      out.wall_turn_deg = best_theta;
-    }
-  }
-
-  out.transform = transform;
-
-  // Camera heights above the levelled floor: the honest check on whether the
-  // fit describes the scan or merely the largest plane in it.
-  {
-    std::vector<double> heights;
-    heights.reserve(camera_centres.size());
-    for (const auto& c : camera_centres) heights.push_back(transform.Apply(c).y());
-    std::sort(heights.begin(), heights.end());
-    out.camera_height_m = heights[heights.size() / 2];
-    std::vector<double> deviation;
-    deviation.reserve(heights.size());
-    for (const double h : heights) {
-      deviation.push_back(std::abs(h - out.camera_height_m));
-    }
-    std::sort(deviation.begin(), deviation.end());
-    // Median absolute deviation, scaled to read like a standard deviation.
-    out.camera_height_spread_m = 1.4826 * deviation[deviation.size() / 2];
-  }
-
   BS_LOGI("level",
           "floor: %d inliers, rmse %.3f m; cameras %.2f m above it "
           "(spread %.3f m); world rotated %.1f deg%s",

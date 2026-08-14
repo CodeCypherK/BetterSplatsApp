@@ -12,6 +12,7 @@ is safe to wire into CI from M0.
 """
 import argparse
 import subprocess
+import json
 import sys
 import tempfile
 from pathlib import Path
@@ -129,6 +130,7 @@ def main() -> int:
 
         colmap_dir = session / "final" / "colmap"
         try:
+            import numpy as np
             import pycolmap
         except ImportError:
             print("ERROR: pycolmap unavailable — install it in CI",
@@ -259,8 +261,87 @@ def main() -> int:
                   file=sys.stderr)
             return 1
 
+    # Split export: parts must be loadable AND carry the combined model's
+    # coordinates exactly. A room-at-a-time workflow only works because the
+    # parts were never re-anchored — any drift here and separately trained
+    # splats would not line up, which is the entire reason to split.
+    with tempfile.TemporaryDirectory(prefix="bs_validate_split_") as tmp:
+        split = Path(tmp) / "session"
+        out = subprocess.run(
+            [str(synth), str(split), "--frames", "110", "--width", "640",
+             "--height", "480", "--seed", "4", "--two-room"],
+            capture_output=True, text=True)
+        if out.returncode != 0:
+            print(f"ERROR: split bs_synth failed:\n{out.stdout}{out.stderr}",
+                  file=sys.stderr)
+            return 1
+        out = subprocess.run([str(replay), str(split), "--live"],
+                             capture_output=True, text=True)
+        out = subprocess.run(
+            [str(replay), str(split), "--final", "quality", "--config",
+             '{"final_split_max_images":40,"final_split_min_images":10}'],
+            capture_output=True, text=True)
+        if out.returncode != 0:
+            print(f"ERROR: split final solve failed:\n{out.stderr}",
+                  file=sys.stderr)
+            return 1
+
+        final_dir = split / "final"
+        combined = pycolmap.Reconstruction(str(final_dir / "colmap"))
+
+        def pose_of(image):
+            m = image.cam_from_world
+            m = m() if callable(m) else m
+            return np.array(m.translation), np.array(m.rotation.quat)
+
+        reference = {im.name: pose_of(im) for im in combined.images.values()}
+
+        manifest_path = final_dir / "colmap_parts" / "parts.json"
+        if not manifest_path.exists():
+            print("ERROR: split export wrote no parts.json", file=sys.stderr)
+            return 1
+        manifest = json.loads(manifest_path.read_text())
+        if manifest["part_count"] < 2:
+            print(f"ERROR: split produced {manifest['part_count']} part(s)",
+                  file=sys.stderr)
+            return 1
+
+        seen, memberships, worst_t, worst_r = set(), 0, 0.0, 0.0
+        for entry in manifest["parts"]:
+            part_dir = final_dir / "colmap_parts" / entry["name"]
+            rec = pycolmap.Reconstruction(str(part_dir))
+            if rec.num_points3D() < 100:
+                print(f"ERROR: {entry['name']} has only "
+                      f"{rec.num_points3D()} points", file=sys.stderr)
+                return 1
+            jpgs = len(list((part_dir / "images").glob("*.jpg")))
+            if jpgs != rec.num_images():
+                print(f"ERROR: {entry['name']} has {jpgs} jpgs for "
+                      f"{rec.num_images()} images", file=sys.stderr)
+                return 1
+            for im in rec.images.values():
+                seen.add(im.name)
+                memberships += 1
+                t, q = pose_of(im)
+                worst_t = max(worst_t, float(np.linalg.norm(t - reference[im.name][0])))
+                worst_r = max(worst_r, float(np.linalg.norm(q - reference[im.name][1])))
+
+        if worst_t > 1e-9 or worst_r > 1e-9:
+            print(f"ERROR: parts left the combined world frame "
+                  f"(translation {worst_t:.3e}, quaternion {worst_r:.3e})",
+                  file=sys.stderr)
+            return 1
+        if len(seen) != combined.num_images():
+            print(f"ERROR: parts cover {len(seen)} of "
+                  f"{combined.num_images()} images", file=sys.stderr)
+            return 1
+        print(f"split: {manifest['part_count']} parts, {len(seen)} images "
+              f"covered, {memberships - len(seen)} shared at seams, "
+              f"pose delta {worst_t:.1e} m")
+
     print("OK: synth -> live -> two-view -> final solve -> pycolmap, "
-          "RAW immutable; hard-scene pipeline within bounds")
+          "RAW immutable; hard-scene pipeline within bounds; "
+          "split parts share one world frame")
     return 0
 
 

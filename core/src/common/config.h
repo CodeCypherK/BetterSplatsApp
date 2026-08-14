@@ -171,6 +171,21 @@ struct EngineConfig {
   // Set true only to study what they would contribute.
   bool final_include_scout = false;
 
+  // --- split export ---
+  // A facility scan can exceed what a splat trainer will take in one pass.
+  // Non-zero writes final/colmap_parts/ alongside the single combined model
+  // — never instead of it — holding parts of at most this many images that
+  // all share the combined model's coordinate frame, so splats trained from
+  // them separately line up when loaded together.
+  int final_split_max_images = 0;   // 0 = single model only
+  int final_split_min_images = 25;  // smaller parts absorbed into a neighbour
+  // Shared points an image needs to join a neighbouring part as context.
+  // Deliberately low: overlap between parts is wanted, not tolerated. Each
+  // part should cover its own side of a doorway completely, and duplicated
+  // coverage costs nothing to recombine when the frame is shared — the
+  // images are hard-linked, so it costs almost nothing on disk either.
+  int final_split_overlap_points = 8;
+
   // --- floater sweep ---
   float floater_sigma_gate = 4.0f;
   int floater_min_rays = 2;

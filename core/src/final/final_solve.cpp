@@ -5,6 +5,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <sstream>
 #include <functional>
 #include <map>
 #include <numeric>
@@ -21,6 +22,7 @@
 #include "calib/lut_fit.h"
 #include "common/log.h"
 #include "final/colmap_export.h"
+#include "final/model_split.h"
 #include "final/component_align.h"
 #include "fusion/residuals.h"
 #include "fusion/scale.h"
@@ -1461,6 +1463,62 @@ FinalOutcome RunFinalSolve(const EngineConfig& config,
     }
     const std::string invalid = ValidateColmapDir(colmap_dir);
     if (!invalid.empty()) return fail("COLMAP self-validation: " + invalid);
+
+    // Optional split export. The combined model above is always written;
+    // this adds parts beside it for facilities too large to train in one
+    // pass. Every part carries the SAME coordinates — no re-centring, no
+    // per-part gauge — so splats trained from them separately load back
+    // together already aligned. That is the whole reason to split rather
+    // than to re-solve each room on its own.
+    if (config.final_split_max_images > 0) {
+      SplitOptions split_options;
+      split_options.max_images = config.final_split_max_images;
+      split_options.min_images = config.final_split_min_images;
+      split_options.overlap_min_shared = config.final_split_overlap_points;
+      const std::vector<ModelPart> parts =
+          SplitModelByCovisibility(model, split_options);
+
+      const fs::path parts_dir = fs::path(session_dir) / "final" / "colmap_parts";
+      std::error_code parts_ec;
+      fs::remove_all(parts_dir, parts_ec);
+
+      std::ostringstream manifest;
+      manifest << "{\n  \"schema_version\": 1,\n"
+               << "  \"shared_world_frame\": true,\n"
+               << "  \"combined_model\": \"../colmap\",\n"
+               << "  \"part_count\": " << parts.size() << ",\n"
+               << "  \"parts\": [\n";
+
+      for (size_t i = 0; i < parts.size(); ++i) {
+        ModelPart part = parts[i];
+        char name[32];
+        std::snprintf(name, sizeof(name), "part_%02u", part.index);
+        const std::string part_dir = (parts_dir / name).string();
+        if (!WriteColmapModel(part.model, part_dir)) {
+          return fail(std::string("split export failed for ") + name);
+        }
+        const std::string part_invalid = ValidateColmapDir(part_dir);
+        if (!part_invalid.empty()) {
+          return fail(std::string(name) + " self-validation: " + part_invalid);
+        }
+        if (!WriteTransformsJson(part.model,
+                                 (fs::path(part_dir) / "transforms.json").string())) {
+          return fail(std::string("transforms.json failed for ") + name);
+        }
+        manifest << "    {\"name\": \"" << name << "\", \"images\": "
+                 << part.model.images.size() << ", \"primary_images\": "
+                 << part.primary_images << ", \"points\": "
+                 << part.model.points.size() << "}"
+                 << (i + 1 < parts.size() ? "," : "") << "\n";
+      }
+      manifest << "  ]\n}\n";
+
+      std::ofstream manifest_out(parts_dir / "parts.json", std::ios::trunc);
+      manifest_out << manifest.str();
+      if (!manifest_out) return fail("parts.json write failed");
+      BS_LOGI("final", "split export: %zu parts sharing one world frame",
+              parts.size());
+    }
 
     // Drop a nerfstudio/instant-ngp transforms.json beside the model so the
     // export feeds gsplat/nerfstudio directly, no COLMAP conversion step.

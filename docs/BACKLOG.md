@@ -93,6 +93,15 @@ These cannot be settled on synthetic data. Each names what to look for.
 
 Newest first. One line per session: what changed, what it measured.
 
+- **Split export** (`final_split_max_images`): writes `final/colmap_parts/`
+  beside the combined model so a large facility can be trained a room at a
+  time. Parts follow the covisibility graph — doorways are the weak edges,
+  so that is where the cuts land. Measured on the two-room walkthrough: 100
+  images into 2-3 parts, 13-29 images shared at the seams, **pose delta vs
+  the combined model exactly 0** (pycolmap, in the CI gate now). Two bugs
+  found by running it: absorption never fired (stale union-find roots), and
+  image count alone let through a part of 17 images holding 3 points.
+
 - Storage gate now prefers sharp frames (it was purely geometric, so a
   smeared frame landing on the 5 cm boundary went into immutable RAW and the
   final solve reconstructed from it). Guarded: stores regardless past 2x the

@@ -100,10 +100,19 @@ bool WriteColmapModel(ColmapModel& model, const std::string& out_dir) {
   }
 
   // images/ — byte-identical copies of the stored RAW JPEGs.
+  //
+  // Hard-linked when the filesystem allows it, copied when it does not. A
+  // split export writes the same JPEG into several parts, and a facility
+  // scan is gigabytes: linking keeps that free. Either way the bytes are
+  // identical to RAW, and RAW itself is untouched.
   for (const auto& image : model.images) {
     if (image.source_jpeg_path.empty()) continue;
-    fs::copy_file(image.source_jpeg_path,
-                  fs::path(out_dir) / "images" / image.name,
+    const fs::path dst = fs::path(out_dir) / "images" / image.name;
+    fs::remove(dst, ec);
+    std::error_code link_ec;
+    fs::create_hard_link(image.source_jpeg_path, dst, link_ec);
+    if (!link_ec) continue;
+    fs::copy_file(image.source_jpeg_path, dst,
                   fs::copy_options::overwrite_existing, ec);
     if (ec) {
       BS_LOGE("colmap", "copy %s failed: %s", image.name.c_str(),

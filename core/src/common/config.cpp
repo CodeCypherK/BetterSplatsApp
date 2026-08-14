@@ -132,6 +132,9 @@ EngineConfig EngineConfig::FromJson(const char* text, bool* ok) {
   get_to(j, "final_component_grow_iters", c.final_component_grow_iters);
   get_to(j, "final_max_components", c.final_max_components);
   get_to(j, "final_include_scout", c.final_include_scout);
+  get_to(j, "final_split_max_images", c.final_split_max_images);
+  get_to(j, "final_split_min_images", c.final_split_min_images);
+  get_to(j, "final_split_overlap_points", c.final_split_overlap_points);
 
   get_to(j, "floater_sigma_gate", c.floater_sigma_gate);
   get_to(j, "floater_min_rays", c.floater_min_rays);

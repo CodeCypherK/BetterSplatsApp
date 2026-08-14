@@ -171,6 +171,52 @@ established once, and the readiness room list exists before detail capture
 starts — finish the circuit and the dashboard already reads "Room 1…N" with
 low scores, i.e. a worklist.
 
+## Split export: a facility a room at a time
+
+A large facility can produce more images and points than a splat trainer
+will take in one pass. `final_split_max_images` writes
+`final/colmap_parts/part_NN/` **beside** the single combined model — never
+instead of it — each a complete, self-validating COLMAP model with its own
+`images/`, `transforms.json`, and a `parts.json` manifest.
+
+The property that makes this worth doing is that **every part keeps the
+combined model's coordinates exactly**: no re-centring, no re-scaling, no
+per-part gauge. Splats trained from the parts separately load back together
+already aligned, with no registration step. The test suite pins it at
+1e-12 and `validate_colmap.py` re-checks it against pycolmap at 1e-9 —
+measured, the delta is 0.
+
+Parts follow the covisibility graph, which is what makes them come out as
+rooms without anyone labelling a room: images inside a space see the same
+surfaces from many angles and are strongly connected, while a doorway is a
+bottleneck only a handful of tracks cross. Edges are sorted by shared-point
+count and merged strongest-first until a part hits the size cap, so the weak
+doorway edges are the last considered and the first left uncut. The cap is a
+capacity number — set it from what the trainer can hold — not a claim about
+the building.
+
+Three details are load-bearing, and two of them were learned by running it:
+
+- **Overlap at the seams is wanted, not tolerated.** An image joins a
+  neighbouring part as context when it observes enough of that part's
+  points, so each part covers its own side of a doorway completely. A shared
+  frame makes duplicated coverage free to recombine, and the JPEGs are
+  hard-linked, so it is nearly free on disk too. Measured on a two-room
+  walkthrough: 100 images, 113 memberships, 13 shared.
+- **Image count alone does not make a part viable.** The cap once cut out a
+  group of 17 images holding 3 points between them — a training run with
+  nothing to train on. Parts are now judged on structure as well as size and
+  absorbed into a neighbour when either is too thin.
+- **Some images share no tracks with anything.** They have no covisibility
+  neighbour to be absorbed toward, so they attach to the spatially nearest
+  part. They carry no tracks, but they are still a registered camera and a
+  real photograph, which is supervision a trainer can use.
+
+Absorption is deliberately allowed to exceed the cap, bounded by
+`final_split_min_images`: a handful of orphaned images is not a training run
+and dropping them would lose coverage the capture paid for, so a part
+slightly over capacity is the lesser problem.
+
 ## Measuring the tracker honestly
 
 A long investigation into "live tracking is fragile on walking

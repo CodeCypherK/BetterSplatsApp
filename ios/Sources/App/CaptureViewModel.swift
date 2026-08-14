@@ -6,9 +6,31 @@ import Observation
 /// MainActor view model. Built once per session; @unchecked Sendable because
 /// mutable state is guarded by `lock` and the rest is immutable or actors.
 final class FrameFeedContext: @unchecked Sendable {
-    /// Hard cap on stored frames (~1.3 MB each ≈ 1.2 GB); UI warns earlier.
-    static let storedFrameCap = 900
-    static let storedFrameWarn = 700
+    /// Hard cap on stored frames for ONE capture, and the point the UI starts
+    /// warning.
+    ///
+    /// This bounds a single capture, not a project. A house is captured as a
+    /// chain of sessions — 10 or so captures of 200-500 frames each — and the
+    /// chain shares one world frame, so the project total is however many
+    /// frames the phone has room for, not this number.
+    ///
+    /// 900 was originally chosen for the FINAL SOLVE's memory, which holds
+    /// every frame's features resident from extraction through track
+    /// building: measured at 1.24 MB/frame, so 900 frames is ~1.1 GB of
+    /// descriptors alone, already at the edge of what iOS will let an app
+    /// hold. Chaining decoupled the two — captures are solved per session or
+    /// per room, not all at once — so this is now a disk-and-usability
+    /// bound rather than a memory one, and the memory ceiling lives with the
+    /// solve where it belongs. See docs/ARCHITECTURE.md, "How big a project
+    /// can get".
+    static let storedFrameCap = 1200
+    static let storedFrameWarn = 900
+
+    /// Refuse to start storing when the device is this close to full. A
+    /// capture that dies on a write halfway through a room is worse than one
+    /// that never starts, and "your phone is full" is something the user can
+    /// act on before walking the space rather than after.
+    static let minFreeBytes: Int64 = 2 * 1024 * 1024 * 1024
 
     let store: SessionStore
     let encoder = JpegEncoder()
@@ -477,11 +499,19 @@ final class CaptureViewModel {
                 self.megabytesWritten =
                     Double(await context.store.storedBytes) / 1_048_576.0
                 let stored = Int(self.framesStored)
-                if stored >= FrameFeedContext.storedFrameCap {
+                let free = Self.freeDiskBytes()
+                if free < FrameFeedContext.minFreeBytes {
+                    // Disk beats the frame count: a capture that dies on a
+                    // write halfway through a room loses the room.
+                    self.storageNote = String(
+                        format: "iPhone almost full (%.1f GB left) — stop soon",
+                        Double(free) / 1_073_741_824)
+                } else if stored >= FrameFeedContext.storedFrameCap {
                     self.storageNote =
-                        "Storage limit reached — stop and reconstruct"
+                        "Capture limit reached — stop, then continue this "
+                        + "project in a new capture"
                 } else if stored >= FrameFeedContext.storedFrameWarn {
-                    self.storageNote = "Storage: \(stored)/"
+                    self.storageNote = "Capture: \(stored)/"
                         + "\(FrameFeedContext.storedFrameCap) frames"
                 } else {
                     self.storageNote = nil
@@ -492,6 +522,17 @@ final class CaptureViewModel {
                 }
             }
         }
+    }
+
+    /// Free space on the volume the sessions live on. 0 when it cannot be
+    /// read, which reads as "almost full" and warns — the safe direction,
+    /// since the alternative is discovering it mid-capture.
+    private static func freeDiskBytes() -> Int64 {
+        let url = FileManager.default.urls(for: .documentDirectory,
+                                           in: .userDomainMask)[0]
+        let values = try? url.resourceValues(
+            forKeys: [.volumeAvailableCapacityForImportantUsageKey])
+        return values?.volumeAvailableCapacityForImportantUsage ?? 0
     }
 
     func refreshSnapshot() {

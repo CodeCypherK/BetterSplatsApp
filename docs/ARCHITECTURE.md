@@ -333,6 +333,54 @@ A single big plane is genuinely ambiguous — a wall two metres to your left
 and a floor two metres below look identical from geometry alone — and is
 documented as such rather than resolved by guessing.
 
+## How big a project can get
+
+A house is not one capture. Measured expectations from the intended use:
+**200-500 images per room**, a large open living/dining/kitchen split across
+more than one capture, and **around ten captures for a house** — so 2,000 to
+5,000 images for the project.
+
+Three different limits apply, and they are frequently confused:
+
+| limit | value | what sets it |
+|---|---|---|
+| frames per capture | 1200 (warn 900) | usability and disk, not correctness |
+| frames per project | free disk | ~1.3 MB/frame, so 5,000 frames ≈ 6.5 GB |
+| frames per **solve** | ~900-1200 | resident feature memory, measured below |
+
+The capture limit is per capture, not per project. A chain shares one world
+frame, so a house is ten linked sessions of a few hundred frames each and the
+project total is bounded by the phone's free space. The capture UI warns on
+**actual free disk** rather than only a frame count, because a capture that
+dies on a write halfway through a room loses the room.
+
+The solve limit is the real one, and it is memory. `final_solve` holds every
+frame's features resident from extraction (S1) through track building (S5),
+releasing descriptors only afterwards. Measured from the feature cache at
+3,000 SIFT features per frame: **1.24 MB per frame**.
+
+| frames | resident features |
+|---|---|
+| 500 | 0.62 GB |
+| 900 | 1.11 GB |
+| 2,000 | 2.48 GB |
+| 5,000 | 6.19 GB |
+
+iOS will not let an app hold the last two, and that is before tracks, points
+and the Ceres problem. So **a 5,000-image project cannot be one on-device
+global solve**, and no amount of raising the capture cap changes that — the
+two limits are independent, which is exactly why they are now separate
+numbers with separate reasons.
+
+What makes the project work anyway is that a global solve is not what splat
+training wants. Rooms are trained separately (see split export above), and a
+chain already shares one world frame from live localization, so per-session
+solves land in the same coordinates. The open question is accuracy at the
+seams: live localization is metric to ~3.5 cm, where a bundle-adjusted joint
+solve would be millimetric. Whether 3.5 cm shows where two rooms meet is a
+measurement nobody has taken yet, and it decides whether a project-level
+alignment refinement is needed or is gold-plating.
+
 ## Split export: a facility a room at a time
 
 A large facility can produce more images and points than a splat trainer

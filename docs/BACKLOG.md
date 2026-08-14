@@ -102,6 +102,18 @@ non-expert to that data on the first try.
 
 ## Next
 
+- [ ] **Do the seams show between separately-solved sessions?** A house is
+      ~10 captures / 2,000-5,000 images, which **cannot be one on-device
+      global solve** — resident features measure 1.24 MB/frame, so 5,000
+      frames is 6.2 GB before tracks, points or Ceres (table in
+      ARCHITECTURE.md). Rooms are trained separately anyway, and a chain
+      already shares one world frame, so per-session solves land in the same
+      coordinates — but only to live-localization accuracy, ~3.5 cm, where a
+      joint solve would be millimetric. **Measure whether 3.5 cm is visible
+      where two rooms meet before building anything.** If it is, the fix is a
+      project-level alignment refinement over cross-session matches; if not,
+      that work is gold-plating.
+
 - [ ] **Should the scout circuit store frames as densely as capture does?**
       It currently shares the 0.30 s gate, so a one-minute lap spends ~200 of
       the 900-frame budget and ~260 MB on frames the final solve throws away.

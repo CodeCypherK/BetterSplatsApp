@@ -259,6 +259,13 @@ final class CaptureViewModel {
     /// produced almost no keyframes did not map anything to localize into.
     private(set) var scaffoldKeyframes: UInt32 = 0
 
+    /// Where the user is standing right now, when the tracker knows. Every
+    /// distance and direction the UI quotes goes through this — the readiness
+    /// grid works in the session's world frame, whose origin is wherever the
+    /// first keyframe landed, and a distance measured from there reads as a
+    /// distance from the user while being nothing of the kind.
+    private(set) var viewer: ViewerPose?
+
     var isScouting: Bool { state == .scouting }
 
     private let floorCalibrator = FloorCalibrator()
@@ -422,6 +429,7 @@ final class CaptureViewModel {
                 guard let self, self.isRunning, let context = self.context
                 else { continue }
                 let status = CoreEngine.shared.livePollStatus()
+                self.viewer = ViewerPose(status: status)
                 self.framesSeen = status.frames_fed
                 self.guidance = self.isScouting
                     ? Self.scoutGuidanceText(for: status)

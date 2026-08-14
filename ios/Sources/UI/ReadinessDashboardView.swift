@@ -1,4 +1,3 @@
-import simd
 import SwiftUI
 
 /// The splat-readiness dashboard: per-region score card with the five
@@ -9,8 +8,7 @@ struct ReadinessDashboardView: View {
     @State private var renameRegionID: UInt32 = 0
     @State private var renaming = false
 
-    private static let axisNames = ["Geometry", "Camera poses", "Texture",
-                                    "LiDAR coverage", "View overlap"]
+    private static let axisNames = WeakAreaGuidance.axisNames
 
     var body: some View {
         List {
@@ -83,15 +81,17 @@ struct ReadinessDashboardView: View {
                             HStack {
                                 Image(systemName: "exclamationmark.triangle.fill")
                                     .foregroundStyle(.orange)
-                                Text(Self.title(for: area,
-                                                regionName: regionName(for: area)))
+                                Text(WeakAreaGuidance.title(
+                                    for: area, viewer: model.viewer,
+                                    regionName: regionName(for: area)))
                                     .font(.subheadline.weight(.medium))
                                 Spacer()
                                 Text("\(Int(area.score))%")
                                     .font(.caption.monospacedDigit())
                                     .foregroundStyle(.secondary)
                             }
-                            Text(Self.advice(for: area))
+                            Text(WeakAreaGuidance.advice(for: area,
+                                                         viewer: model.viewer))
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
@@ -133,41 +133,6 @@ struct ReadinessDashboardView: View {
         return model.snapshot.regions.first { $0.id == area.regionID }?.name
     }
 
-    static func surfaceName(for area: CoreEngine.Snapshot.WeakArea) -> String {
-        guard area.surfaceKind == 0 else {
-            return ["Wall", "Floor", "Ceiling", "Object"][
-                min(3, max(0, area.surfaceKind))]
-        }
-        // Wall: prepend its region-relative placement when known.
-        let side = ["", "Back ", "Left ", "Right ", "Front "][
-            min(4, max(0, area.surfaceSide))]
-        return "\(side)wall"
-    }
-
-    static func title(for area: CoreEngine.Snapshot.WeakArea,
-                      regionName: String? = nil) -> String {
-        let distance = simd_length(area.center)
-        let base = String(format: "%@ · %.1f m away",
-                          surfaceName(for: area), distance)
-        if let regionName { return "\(regionName) — \(base)" }
-        return base
-    }
-
-    static func advice(for area: CoreEngine.Snapshot.WeakArea) -> String {
-        let feet = max(1, Int((area.moveDistM * 3.28).rounded()))
-        switch area.deficiency {
-        case 0:
-            return "Insufficient visual geometry — move \(feet) ft sideways and capture this surface again."
-        case 1:
-            return "Weak camera support here — re-approach this area from a well-tracked direction, keeping overlap."
-        case 2:
-            return "Low texture detail — LiDAR is anchoring the surface; move closer for sharper texture."
-        case 3:
-            return "Poor LiDAR coverage — move within 10 ft and face the surface directly."
-        default:
-            return "Not enough viewpoints — arc around this area, stepping \(feet) ft between shots."
-        }
-    }
 }
 
 private struct ScoreBar: View {

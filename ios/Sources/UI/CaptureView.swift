@@ -10,10 +10,12 @@ struct CaptureView: View {
     /// `project` continues an existing one; `newProjectName` starts a new one.
     /// Both nil is a standalone capture, which is what the old entry point
     /// did and still works.
-    init(project: ProjectStore.Project? = nil, newProjectName: String? = nil) {
+    init(project: ProjectStore.Project? = nil, newProjectName: String? = nil,
+         rescanLabel: String? = nil) {
         let model = CaptureViewModel()
         model.continuingProject = project
         model.newProjectName = newProjectName
+        model.rescanLabel = rescanLabel
         _model = State(initialValue: model)
     }
 
@@ -38,7 +40,9 @@ struct CaptureView: View {
             }
 
             if model.state == .idle {
-                planChooser
+                // A rescan is always one room by definition, so asking "one
+                // room or several" would be a question with a known answer.
+                if model.isRescan { rescanIntro } else { planChooser }
             }
 
             if case .failed(let message) = model.state {
@@ -69,6 +73,46 @@ struct CaptureView: View {
                 .contentShape(Rectangle())
                 .onTapGesture {}
             planChooserCard
+        }
+    }
+
+    /// Redoing one room. Says plainly what will happen to the old frames,
+    /// because "replace" is the kind of word people reasonably read as
+    /// "delete" — and here it does not mean that.
+    private var rescanIntro: some View {
+        ZStack {
+            Color.black.opacity(0.45)
+                .ignoresSafeArea()
+                .contentShape(Rectangle())
+                .onTapGesture {}
+            VStack(spacing: 16) {
+                Image(systemName: "arrow.clockwise")
+                    .font(.system(size: 34, weight: .semibold))
+                    .foregroundStyle(.tint)
+                Text("Redo \(model.rescanLabel ?? "this room")")
+                    .font(.title3.weight(.semibold))
+                Text("Walk this room again. Wherever you go, the new frames "
+                   + "take over from the old ones.")
+                    .font(.subheadline)
+                    .multilineTextAlignment(.center)
+                Text("The old frames stay on your phone — the reconstruction "
+                   + "just stops using them, so this is reversible.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                Button {
+                    model.start(plan: .captureOnly)
+                } label: {
+                    Label("Start", systemImage: "camera.viewfinder")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+            }
+            .padding(24)
+            .frame(maxWidth: 380)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 20))
+            .padding(24)
         }
     }
 

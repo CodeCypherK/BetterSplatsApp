@@ -325,6 +325,17 @@ final class CaptureViewModel {
     var continuingProject: ProjectStore.Project?
     /// Name for a brand-new project. Ignored when continuing one.
     var newProjectName: String?
+    /// When set, this capture REPLACES what earlier captures in the project
+    /// recorded wherever the camera goes. The label names it for the user
+    /// ("Kitchen"); the volume is observed, not predicted.
+    var rescanLabel: String?
+
+    /// Axis-aligned box the camera moved through, accumulated live. Only
+    /// used for a rescan, but tracked whenever the pose is valid because it
+    /// costs two comparisons per poll.
+    private var walkedMin: SIMD3<Double>?
+    private var walkedMax: SIMD3<Double>?
+    var isRescan: Bool { rescanLabel != nil }
     private(set) var guidance = "Preparing…"
     private(set) var framesSeen: UInt32 = 0
     private(set) var framesStored: UInt32 = 0
@@ -553,6 +564,7 @@ final class CaptureViewModel {
                 self.viewer = ViewerPose(status: status)
                 // The storage gate needs this on the capture queue.
                 context.publishPose(self.viewer)
+                if let centre = self.viewer?.center { self.extendWalked(centre) }
                 self.recovery = RecoveryHint(status: status)
                 self.framesSeen = status.frames_fed
                 // The recovery hint is a better version of the same message,
@@ -610,6 +622,32 @@ final class CaptureViewModel {
         let values = try? url.resourceValues(
             forKeys: [.volumeAvailableCapacityForImportantUsageKey])
         return values?.volumeAvailableCapacityForImportantUsage ?? 0
+    }
+
+    private func extendWalked(_ centre: SIMD3<Double>) {
+        walkedMin = walkedMin.map { SIMD3(Swift.min($0.x, centre.x),
+                                          Swift.min($0.y, centre.y),
+                                          Swift.min($0.z, centre.z)) } ?? centre
+        walkedMax = walkedMax.map { SIMD3(Swift.max($0.x, centre.x),
+                                          Swift.max($0.y, centre.y),
+                                          Swift.max($0.z, centre.z)) } ?? centre
+    }
+
+    /// The volume this capture will supersede: the walked box, grown by the
+    /// distance the camera can actually see.
+    ///
+    /// Grown rather than used raw because the camera stands in the middle of
+    /// a room and looks outwards — the box of where the FEET went is much
+    /// smaller than the space that was re-covered, and superseding only the
+    /// middle would leave the old walls in place alongside the new ones. The
+    /// margin is deliberately modest: over-reaching into the next room
+    /// discards work that was not redone, which is the worse error.
+    private static let rescanMarginM = 1.5
+
+    var rescanVolume: (min: SIMD3<Double>, max: SIMD3<Double>)? {
+        guard let low = walkedMin, let high = walkedMax else { return nil }
+        let margin = SIMD3<Double>(repeating: Self.rescanMarginM)
+        return (low - margin, high + margin)
     }
 
     func refreshSnapshot() {
@@ -673,6 +711,21 @@ final class CaptureViewModel {
             try? await Task.sleep(for: .milliseconds(600))
             CoreEngine.shared.liveEnd()
             if let context {
+                // Record the rescan volume BEFORE finalize, which is what
+                // writes session.json out.
+                if let label = rescanLabel, let volume = rescanVolume {
+                    await context.store.setSupersededVolume(
+                        min: (volume.min.x, volume.min.y, volume.min.z),
+                        max: (volume.max.x, volume.max.y, volume.max.z),
+                        label: label)
+                } else if rescanLabel != nil {
+                    // A rescan that never tracked has no volume, and writing
+                    // an empty or guessed one would either do nothing or
+                    // discard the wrong frames. The capture is still kept —
+                    // it simply adds to the project instead of replacing.
+                    guidance = "Could not track this rescan — kept as an "
+                        + "extra capture instead of a replacement"
+                }
                 let locks = manager.lockState
                 try? await context.store.finalize(
                     locks: (focus: locks.focus, exposure: locks.exposure,

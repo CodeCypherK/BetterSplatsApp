@@ -125,7 +125,6 @@ struct ProjectDetailView: View {
     let project: ProjectStore.Project
     var onChange: () -> Void
 
-    @State private var continuing = false
     @State private var reloaded: ProjectStore.Project?
 
     private var current: ProjectStore.Project { reloaded ?? project }
@@ -150,6 +149,12 @@ struct ProjectDetailView: View {
                 } label: {
                     Label("Capture another room", systemImage: "camera.badge.ellipsis")
                 }
+                Button {
+                    rescanName = ""
+                    namingRescan = true
+                } label: {
+                    Label("Redo a room", systemImage: "arrow.clockwise")
+                }
                 if let latest = current.latestDirectory {
                     NavigationLink {
                         ProcessingView(sessionURL: latest)
@@ -160,6 +165,10 @@ struct ProjectDetailView: View {
                               systemImage: "cube.transparent")
                     }
                 }
+            } footer: {
+                Text("Redoing a room replaces the old frames wherever you "
+                   + "walk. They stay on the phone — the reconstruction just "
+                   + "stops using them.")
             }
 
             Section("Captures") {
@@ -173,6 +182,30 @@ struct ProjectDetailView: View {
         .onAppear {
             reloaded = ProjectStore.load().first { $0.id == project.id }
         }
+        .alert("Which room?", isPresented: $namingRescan) {
+            TextField("Room name (e.g. Kitchen)", text: $rescanName)
+            Button("Cancel", role: .cancel) {}
+            Button("Start") {
+                startingRescan = Rescan(
+                    label: rescanName.isEmpty ? "this room" : rescanName)
+            }
+        } message: {
+            Text("Naming it just labels the change in the report — walk "
+               + "wherever the room actually is.")
+        }
+        .navigationDestination(item: $startingRescan) { rescan in
+            CaptureView(project: current, newProjectName: nil,
+                        rescanLabel: rescan.label)
+        }
+    }
+
+    @State private var namingRescan = false
+    @State private var rescanName = ""
+    @State private var startingRescan: Rescan?
+
+    struct Rescan: Identifiable, Hashable {
+        let label: String
+        var id: String { label }
     }
 
     private func captureRow(_ capture: ProjectStore.Capture) -> some View {

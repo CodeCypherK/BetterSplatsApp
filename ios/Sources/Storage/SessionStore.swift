@@ -202,6 +202,28 @@ actor SessionStore {
 
     var hasFloorCalibration: Bool { sessionDoc.floorCalibration != nil }
 
+    /// Records that this capture re-covered a volume, superseding whatever
+    /// earlier captures in the project recorded there.
+    ///
+    /// The volume is OBSERVED — the box the camera actually moved through
+    /// during this capture — rather than predicted from a stored room
+    /// outline. That is the more honest definition of "I redid this area",
+    /// it is self-correcting (walk further, replace more), and it does not
+    /// depend on region bounds that may have been computed from a solve two
+    /// versions ago.
+    ///
+    /// Nothing is deleted. The superseded frames stay on disk exactly as
+    /// recorded and the final solve declines to reconstruct from them, so
+    /// removing this volume brings them back.
+    func setSupersededVolume(min: (Double, Double, Double),
+                             max: (Double, Double, Double),
+                             label: String) {
+        sessionDoc.supersedes = [SessionJSON.SupersedeJSON(
+            min: [min.0, min.1, min.2],
+            max: [max.0, max.1, max.2],
+            label: label)]
+    }
+
     var storedFrames: UInt32 { frameCount }
     var storedBytes: Int64 { bytesWritten }
 

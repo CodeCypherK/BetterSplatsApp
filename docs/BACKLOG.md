@@ -196,6 +196,12 @@ These cannot be settled on synthetic data. Each names what to look for.
 
 ## Ideas (unranked, unvalidated)
 
+- **`report.json` carries no readiness regions**, though the plan specifies
+  per-region scores and weak clusters recomputed from FINAL data. The final
+  solve never builds a PatchGrid — readiness only exists live. Would need a
+  LiveMap assembled from the solve's frames+tracks. Wanted for: room bounds
+  the user could pick from, and a post-solve room-by-room quality view.
+
 - Exposure/white-balance normalization across frames before the final solve.
 - Per-session depth-vs-triangulation affine correction (risk 6 in the plan).
 - Surface the flagged images in the app, not just in `report.json` — a
@@ -207,6 +213,21 @@ These cannot be settled on synthetic data. Each names what to look for.
 ## Log
 
 Newest first. One line per session: what changed, what it measured.
+
+- **Project board, and the rescan loop closed.** Create a project, reopen it,
+  capture another room, re-export, redo a room. The chaining and supersession
+  built earlier were unreachable until now: every capture numbered frames
+  from 1, so two chained captures would collide and the reader would reject
+  them. Ids now continue from the highest one on DISK (not `frame_count`,
+  which is 0 in a capture killed before finalize).
+
+  **The rescan volume is OBSERVED, not predicted** — the box the camera
+  actually walked, grown by 1.5 m because the camera stands in the middle of
+  a room and looks outward, so the box of where the feet went is much smaller
+  than what was re-covered. This avoided a much bigger piece of work: the
+  final solve computes no readiness regions at all, so there are no stored
+  room bounds to pick from. Observing is also self-correcting and does not
+  depend on bounds from a solve two versions ago.
 
 - **Rescanning a room.** A project is a chain of sessions over one space;
   going back to redo a room writes a new session declaring the world volume

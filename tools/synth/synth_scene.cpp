@@ -445,8 +445,16 @@ std::vector<SE3> OrbitTrajectory(int frame_count, double radius_x, double radius
 std::vector<SE3> ScoutTrajectory(int frame_count, double eye_height,
                                  uint32_t seed, double max_turn_deg) {
   // Hug the perimeter of both rooms, always looking across the space rather
-  // than along the wall behind you. The look target is the centre of
-  // whichever room you are currently in, so every frame sees a whole room.
+  // than along the wall behind you, so every frame sees a whole room.
+  //
+  // At a doorway the camera looks into the room it is ENTERING, not at the
+  // doorway it is crossing. A door frame passed at arm's length sweeps
+  // through the view far too fast to match against — near surface, huge
+  // apparent motion — and it is not the scaffold's job anyway: the doorway
+  // gets proper coverage later, during inside-out capture and orbiting of
+  // the regions of interest around it. What the scaffold wants here is the
+  // next room's far structure, which is distant, slow-moving, and still
+  // there several seconds later.
   const std::vector<Eigen::Vector3d> waypoints = {
       {-2.3, 0, 3.3},   // room A, front-left
       {-2.3, 0, -3.3},  // room A, back-left  (facing the blank wall's room)
@@ -477,6 +485,23 @@ std::vector<SE3> ScoutTrajectory(int frame_count, double eye_height,
     return waypoints[seg - 1] + f * (waypoints[seg] - waypoints[seg - 1]);
   };
 
+  // Geometry of MakeTwoRoomScene: rooms centred at x = 0 and x = 6, joined
+  // by an opening in the wall at x = 3 spanning |z| < 0.55.
+  constexpr double kDivider = 3.0;
+  const Eigen::Vector3d centre_a(0.0, eye_height * 0.8, 0.0);
+  const Eigen::Vector3d centre_b(6.0, eye_height * 0.8, 0.0);
+
+  // How far ahead along the path the doorway decision looks, and it is
+  // bounded on BOTH sides. Too short and the turn cannot finish — the
+  // camera crosses the threshold still facing backwards. Too long and the
+  // switch lands back on the leg that runs along the far wall, where travel
+  // is already headed at the doorway: the camera then walks straight toward
+  // what it is looking at, which is the degenerate case for parallax, and
+  // the scaffold collapses (measured at 5.0 m: scout tracking 90% -> 33%).
+  // 3.0 m puts it on the approach leg, where travel is across the new view
+  // rather than along it, and still leaves ~120 deg of turn budget.
+  const double kLookAheadFrac = 3.0 / total;
+
   std::mt19937 rng(seed);
   std::normal_distribution<double> gauss(0.0, 1.0);
   double jitter_y = 0.0;
@@ -490,31 +515,17 @@ std::vector<SE3> ScoutTrajectory(int frame_count, double eye_height,
     Eigen::Vector3d position = sample(s);
     position.y() = eye_height + jitter_y;
 
-    // Aim at the centre of the room we are standing in — that is what
-    // "back to the wall, scanning inward" produces. Across the doorway the
-    // two centres are BLENDED rather than switched: picking whichever room
-    // contains the camera swung the view 174 deg between two adjacent frames
-    // at x = 3, which read as a tracker failure for a long time and was
-    // really a teleporting camera.
-    const double blend =
-        std::clamp((position.x() - 2.0) / 2.0, 0.0, 1.0);  // x 2->4 m
-    const Eigen::Vector3d room_centre(6.0 * blend, eye_height * 0.8, 0.0);
-    const Eigen::Vector3d to_centre = room_centre - position;
+    // Aim at the centre of the room we are about to be standing in. Near a
+    // doorway that is the room being ENTERED, so the view leads through the
+    // opening rather than tracking the door frame past at arm's length. A
+    // rule keyed on which room CONTAINS the camera switches at the divider
+    // instead: too late to turn, and discontinuous — it produced a single
+    // 174 deg frame that ended tracking for the following 800.
+    const Eigen::Vector3d soon = sample(s + kLookAheadFrac);
+    const Eigen::Vector3d target = soon.x() < kDivider ? centre_a : centre_b;
 
-    // In the doorway that blended centre passes through the camera itself.
-    // Looking at a point you are standing on aims the lens at the floor and
-    // leaves the roll ill-conditioned — a 4 deg/frame change of view
-    // direction came out as a 10 deg/frame change of pose. Close in, the
-    // view follows travel instead, which is what walking through a door
-    // actually looks like.
-    Eigen::Vector3d travel = sample(std::min(1.0, s + 0.01)) - position;
-    travel.y() = 0;
-    if (travel.norm() < 1e-6) travel = Eigen::Vector3d(1, 0, 0);
-    const double weight =
-        std::clamp((to_centre.norm() - 0.8) / 1.2, 0.0, 1.0);  // 0.8 -> 2.0 m
-    Eigen::Vector3d forward = weight * to_centre.normalized() +
-                              (1.0 - weight) * travel.normalized();
-    if (forward.norm() < 1e-6) forward = travel.normalized();
+    Eigen::Vector3d forward = target - position;
+    if (forward.norm() < 1e-6) forward = Eigen::Vector3d(1, 0, 0);
 
     positions.push_back(position);
     forwards.push_back(forward.normalized());

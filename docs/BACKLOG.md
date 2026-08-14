@@ -37,6 +37,9 @@ non-expert to that data on the first try.
       matching side, e.g. re-detecting at a lower FAST threshold while
       turning, or matching the leading edge against the frame before it
       rather than only against keyframes.
+- [ ] **Capture-pass ATE regressed to 0.21 m while coverage rose to 72.5%.**
+      Separate the selection effect from a real accuracy loss: compare ATE
+      over the frames tracked by BOTH runs before concluding anything.
       NOTE: the old "scaffold is appearance-incompatible / ORB is
       viewpoint-sensitive" theory here was **wrong** and is disproved — the
       same scaffold now carries 62% of the pass. Do not rebuild the scout
@@ -66,6 +69,15 @@ non-expert to that data on the first try.
 ## Log
 
 Newest first. One line per session: what changed, what it measured.
+
+- Scout now looks into the room it is ENTERING while crossing a doorway,
+  rather than at the doorway itself (user's call, and it holds up).
+  Capture-pass tracking **61.8% -> 72.5%**, scout flat at 89.3%. The lead
+  distance is bounded on both sides: 5 m put the switch back on the wall leg
+  where the camera walks toward what it looks at, and scout tracking
+  collapsed to 33%; 3 m puts it on the approach leg, travel across the view.
+  Capture ATE rose 0.10 -> 0.21 m, partly a selection effect (harder poses
+  now counted) but not separated out.
 
 - Tried baseline-aware triangulation partners (require a partner >= 4% of
   scene depth away). **Negative, reverted**: capture tracking flat

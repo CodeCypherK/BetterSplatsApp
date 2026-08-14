@@ -217,6 +217,42 @@ separately from `live/poses.jsonl`, so the capture pass no longer erases the
 evidence for the scout pass, and a replay that is feeding decimated frames
 says so.
 
+## Crossing a doorway
+
+The scout circuit looks into the room it is **entering**, not at the doorway
+it is crossing — and it is already turned by the time it gets there. A door
+frame passed at arm's length sweeps through the view far too fast to match
+against, and the scaffold does not need it: the doorway gets proper coverage
+later, from inside-out capture and orbiting of the regions of interest
+around it. What the scaffold wants at that moment is the next room's far
+structure, which is distant, slow-moving, and still there seconds later.
+
+Getting this right is a two-sided constraint, and both sides were measured:
+
+- **Decide too late** and the turn cannot finish. Switching when the next
+  room first becomes visible through the opening left the camera still
+  facing backwards as it crossed the threshold, because turning is
+  rate-limited.
+- **Decide too early** and the switch lands back on the leg that runs along
+  the far wall, where travel is *already* pointed at the doorway. The camera
+  then walks straight toward what it is looking at — the degenerate case for
+  parallax — and the scaffold collapses (a 5 m lead took scout tracking from
+  90% to 33%).
+
+A 3 m lead puts the decision on the approach leg, where travel runs across
+the new view rather than along it. Measured on the two-room walking session:
+
+| | at the doorway | looking ahead (3 m) |
+|---|---|---|
+| capture-pass frames tracked | 61.8% | **72.5%** |
+| scout frames tracked | 89.6% | 89.3% |
+
+Pose error rose alongside (capture ATE 0.10 → 0.21 m). Some of that is a
+selection effect rather than a regression — ATE is averaged over tracked
+frames only, so surviving the doorway means the hardest poses now count
+where before they were simply absent — but it has not been separated out,
+and the honest reading is that continuity improved and accuracy did not.
+
 ## Known limitations (measured)
 
 **Turning outruns mapping.** A new point needs two keyframes that both see

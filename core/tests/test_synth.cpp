@@ -253,14 +253,21 @@ TEST_F(SynthTest, ScoutCircuitHugsWallsAndFacesInward) {
                   std::abs(c.z() - (-4.0)), std::abs(c.z() - 4.0)});
     if (to_wall < 1.2) ++near_perimeter;
 
-    // Optical axis points at the centre of the room being stood in.
-    const Eigen::Vector3d centre =
-        c.x() < 3.0 ? Eigen::Vector3d(0, 1.2, 0) : Eigen::Vector3d(6, 1.2, 0);
+    // Optical axis points across a room — the one being stood in, or, at a
+    // doorway, the one being entered.
     const Eigen::Vector3d forward = p.Inverse().q * Eigen::Vector3d(0, 0, 1);
-    if (forward.dot((centre - c).normalized()) > 0.9) ++facing_inward;
+    double best = -2.0;
+    for (const Eigen::Vector3d& centre :
+         {Eigen::Vector3d(0, 1.2, 0), Eigen::Vector3d(6, 1.2, 0)}) {
+      best = std::max(best, forward.dot((centre - c).normalized()));
+    }
+    if (best > 0.9) ++facing_inward;
+    // The one thing that must never happen: hugging a wall and looking at
+    // it. Every frame has to be pointed into open space, even mid-turn.
+    EXPECT_GT(best, 0.0) << "frame looks outward, at the wall behind it";
   }
   EXPECT_GT(near_perimeter, 100) << "scout should hug the perimeter";
-  EXPECT_GT(facing_inward, 100) << "scout frames should look across the room";
+  EXPECT_GT(facing_inward, 110) << "scout frames should look across a room";
 
   // Both rooms visited, and the circuit closes.
   bool room_a = false, room_b = false;
@@ -386,6 +393,37 @@ TEST_F(SynthTest, MeasureMotionReportsPathAndTurn) {
   EXPECT_NEAR(m.max_step_m, 0.1, 1e-9);
   EXPECT_NEAR(m.max_turn_deg, 2.0, 1e-6);
   EXPECT_EQ(synth::MeasureMotion({}).path_m, 0.0);
+}
+
+// Crossing a doorway, the camera looks into the room it is ENTERING, and it
+// is already turned by the time it gets there. A door frame passed at arm's
+// length sweeps through the view too fast to match against, and the scaffold
+// does not need it — the doorway is covered later by the detail capture.
+TEST_F(SynthTest, ScoutLooksIntoTheNextRoomWhileCrossingTheDoorway) {
+  const std::vector<SE3> poses =
+      synth::ScoutTrajectory(1303, 1.5, 4u, 40.0 / 30.0);
+
+  int crossings = 0;
+  for (size_t i = 1; i < poses.size(); ++i) {
+    const double before = poses[i - 1].CameraCenter().x();
+    const double after = poses[i].CameraCenter().x();
+    if ((before < 3.0) == (after < 3.0)) continue;  // not a divider crossing
+    ++crossings;
+    const double heading = after - before;  // + entering room B, - room A
+
+    // At the threshold and for a good stretch before it, the optical axis
+    // already points the way we are going. Deciding on arrival would leave
+    // the camera facing backwards through the door.
+    for (int back = 0; back <= 40; back += 10) {
+      const size_t j = i - std::min<size_t>(i, static_cast<size_t>(back));
+      const Eigen::Vector3d forward =
+          poses[j].Inverse().q * Eigen::Vector3d(0, 0, 1);
+      EXPECT_GT(forward.x() * heading, 0.0)
+          << "frame " << j << " (" << back << " before the crossing) faces "
+          << "away from the room being entered";
+    }
+  }
+  EXPECT_EQ(crossings, 2) << "the circuit crosses the divider exactly twice";
 }
 
 // The view direction is rate-limited, so a trajectory whose look target

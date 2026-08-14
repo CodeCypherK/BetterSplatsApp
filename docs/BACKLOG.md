@@ -37,9 +37,14 @@ non-expert to that data on the first try.
       matching side, e.g. re-detecting at a lower FAST threshold while
       turning, or matching the leading edge against the frame before it
       rather than only against keyframes.
-- [ ] **Capture-pass ATE regressed to 0.21 m while coverage rose to 72.5%.**
-      Separate the selection effect from a real accuracy loss: compare ATE
-      over the frames tracked by BOTH runs before concluding anything.
+- [ ] **Capture-pass ATE now 0.32 m (rot 4.7 deg) while coverage rose to
+      73.2%.** It has moved the wrong way across three consecutive changes
+      that each improved coverage. The selection-effect story (ATE averages
+      over tracked frames, so surviving harder stretches raises it) no longer
+      comfortably covers a 3x move. Measure it properly: compare ATE over the
+      frame set tracked by ALL runs, and plot per-frame error against
+      position to see whether the error is concentrated at the doorways or
+      spread. Do not tune anything else on this metric until that is known.
       NOTE: the old "scaffold is appearance-incompatible / ORB is
       viewpoint-sensitive" theory here was **wrong** and is disproved — the
       same scaffold now carries 62% of the pass. Do not rebuild the scout
@@ -69,6 +74,13 @@ non-expert to that data on the first try.
 ## Log
 
 Newest first. One line per session: what changed, what it measured.
+
+- Reshaped both two-room paths so they cross the doorway **square to the
+  opening** instead of cutting in diagonally from a far corner and pinching
+  to a point (user spotted it in the plan view — the shape should read as an
+  H). Widened the opening 1.1 m -> 1.6 m. Scout tracking **89.3% -> 98.6%**,
+  scout ATE 0.080 -> **0.043 m**; capture 72.5% -> 73.2%. Capture ATE keeps
+  drifting up (0.21 -> 0.32 m) as coverage rises — still unexplained.
 
 - Scout now looks into the room it is ENTERING while crossing a doorway,
   rather than at the doorway itself (user's call, and it holds up).

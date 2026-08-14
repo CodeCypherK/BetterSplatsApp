@@ -146,7 +146,9 @@ Scene MakeTwoRoomScene(uint32_t seed, bool blank_wall) {
   const double z0 = -4.0, z1 = 4.0, D = z1 - z0;
   const double ax0 = -3.0, ax1 = 3.0;  // room A
   const double bx0 = 3.0, bx1 = 9.0;   // room B (shares the wall at x = 3)
-  const double door_half = 0.55, door_h = 2.1;
+  // 1.6 m cased opening, 2.1 m head height — the sort of gap between two
+  // living spaces, not a 1.1 m internal door.
+  const double door_half = 0.8, door_h = 2.1;
 
   auto add = [&](const Eigen::Vector3d& origin, const Eigen::Vector3d& eu,
                  const Eigen::Vector3d& ev, cv::Vec3f color, float tex,
@@ -455,19 +457,24 @@ std::vector<SE3> ScoutTrajectory(int frame_count, double eye_height,
   // the regions of interest around it. What the scaffold wants here is the
   // next room's far structure, which is distant, slow-moving, and still
   // there several seconds later.
+  // Plan shape: a room-sized loop on each side joined by a straight run
+  // through the opening — an H. Nobody crosses a doorway on a diagonal from
+  // the far corner; the earlier waypoints did, pinching the path to a point
+  // at the threshold and giving the camera no square approach to it.
   const std::vector<Eigen::Vector3d> waypoints = {
-      {-2.3, 0, 3.3},   // room A, front-left
-      {-2.3, 0, -3.3},  // room A, back-left  (facing the blank wall's room)
-      {2.3, 0, -3.3},   // room A, back-right
-      {2.6, 0, -0.2},   // toward the doorway
-      {4.0, 0, 0.0},    // through it
-      {5.0, 0, -3.3},   // room B, back-left
-      {8.3, 0, -3.3},   // room B, back-right
-      {8.3, 0, 3.3},    // room B, front-right
-      {5.0, 0, 3.3},    // room B, front-left
-      {4.0, 0, 0.2},    // back through the doorway
-      {2.3, 0, 3.3},    // room A, front-right
-      {-2.3, 0, 3.3},   // home
+      {-2.3, 0, 3.3},    // room A, front-left  (start)
+      {-2.3, 0, -3.3},   // room A, back-left   (along the blank wall)
+      {2.3, 0, -3.3},    // room A, back-right
+      {2.3, 0, -0.25},   // down the divider wall onto the opening's axis
+      {3.7, 0, -0.25},   // straight through  ── the H crossbar
+      {3.7, 0, -3.3},    // room B, back-left
+      {8.3, 0, -3.3},    // room B, back-right
+      {8.3, 0, 3.3},     // room B, front-right
+      {3.7, 0, 3.3},     // room B, front-left
+      {3.7, 0, 0.25},    // back up onto the opening's axis
+      {2.3, 0, 0.25},    // straight back through ── offset so it is not a retrace
+      {2.3, 0, 3.3},     // room A, front-right
+      {-2.3, 0, 3.3},    // home
   };
 
   std::vector<double> arc(waypoints.size(), 0.0);
@@ -544,14 +551,14 @@ std::vector<SE3> WalkthroughTrajectory(int frame_count, double eye_height,
       {-1.8, 0, 0.6},   // toward the blank left wall
       {-1.6, 0, -2.6},  // A back-left corner
       {1.6, 0, -2.6},   // A back-right corner
-      {2.2, 0, -0.4},   // approach the doorway
-      {4.0, 0, 0.0},    // through into room B
+      {2.2, 0, -0.2},   // onto the opening's axis, square to the wall
+      {3.8, 0, -0.2},   // straight through into room B
       {5.2, 0, -2.6},   // B back-left
       {7.8, 0, -2.4},   // B back-right
       {7.8, 0, 2.4},    // B front-right
       {5.0, 0, 2.2},    // B front-left
-      {4.0, 0, 0.2},    // back to the doorway
-      {2.0, 0, 0.4},    // back into room A
+      {3.8, 0, 0.2},    // back onto the axis
+      {2.2, 0, 0.2},    // straight back through
       {0.0, 0, 2.4},    // home — same viewpoint as frame 0
   };
 

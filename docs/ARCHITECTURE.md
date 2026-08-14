@@ -240,18 +240,37 @@ Getting this right is a two-sided constraint, and both sides were measured:
   90% to 33%).
 
 A 3 m lead puts the decision on the approach leg, where travel runs across
-the new view rather than along it. Measured on the two-room walking session:
+the new view rather than along it.
 
-| | at the doorway | looking ahead (3 m) |
-|---|---|---|
-| capture-pass frames tracked | 61.8% | **72.5%** |
-| scout frames tracked | 89.6% | 89.3% |
+The **path** has to cooperate, and originally it did not. The circuit cut
+diagonally from room A's far corner straight to the opening and pinched to a
+point at the threshold — nobody walks through a door that way, and it left
+no square approach to turn on. The waypoints now trace an **H**: a
+room-sized loop on each side, joined by a straight run through the opening.
+The path comes down the divider wall onto the opening's axis, crosses
+perpendicular to it, and picks up the next room's perimeter on the far side.
+That gives the turn a full 3 m of wall to happen against, with travel
+running down the wall while the view swings through 90° toward the opening —
+the two across each other, which is what keeps parallax alive. The opening
+itself went from 1.1 m to a 1.6 m cased gap, the sort between two living
+spaces rather than an internal door.
 
-Pose error rose alongside (capture ATE 0.10 → 0.21 m). Some of that is a
-selection effect rather than a regression — ATE is averaged over tracked
-frames only, so surviving the doorway means the hardest poses now count
-where before they were simply absent — but it has not been separated out,
-and the honest reading is that continuity improved and accuracy did not.
+Measured on the two-room walking session, cumulatively:
+
+| | at the doorway | + 3 m lead | + H-shaped path |
+|---|---|---|---|
+| scout frames tracked | 89.6% | 89.3% | **98.6%** |
+| scout ATE | 0.047 m | 0.080 m | **0.043 m** |
+| capture-pass frames tracked | 61.8% | 72.5% | **73.2%** |
+
+The scout circuit now holds tracking for essentially the whole lap.
+
+Capture-pass pose error moved the other way over the same changes (ATE 0.10
+→ 0.21 → 0.32 m, rotation 1.4° → 2.7° → 4.7°). Part of that is a selection
+effect rather than a regression — ATE averages over tracked frames only, so
+surviving the doorway means the hardest poses now count where before they
+were simply absent — but the size of it is no longer comfortably explained
+that way, and it is an open item rather than a settled caveat.
 
 ## Known limitations (measured)
 

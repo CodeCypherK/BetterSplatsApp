@@ -245,7 +245,8 @@ re-trying:
 | local BA diverging | converges normally; the validation guard never fires |
 | relocalization candidate coverage | 8 → 64 candidates per attempt moved tracking 11.8% → 12.2% |
 | scaffold unusable because ORB is viewpoint-sensitive | wrong — see below; the same scaffold now carries 62% of the capture pass |
-| denser keyframes while turning | **worse**: capping the interval at 5 deg of turn took the capture pass 61.9% → 38.9% and ATE 0.075 → 0.223 m. Closer keyframes mean shorter baselines, and triangulation pairs with the *most covisible* neighbours, which are the most recent ones |
+| denser keyframes while turning | **worse**: capping the interval at 5 deg of turn took the capture pass 61.9% → 38.9%, ATE 0.075 → 0.223 m |
+| baseline-aware triangulation partners | **worse**: requiring a partner ≥4% of scene depth away left tracking flat (61.9% → 61.8%) and degraded ATE 0.075 → 0.101 m, with 4% fewer points |
 
 **Where recovery was actually failing.** For a long time a capture pass
 localized into its scout scaffold on only 12% of frames, and it was tempting
@@ -271,6 +272,19 @@ swept around it:
 The lesson worth keeping: a recovery path that reports success is not
 necessarily recovering. `relocalized frame N against kf K` was printed 24
 times and looked like the system working.
+
+**Overlap beats parallax in the live map.** Two attempts to buy the turning
+case more triangulation baseline both made things worse, from opposite
+directions: more keyframes (shorter gaps) and fewer-but-farther partners.
+The first invited an explanation about short baselines producing weak
+points — and then requiring *long* baselines hurt too, which kills it. What
+both changes actually did was cost matches. ORB stops matching across
+viewpoint change, so a distant partner returns fewer correspondences, and
+the live map lives on track extensions rather than on well-conditioned
+individual points; the local BA window then spans fewer, shorter tracks. So
+neither more keyframes nor better-separated ones helps on its own, and the
+flat interval floor plus pure-covisibility partner selection stay as they
+are. Anything aimed at the turning case has to add *matches*, not geometry.
 
 The final solve is unaffected by any of this: it needs no live poses at all
 and reconstructs a two-room walkthrough from images alone.

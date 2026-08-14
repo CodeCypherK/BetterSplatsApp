@@ -28,13 +28,15 @@ non-expert to that data on the first try.
       relocalization anchor bug (below) took this from 12% to 62% with ATE
       0.218 -> 0.075 m. What is left is genuine: the pass still loses
       tracking at the doorway transits, where the turn outruns mapping (see
-      ARCHITECTURE.md). Rotation-scaled keyframe cadence was tried and is
-      **worse** (61.9% → 38.9%) — do not retry it alone. The reason points
-      at the next thing to try instead: `TriangulateNewPoints` picks its
-      neighbours by covisibility, which during a turn means the most recent
-      and therefore shortest-baseline keyframes. Select neighbours for
-      adequate *baseline* as well as overlap, and the cadence experiment may
-      become viable as a follow-on.
+      ARCHITECTURE.md). Two geometry-side attempts both measured **worse**
+      and are reverted — denser keyframes while turning (61.9% → 38.9%) and
+      baseline-aware triangulation partners (ATE 0.075 → 0.101 m). Together
+      they say the constraint is not geometry: it is MATCHES. A turn shows
+      the camera surfaces at viewpoints ORB cannot match, and no keyframe
+      arrangement fixes that. Next thing worth trying is therefore on the
+      matching side, e.g. re-detecting at a lower FAST threshold while
+      turning, or matching the leading edge against the frame before it
+      rather than only against keyframes.
       NOTE: the old "scaffold is appearance-incompatible / ORB is
       viewpoint-sensitive" theory here was **wrong** and is disproved — the
       same scaffold now carries 62% of the pass. Do not rebuild the scout
@@ -42,11 +44,6 @@ non-expert to that data on the first try.
 
 ## Next
 
-- [ ] **Baseline-aware triangulation neighbours.** `TriangulateNewPoints`
-      takes the top-3 *covisible* keyframes, which are the most recent ones
-      and so the shortest-baseline ones. Prefer neighbours that combine
-      overlap with enough parallax to triangulate. This is the blocker under
-      the failed cadence experiment above.
 - [ ] **Capture UX for the scout pass.** There is no UI for "walk the
       perimeter first" — the pass exists in the engine and the format but a
       user cannot invoke it. Design the flow, then build it.
@@ -69,6 +66,14 @@ non-expert to that data on the first try.
 ## Log
 
 Newest first. One line per session: what changed, what it measured.
+
+- Tried baseline-aware triangulation partners (require a partner >= 4% of
+  scene depth away). **Negative, reverted**: capture tracking flat
+  (61.9% → 61.8%) but ATE 0.075 → 0.101 m and 4% fewer points; scout ATE
+  0.038 → 0.047 m. Taken with the cadence result, this kills the
+  "short baselines make weak points" story — requiring LONG baselines hurts
+  too. Both changes cost matches. Overlap beats parallax here; the live map
+  runs on track extensions.
 
 - Tried rotation-scaled keyframe cadence (interval capped so consecutive
   keyframes stay within 5 deg of turn). **Negative result, reverted**:

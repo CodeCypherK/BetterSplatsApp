@@ -161,7 +161,11 @@ void LiveSystem::InsertKeyframe(
 
 void LiveSystem::TriangulateNewPoints(Keyframe& kf) {
   // Pair the new keyframe with its best covisible neighbors (fallback: the
-  // previous keyframe).
+  // previous keyframe). Ranking by covisibility alone favours the most
+  // recent, and therefore shortest-baseline, keyframes — but requiring a
+  // minimum baseline instead was measured and is WORSE (see
+  // docs/ARCHITECTURE.md): in the live map overlap beats parallax, because
+  // a distant partner matches fewer features and costs track extensions.
   std::vector<uint32_t> neighbors;
   for (const auto& [kf_id, _] : map_.Covisible(kf.kf_id, 10)) {
     neighbors.push_back(kf_id);

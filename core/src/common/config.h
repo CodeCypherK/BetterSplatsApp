@@ -171,6 +171,15 @@ struct EngineConfig {
   // Set true only to study what they would contribute.
   bool final_include_scout = false;
 
+  // --- levelling ---
+  // Image-only SfM has no gravity, so a scan of an ordinary room comes out
+  // tilted and at an arbitrary bearing. Find the floor, level it, and square
+  // the dominant walls to the axes — one rigid transform over everything, so
+  // geometry is preserved exactly. Skipped automatically when no plane fits
+  // the description of a floor: a tilted scan beats a confidently wrong one.
+  bool final_level_floor = true;
+  bool final_square_walls = true;
+
   // --- split export ---
   // A facility scan can exceed what a splat trainer will take in one pass.
   // Non-zero writes final/colmap_parts/ alongside the single combined model
@@ -180,11 +189,12 @@ struct EngineConfig {
   int final_split_max_images = 0;   // 0 = single model only
   int final_split_min_images = 25;  // smaller parts absorbed into a neighbour
   // Shared points an image needs to join a neighbouring part as context.
-  // Deliberately low: overlap between parts is wanted, not tolerated. Each
-  // part should cover its own side of a doorway completely, and duplicated
-  // coverage costs nothing to recombine when the frame is shared — the
-  // images are hard-linked, so it costs almost nothing on disk either.
-  int final_split_overlap_points = 8;
+  // Deliberately low: you can see a long way into a room from the one next
+  // door, and those oblique views are what make two separately trained
+  // splats agree along their shared boundary. Duplicated coverage needs no
+  // reconciling when the frame is shared, and the JPEGs are hard-linked, so
+  // more overlap is close to free.
+  int final_split_overlap_points = 3;
 
   // --- floater sweep ---
   float floater_sigma_gate = 4.0f;

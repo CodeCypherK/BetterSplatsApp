@@ -171,6 +171,62 @@ established once, and the readiness room list exists before detail capture
 starts — finish the circuit and the dashboard already reads "Room 1…N" with
 low scores, i.e. a worklist.
 
+## Levelling: putting the reconstruction the right way up
+
+Image-only structure from motion has no gravity. The world frame is anchored
+on whatever the first camera happened to be doing, so a scan of an ordinary
+room routinely comes out on a slope with its walls at an arbitrary bearing.
+Nothing is wrong with it geometrically — every camera and point is
+self-consistent — but it is unpleasant downstream and makes two scans of
+adjacent spaces needlessly hard to compare.
+
+S8b finds the floor, levels it to `y = 0` with `+Y` up, and squares the
+dominant walls to the axes. It is one rigid transform applied to poses and
+points together, before the floater sweep and the dense cloud, so every
+later stage simply works in the levelled frame — including the split parts,
+which inherit it for free. Geometry is preserved exactly; only where the
+world sits changes. A unit test pins that at 1e-9 over pairwise distances.
+
+Finding the floor is mostly a matter of ruling things out, and each rule
+earned its place:
+
+- **A wall** always buries a good part of the scene on its far side. A floor
+  never does — nothing lives under a floor.
+- **A ceiling** is the hard one. Orient its normal toward the cameras and it
+  satisfies every test a floor does: cameras all on the positive side,
+  nothing beyond it, a plausible room-height away. In a symmetric room it
+  ties on inlier count, and the first implementation picked it — which
+  showed up as cameras landing 0.97 m above the "floor" instead of 1.5 m.
+  The two are separated by the one asymmetry a hand-held capture always
+  has: the phone is carried above the mid-height of the room, so of two
+  opposed extremal planes the floor is the **farther**. When the two are
+  within 25 cm the scan is left alone rather than guessed at.
+- **Sampling blind does not work.** Floors are low on texture and seen at a
+  glancing angle, so they are a small share of tracked points and three
+  random points rarely all land on one — the first run found nothing at all
+  on a real reconstruction. The camera trajectory supplies the prior: a
+  phone carried around a room stays at roughly one height, so the plane
+  through the camera centres is horizontal and its normal is up. Only the
+  axis is used, never the sign, and a trajectory too straight to define a
+  plane yields no prior.
+
+Squaring the walls is then a one-angle problem, since a levelled floor makes
+walls vertical. Wall-band points project onto the ground plane as lines, and
+the frame is rotated until those lines fall on the axes — scoring by the sum
+of squared histogram counts, which rewards exactly that concentration.
+
+Measured on a clean single-room solve: **cameras land at 1.494 ± 0.011 m
+above the levelled floor, against a true 1.5 m.** On the two-room
+walkthrough, whose geometry error is ~0.2 m, the same fit gives 1.12 ±
+0.41 m — levelling is only ever as good as the reconstruction underneath it,
+which is why `report.json` carries the camera height and its spread. Those
+are the honest quality signals; the rotation angle is not one, since a solve
+that started upside down reports 168 degrees on a perfectly good scan.
+
+A single big plane is genuinely ambiguous — a wall two metres to your left
+and a floor two metres below look identical from geometry alone — and is
+documented as such rather than resolved by guessing.
+
 ## Split export: a facility a room at a time
 
 A large facility can produce more images and points than a splat trainer

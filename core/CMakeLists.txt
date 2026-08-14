@@ -14,6 +14,7 @@ add_library(bscore STATIC
   src/engine/selftest.cpp
   src/final/colmap_export.cpp
   src/final/model_split.cpp
+  src/final/level.cpp
   src/final/component_align.cpp
   src/final/final_solve.cpp
   src/fusion/residuals.cpp

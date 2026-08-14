@@ -33,11 +33,16 @@ struct SplitOptions {
   // handful of images is not worth a training run of its own.
   int min_images = 25;
   // An image joins a neighbouring part as context when it observes at least
-  // this many of that part's points. Overlap at the seams is wanted, not
-  // tolerated: each part should cover its own side of a doorway completely,
-  // and a shared frame makes duplicated coverage free to recombine. Lower
-  // means more overlap.
-  int overlap_min_shared = 8;
+  // this many of that part's points.
+  //
+  // Set low on purpose. You can usually see a good way into a room from the
+  // one next door, and those oblique views are exactly what makes two
+  // separately trained splats agree along their shared boundary — the more
+  // of a neighbour a part can see, the better the two align later. Overlap
+  // costs almost nothing here: the coordinates are shared, so duplicated
+  // coverage needs no reconciling, and the JPEGs are hard-linked rather
+  // than copied. Lower means more overlap.
+  int overlap_min_shared = 3;
   // A part also has to carry structure, not just images. Measured on a
   // two-room walkthrough, the size cap once cut out a group of 17 images
   // holding 3 points between them — frames that see each other barely or

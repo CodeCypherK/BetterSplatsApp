@@ -93,6 +93,21 @@ These cannot be settled on synthetic data. Each names what to look for.
 
 Newest first. One line per session: what changed, what it measured.
 
+- **Levelling (S8b)**: find the floor, level it to y=0, square the dominant
+  walls to the axes — one rigid transform over poses and points, applied
+  before the dense cloud so everything downstream inherits it. Clean solve:
+  **cameras at 1.494 +- 0.011 m** against a true 1.5. Two-room solve (0.2 m
+  geometry error): 1.12 +- 0.41 m, so the report carries camera height and
+  spread as the quality signal. Three wrong turns worth remembering: the
+  ceiling passes every floor test if you only check "nothing beyond it"
+  (picked it, cameras landed at 0.97 m); blind RANSAC finds nothing on a
+  real reconstruction because floors are a small share of tracked points;
+  and the rotation angle is not a quality signal (168 deg on a good scan).
+- Split overlap widened (8 -> 3 shared points): seams went from 13 to 36
+  shared images. You can see a long way into a room from the one next door,
+  and those oblique views are what make two separately trained splats agree
+  along their shared boundary.
+
 - **Split export** (`final_split_max_images`): writes `final/colmap_parts/`
   beside the combined model so a large facility can be trained a room at a
   time. Parts follow the covisibility graph — doorways are the weak edges,

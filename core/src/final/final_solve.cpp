@@ -22,6 +22,7 @@
 #include "calib/lut_fit.h"
 #include "common/log.h"
 #include "final/colmap_export.h"
+#include "final/level.h"
 #include "final/model_split.h"
 #include "final/component_align.h"
 #include "fusion/residuals.h"
@@ -1305,6 +1306,55 @@ FinalOutcome RunFinalSolve(const EngineConfig& config,
     }
   }
 
+  // ------------------------------------------------ S8b level the world
+  //
+  // Image-only structure from motion has no idea which way is down: the
+  // world frame is anchored on whatever the first camera happened to be
+  // doing, so an ordinary room routinely comes out on a slope with its walls
+  // at some arbitrary bearing. Finding the floor and squaring the walls
+  // fixes that with one rigid transform.
+  //
+  // Applied HERE, before the floater sweep and the dense cloud, so every
+  // later stage simply works in the levelled frame — there is no second
+  // copy of the world to keep in step, and the split parts inherit it for
+  // free. Poses and points move together, so the reconstruction's geometry
+  // is untouched: only where it sits changes.
+  Leveling leveling;
+  if (config.final_level_floor) {
+    std::vector<Eigen::Vector3d> level_points;
+    level_points.reserve(tracks.size());
+    for (const auto& track : tracks) {
+      if (!track.dead && track.has_point) level_points.push_back(track.X);
+    }
+    std::vector<Eigen::Vector3d> level_cameras;
+    for (const auto& frame : frames) {
+      if (frame.posed) level_cameras.push_back(frame.pose.CameraCenter());
+    }
+
+    LevelingOptions level_options;
+    level_options.align_walls = config.final_square_walls;
+    leveling = EstimateLeveling(level_points, level_cameras, level_options);
+
+    if (leveling.floor_found) {
+      const SE3 inverse = leveling.transform.Inverse();
+      for (auto& track : tracks) {
+        if (!track.dead && track.has_point) {
+          track.X = leveling.transform.Apply(track.X);
+        }
+      }
+      // A world-to-camera pose composed with the inverse world transform is
+      // the same camera looking at the same thing from the same place, said
+      // in the new frame.
+      for (auto& frame : frames) {
+        if (frame.posed) frame.pose = frame.pose * inverse;
+      }
+      BS_LOGI("final",
+              "levelled: floor rmse %.3f m, cameras %.2f m above it%s",
+              leveling.floor_rmse_m, leveling.camera_height_m,
+              leveling.walls_squared ? ", walls squared" : "");
+    }
+  }
+
   // ------------------------------------------------------ S9 floater sweep
   {
     uint32_t removed = 0;
@@ -1551,6 +1601,16 @@ FinalOutcome RunFinalSolve(const EngineConfig& config,
                << ",\n"
                << "  \"lidar_residuals\": " << metrics.lidar_residuals << ",\n"
                << "  \"ba_rounds\": " << metrics.ba_round << ",\n"
+               << "  \"levelled\": " << (leveling.floor_found ? "true" : "false")
+               << ",\n"
+               << "  \"level_rotation_deg\": " << leveling.rotation_deg << ",\n"
+               << "  \"level_floor_rmse_m\": " << leveling.floor_rmse_m << ",\n"
+               << "  \"level_camera_height_m\": " << leveling.camera_height_m
+               << ",\n"
+               << "  \"level_camera_height_spread_m\": "
+               << leveling.camera_height_spread_m << ",\n"
+               << "  \"walls_squared\": "
+               << (leveling.walls_squared ? "true" : "false") << ",\n"
                << "  \"preset\": \"" << (fast ? "fast" : "quality") << "\"\n"
                << "}\n";
     report(BS_STAGE_EXPORT, 1.0f);

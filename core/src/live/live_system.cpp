@@ -67,6 +67,18 @@ void LiveSystem::Begin(const std::string& session_dir, double k1, double k2,
   state_ = BS_LIVE_INITIALIZING;
   guidance_ = BS_GUIDE_NONE;
 
+  // Resolve the session this one continues, if any. Read here rather than
+  // passed in so the C ABI does not have to grow a parameter that only
+  // exists to restate what session.json already says.
+  parent_dir_ = "";
+  if (auto info = SessionInfo::FromJson(
+          ReadTextFile((fs::path(session_dir_) / "session.json").string()))) {
+    if (!info->parent_session.empty()) {
+      parent_dir_ =
+          (fs::path(session_dir_).parent_path() / info->parent_session).string();
+    }
+  }
+
   // A capture pass starts from the scout circuit's map when there is one.
   // The scaffold already covers the whole space and is already metric, so
   // this pass never has to bootstrap its own gauge: it relocalizes into the
@@ -75,8 +87,27 @@ void LiveSystem::Begin(const std::string& session_dir, double k1, double k2,
   // instead of stranding the user in a room nothing has mapped.
   scaffold_keyframes_ = 0;
   if (pass_ == BS_PASS_CAPTURE) {
-    const std::string map_path =
+    // Preference order, most specific first:
+    //   1. this session's own scout scaffold
+    //   2. the parent session's end-of-capture map  } continuing a facility
+    //   3. the parent session's scout scaffold      } too big for one capture
+    //
+    // The parent's END map before its scaffold, because by the end it has
+    // absorbed everything the capture pass added — the parent's scaffold is
+    // a strict subset of it.
+    std::string map_path =
         (fs::path(session_dir_) / "live" / "map.bin").string();
+    if (!fs::exists(map_path) && !parent_dir_.empty()) {
+      const fs::path parent(parent_dir_);
+      for (const char* name : {"map_end.bin", "map.bin"}) {
+        const std::string candidate = (parent / "live" / name).string();
+        if (fs::exists(candidate)) {
+          map_path = candidate;
+          BS_LOGI("live", "continuing from %s", candidate.c_str());
+          break;
+        }
+      }
+    }
     bool scaffold_metric = false;
     if (fs::exists(map_path) && ReadLiveMap(map_path, map_, &scaffold_metric)) {
       scaffold_keyframes_ = static_cast<uint32_t>(map_.keyframes().size());
@@ -1098,6 +1129,28 @@ bool LiveSystem::End() {
               map_.keyframes().size(), map_.points().size());
     } else {
       BS_LOGW("live", "failed to write scout scaffold to %s", map_path.c_str());
+    }
+  }
+
+  // A capture pass leaves its accumulated map behind too, under a different
+  // name, for the NEXT SESSION to localize into. A building bigger than one
+  // capture's frame budget is walked as a chain of sessions, and this is
+  // what lets session N+1 pick up session N's world frame instead of
+  // starting its own.
+  //
+  // Deliberately not map.bin. Overwriting the scout scaffold would make a
+  // re-run of the capture pass start from the previous run's result, so the
+  // same session would replay differently every time — and the scaffold is
+  // the better reference anyway, having been walked for coverage rather than
+  // for detail.
+  if (pass_ == BS_PASS_CAPTURE && !map_.keyframes().empty()) {
+    const std::string map_path =
+        (fs::path(session_dir_) / "live" / "map_end.bin").string();
+    if (WriteLiveMap(map_, map_path, scale_locked_)) {
+      BS_LOGI("live", "session map written: %zu keyframes, %zu points",
+              map_.keyframes().size(), map_.points().size());
+    } else {
+      BS_LOGW("live", "failed to write session map to %s", map_path.c_str());
     }
   }
   // Each pass gets its own log. They answer different questions — did the

@@ -172,6 +172,7 @@ std::string SessionInfo::ToJson() const {
         {"incidence_deg", floor_calibration.incidence_deg},
         {"inliers", floor_calibration.inliers}};
   }
+  j["parent_session"] = parent_session;
   j["app_version"] = app_version;
   return j.dump(2);
 }
@@ -239,6 +240,7 @@ std::optional<SessionInfo> SessionInfo::FromJson(const std::string& text) {
       s.regions.push_back(std::move(e));
     }
   }
+  s.parent_session = j.value("parent_session", "");
   s.app_version = j.value("app_version", "");
   return s;
 }

@@ -19,6 +19,7 @@ add_executable(bs_tests
   test_map_io.cpp
   test_matching.cpp
   test_readiness.cpp
+  test_session_chain.cpp
   test_session_io.cpp
   test_synth.cpp
   test_triangulation.cpp

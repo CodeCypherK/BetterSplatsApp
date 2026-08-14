@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <map>
 #include <optional>
 #include <string>
 #include <vector>
@@ -25,7 +26,22 @@ class SessionReader {
 
   // Sorted ascending; enumerated from frames/ on open (source of truth is
   // the directory contents, not session.json's frame_count).
+  //
+  // When this session continues another (session.json's `parent_session`),
+  // this spans the WHOLE chain, oldest frames first, and every accessor
+  // below resolves an id to whichever session actually holds it. A facility
+  // too big for one capture is therefore read exactly like a single session
+  // — the final solve needed no changes at all to reconstruct across one.
+  //
+  // Frame ids are unique across a chain because each session continues the
+  // previous one's numbering. A duplicate would be a capture-side bug; it is
+  // rejected at open rather than silently resolving to one of the two.
   const std::vector<uint32_t>& frame_ids() const { return frame_ids_; }
+
+  // Session directories in the chain, oldest first. Just this one when there
+  // is no parent.
+  const std::vector<std::string>& chain() const { return chain_; }
+  bool is_chained() const { return chain_.size() > 1; }
 
   std::string FramePath(uint32_t frame_id) const;
   std::string ImagePath(uint32_t frame_id) const;
@@ -41,10 +57,19 @@ class SessionReader {
  private:
   SessionReader() = default;
 
+  // Enumerates frames/ under `dir` into frame_ids_, mapping each to `dir`.
+  // Returns false when frames/ is missing or an id already belongs to
+  // another session in the chain.
+  bool AddFramesFrom(const std::string& dir);
+
   std::string dir_;
   SessionInfo info_;
   CalibrationInfo calibration_;
   std::vector<uint32_t> frame_ids_;
+  std::vector<std::string> chain_;
+  // frame id -> the session directory holding it. Single-session sessions
+  // pay one small map for the uniformity of never special-casing a chain.
+  std::map<uint32_t, std::string> owner_;
 };
 
 }  // namespace bs

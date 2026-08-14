@@ -147,6 +147,8 @@ class LiveSystem {
 
   EngineConfig config_;
   std::string session_dir_;
+  // Directory of the session this one continues, empty when standalone.
+  std::string parent_dir_;
   double k1_ = 0, k2_ = 0;
   bs_pass_kind pass_ = BS_PASS_CAPTURE;
   // Keyframes at the head of the map that came from a loaded scaffold. They

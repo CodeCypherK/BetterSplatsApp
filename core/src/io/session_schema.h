@@ -130,6 +130,15 @@ struct SessionInfo {
   // the app offered it, and absent whenever the user skipped the step, so
   // the final solve falls back to inferring the floor from the geometry.
   SurfaceCalibration floor_calibration;
+  // Name (not path) of the sibling session this one continues, or empty.
+  //
+  // A facility bigger than one capture's frame budget is walked as a chain
+  // of sessions: each loads the previous one's map, relocalizes into it and
+  // inherits its world frame, so the whole chain shares one set of
+  // coordinates and the final solve can treat it as a single reconstruction.
+  // A name rather than a path because the chain has to survive being zipped
+  // up on a phone and unzipped somewhere else — an absolute path would not.
+  std::string parent_session;
   std::string app_version;
 
   std::string ToJson() const;

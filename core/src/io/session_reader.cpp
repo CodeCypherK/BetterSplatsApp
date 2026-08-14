@@ -37,10 +37,70 @@ std::optional<SessionReader> SessionReader::Open(const std::string& session_dir)
             session_dir.c_str());
   }
 
-  const fs::path frames = root / "frames";
+  // Walk back up the chain first, so the oldest session's frames are
+  // enumerated first and `chain()` reads in capture order. Sessions are
+  // siblings on disk, which is what makes a chain survive being zipped on a
+  // phone and unzipped somewhere else.
+  //
+  // The parent walk is bounded and cycle-checked. `parent_session` is just a
+  // string in a JSON file the app wrote; a bug or a hand-edit could point a
+  // session at itself or round a loop, and neither should hang the solve.
+  std::vector<std::string> ancestry;
+  {
+    std::vector<std::string> seen;
+    std::string dir = session_dir;
+    SessionInfo info_at = r.info_;
+    constexpr size_t kMaxChain = 64;
+    while (!info_at.parent_session.empty() && ancestry.size() < kMaxChain) {
+      const fs::path parent = root.parent_path() / info_at.parent_session;
+      const std::string parent_dir = parent.string();
+      if (std::find(seen.begin(), seen.end(), parent_dir) != seen.end() ||
+          parent_dir == session_dir) {
+        BS_LOGW("session", "parent chain loops at %s; stopping",
+                parent_dir.c_str());
+        break;
+      }
+      auto parent_info =
+          SessionInfo::FromJson(ReadTextFile((parent / "session.json").string()));
+      if (!parent_info) {
+        // A missing parent is a real possibility — the user may have deleted
+        // or not yet copied it. Reconstruct what IS here rather than
+        // refusing, and say so loudly, because the result covers less of the
+        // building than the chain claims.
+        BS_LOGW("session",
+                "parent session %s missing or unreadable; reconstructing "
+                "this session alone",
+                info_at.parent_session.c_str());
+        break;
+      }
+      seen.push_back(parent_dir);
+      ancestry.push_back(parent_dir);
+      dir = parent_dir;
+      info_at = std::move(*parent_info);
+    }
+  }
+  std::reverse(ancestry.begin(), ancestry.end());  // oldest first
+
+  for (const auto& ancestor : ancestry) {
+    if (!r.AddFramesFrom(ancestor)) return std::nullopt;
+    r.chain_.push_back(ancestor);
+  }
+  if (!r.AddFramesFrom(session_dir)) return std::nullopt;
+  r.chain_.push_back(session_dir);
+
+  std::sort(r.frame_ids_.begin(), r.frame_ids_.end());
+  if (r.chain_.size() > 1) {
+    BS_LOGI("session", "chained session: %zu sessions, %zu frames total",
+            r.chain_.size(), r.frame_ids_.size());
+  }
+  return r;
+}
+
+bool SessionReader::AddFramesFrom(const std::string& dir) {
+  const fs::path frames = fs::path(dir) / "frames";
   if (!fs::is_directory(frames)) {
-    BS_LOGW("session", "missing frames/ in %s", session_dir.c_str());
-    return std::nullopt;
+    BS_LOGW("session", "missing frames/ in %s", dir.c_str());
+    return false;
   }
   for (const auto& entry : fs::directory_iterator(frames)) {
     if (!entry.is_directory()) continue;
@@ -50,14 +110,25 @@ std::optional<SessionReader> SessionReader::Open(const std::string& session_dir)
                      [](char c) { return c >= '0' && c <= '9'; })) {
       continue;
     }
-    r.frame_ids_.push_back(static_cast<uint32_t>(std::stoul(name)));
+    const uint32_t frame_id = static_cast<uint32_t>(std::stoul(name));
+    const auto [it, inserted] = owner_.emplace(frame_id, dir);
+    if (!inserted) {
+      // Two sessions claiming one id means the chain's numbering broke, and
+      // every downstream id — COLMAP image ids, the export filenames, the
+      // per-image report — would silently describe the wrong picture.
+      BS_LOGW("session", "frame %06u claimed by both %s and %s", frame_id,
+              it->second.c_str(), dir.c_str());
+      return false;
+    }
+    frame_ids_.push_back(frame_id);
   }
-  std::sort(r.frame_ids_.begin(), r.frame_ids_.end());
-  return r;
+  return true;
 }
 
 std::string SessionReader::FramePath(uint32_t frame_id) const {
-  return (fs::path(dir_) / "frames" / FrameDirName(frame_id)).string();
+  const auto it = owner_.find(frame_id);
+  const std::string& dir = it == owner_.end() ? dir_ : it->second;
+  return (fs::path(dir) / "frames" / FrameDirName(frame_id)).string();
 }
 
 std::string SessionReader::ImagePath(uint32_t frame_id) const {

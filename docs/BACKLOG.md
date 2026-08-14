@@ -187,6 +187,26 @@ These cannot be settled on synthetic data. Each names what to look for.
 
 Newest first. One line per session: what changed, what it measured.
 
+- **Session chaining: a facility bigger than one capture.** The app caps at
+  900 stored frames (~5 min) and there was no way to join two captures, so
+  the stated use case — large facilities, many rooms — could not be captured
+  at all. `session.json` now carries `parent_session`, and `SessionReader`
+  resolves a chain transparently: `frame_ids()` spans the whole chain and
+  every accessor resolves an id to whichever session holds it. **Nothing
+  downstream changed** — verified by splitting a 60-frame session in two and
+  solving the child: 60/60 registered, 7237 points, 0.22 px, ATE 1.3 mm, and
+  **max pose delta against the unsplit solve exactly 0**. A capture pass now
+  also writes `live/map_end.bin` for the next session to localize into
+  (deliberately not `map.bin`, which would make a re-run start from the
+  previous run's result). Seven tests pin the malformed-chain cases, all of
+  which are silent corruption rather than crashes: duplicate frame ids,
+  self-reference, cycles, missing parent, and a moved chain.
+
+- **ATE finding reproduced on a second seed.** Seed 11 two-room walk: scout
+  85.9% tracked / 0.022 m rigid (seed 7: 85.9% / 0.024), capture 74.8% /
+  0.044 m rigid (seed 7: 75.4% / 0.035). Anchored:rigid ratio 5.2x against
+  seed 7's 4.5x. The anchoring artifact is not seed-specific.
+
 - **The app now reads `report.json`.** Everything the engine measures about
   a finished reconstruction was dying in a file nobody was going to open,
   one screen before the export buttons — which is exactly where "train on

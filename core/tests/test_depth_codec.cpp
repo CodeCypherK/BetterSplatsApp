@@ -192,5 +192,67 @@ TEST(DepthCodec, Crc32KnownAnswer) {
   EXPECT_EQ(Crc32(reinterpret_cast<const uint8_t*>(s), 9), 0xCBF43926u);
 }
 
+
+// --- optional confidence plane (ARKit's confidenceMap) ---
+
+TEST(DepthCodecConfidence, RoundTripsBothPlanes) {
+  DepthImage in;
+  in.width = 40;
+  in.height = 30;
+  in.f16.resize(40 * 30);
+  in.confidence.resize(40 * 30);
+  for (size_t i = 0; i < in.f16.size(); ++i) {
+    in.f16[i] = F32ToF16(1.0f + 0.001f * static_cast<float>(i));
+    in.confidence[i] = static_cast<uint8_t>(i % 256);
+  }
+  for (bool compress : {false, true}) {
+    const auto bytes = EncodeDepth(in, compress);
+    DepthImage out;
+    ASSERT_EQ(DecodeDepth(bytes.data(), bytes.size(), out),
+              DepthCodecError::kOk) << "compress=" << compress;
+    EXPECT_EQ(out.f16, in.f16);
+    EXPECT_EQ(out.confidence, in.confidence);
+    EXPECT_TRUE(out.has_confidence());
+  }
+}
+
+TEST(DepthCodecConfidence, AbsentStaysAbsentAndBytesAreUnchanged) {
+  // The compatibility property: a depth map with no confidence must encode
+  // to exactly what it always did, so every session already on disk still
+  // decodes and nothing about the format changed for them.
+  DepthImage in;
+  in.width = 16;
+  in.height = 12;
+  in.f16.resize(16 * 12);
+  for (size_t i = 0; i < in.f16.size(); ++i) {
+    in.f16[i] = F32ToF16(2.0f + 0.01f * static_cast<float>(i));
+  }
+  const auto bytes = EncodeDepth(in, /*compress=*/false);
+  // Header flags must have only the (unset) lz4 bit — no confidence bit.
+  EXPECT_EQ(bytes[6] & 0x02, 0) << "confidence flag set on a plain frame";
+  EXPECT_EQ(bytes.size(), 24u + in.f16.size() * 2);
+
+  DepthImage out;
+  ASSERT_EQ(DecodeDepth(bytes.data(), bytes.size(), out), DepthCodecError::kOk);
+  EXPECT_EQ(out.f16, in.f16);
+  EXPECT_FALSE(out.has_confidence());
+  EXPECT_TRUE(out.confidence.empty());
+}
+
+TEST(DepthCodecConfidence, TruncationIsRejectedNotHalfRead) {
+  // A file cut short must fail, not decode a plausible depth plane with
+  // garbage confidence — the CRC and size cover both planes together.
+  DepthImage in;
+  in.width = 20;
+  in.height = 20;
+  in.f16.assign(400, F32ToF16(1.5f));
+  in.confidence.assign(400, 200);
+  auto bytes = EncodeDepth(in, /*compress=*/false);
+  bytes.resize(bytes.size() - 50);
+  DepthImage out;
+  EXPECT_NE(DecodeDepth(bytes.data(), bytes.size(), out),
+            DepthCodecError::kOk);
+}
+
 }  // namespace
 }  // namespace bs

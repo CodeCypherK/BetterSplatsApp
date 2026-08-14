@@ -16,6 +16,12 @@ namespace {
 constexpr char kMagic[4] = {'B', 'S', 'D', 'P'};
 constexpr uint16_t kVersion = 1;
 constexpr uint16_t kFlagLz4 = 1u << 0;
+// A per-pixel confidence plane (uint8, w*h bytes) follows the depth plane
+// INSIDE the payload — not appended after it. Keeping it inside means
+// payload_bytes and the CRC still cover every byte, the exact-size check
+// still holds, and a reader without this flag fails loudly on the size
+// rather than silently ignoring half the file.
+constexpr uint16_t kFlagConfidence = 1u << 1;
 constexpr uint16_t kDtypeF16Meters = 0;
 constexpr size_t kHeaderSize = 24;
 
@@ -91,15 +97,27 @@ const char* DepthCodecErrorName(DepthCodecError e) {
 }
 
 std::vector<uint8_t> EncodeDepth(const DepthImage& depth, bool compress) {
-  const size_t raw_bytes = depth.f16.size() * sizeof(uint16_t);
-  const uint8_t* raw = reinterpret_cast<const uint8_t*>(depth.f16.data());
+  uint16_t flags = 0;
+
+  // Depth plane, then the confidence plane when present, as one blob.
+  std::vector<uint8_t> plain;
+  const size_t depth_bytes = depth.f16.size() * sizeof(uint16_t);
+  plain.resize(depth_bytes);
+  if (depth_bytes > 0) {
+    std::memcpy(plain.data(), depth.f16.data(), depth_bytes);
+  }
+  if (depth.has_confidence()) {
+    flags |= kFlagConfidence;
+    plain.insert(plain.end(), depth.confidence.begin(), depth.confidence.end());
+  }
+  const size_t raw_bytes = plain.size();
 
   std::vector<uint8_t> payload;
-  uint16_t flags = 0;
   if (compress && raw_bytes > 0) {
     std::vector<uint8_t> compressed(LZ4_compressBound(static_cast<int>(raw_bytes)));
     const int n = LZ4_compress_default(
-        reinterpret_cast<const char*>(raw), reinterpret_cast<char*>(compressed.data()),
+        reinterpret_cast<const char*>(plain.data()),
+        reinterpret_cast<char*>(compressed.data()),
         static_cast<int>(raw_bytes), static_cast<int>(compressed.size()));
     if (n > 0 && static_cast<size_t>(n) < raw_bytes) {
       compressed.resize(static_cast<size_t>(n));
@@ -108,7 +126,7 @@ std::vector<uint8_t> EncodeDepth(const DepthImage& depth, bool compress) {
     }
   }
   if ((flags & kFlagLz4) == 0) {
-    payload.assign(raw, raw + raw_bytes);
+    payload = std::move(plain);
   }
 
   std::vector<uint8_t> out;
@@ -149,21 +167,31 @@ DepthCodecError DecodeDepth(const uint8_t* data, size_t size, DepthImage& out) {
     return DepthCodecError::kCrcMismatch;
   }
 
-  const size_t raw_bytes = static_cast<size_t>(width) * height * sizeof(uint16_t);
+  const size_t pixels = static_cast<size_t>(width) * height;
+  const size_t depth_bytes = pixels * sizeof(uint16_t);
+  const size_t conf_bytes = (flags & kFlagConfidence) ? pixels : 0;
+  const size_t raw_bytes = depth_bytes + conf_bytes;
   out.width = width;
   out.height = height;
-  out.f16.resize(static_cast<size_t>(width) * height);
+  out.f16.resize(pixels);
+  out.confidence.clear();
 
+  std::vector<uint8_t> plain(raw_bytes);
   if (flags & kFlagLz4) {
     const int n = LZ4_decompress_safe(
         reinterpret_cast<const char*>(payload),
-        reinterpret_cast<char*>(out.f16.data()), static_cast<int>(payload_bytes),
+        reinterpret_cast<char*>(plain.data()), static_cast<int>(payload_bytes),
         static_cast<int>(raw_bytes));
     if (n < 0) return DepthCodecError::kDecompressFailed;
     if (static_cast<size_t>(n) != raw_bytes) return DepthCodecError::kSizeMismatch;
   } else {
     if (payload_bytes != raw_bytes) return DepthCodecError::kSizeMismatch;
-    std::memcpy(out.f16.data(), payload, raw_bytes);
+    if (raw_bytes > 0) std::memcpy(plain.data(), payload, raw_bytes);
+  }
+  if (depth_bytes > 0) std::memcpy(out.f16.data(), plain.data(), depth_bytes);
+  if (conf_bytes > 0) {
+    out.confidence.assign(plain.begin() + static_cast<long>(depth_bytes),
+                          plain.end());
   }
   return DepthCodecError::kOk;
 }

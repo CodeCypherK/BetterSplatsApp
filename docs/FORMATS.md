@@ -54,13 +54,25 @@ Little-endian, 24-byte header followed by payload:
 |---|---|---|
 | 0  | char[4] | magic `"BSDP"` |
 | 4  | u16 | version = 1 |
-| 6  | u16 | flags — bit0: payload is LZ4 block-compressed |
+| 6  | u16 | flags — bit0: payload is LZ4 block-compressed; bit1: a confidence plane follows the depth plane inside the payload |
 | 8  | u16 | width (e.g. 320) |
 | 10 | u16 | height (e.g. 240) |
 | 12 | u16 | dtype — 0 = float16 meters |
 | 14 | u16 | reserved = 0 |
 | 16 | u32 | payload_bytes (compressed size when bit0 set) |
 | 20 | u32 | crc32 of the payload bytes as stored |
+
+When flags bit1 is set the payload is **two planes**: the float16 depth plane
+(w×h×2 bytes) immediately followed by a uint8 confidence plane (w×h bytes),
+compressed together as one blob when bit0 is also set. Inside the payload
+rather than appended after it, so `payload_bytes` and the CRC still cover
+every byte and the exact-size check still holds — a reader that does not know
+the flag fails loudly on the size instead of silently ignoring half the file.
+
+Confidence is the sensor's own per-pixel certainty, 0-255. AVFoundation
+exposes none, so frames captured through it carry no plane and the flag stays
+clear; ARKit's `ARDepthData.confidenceMap` does. Absent means "no opinion",
+never "zero confidence" — see ARCHITECTURE.md, "Why not ARKit".
 | 24 | ... | row-major payload |
 
 Invalid samples are NaN (preferred) or 0. Uncompressed size is always

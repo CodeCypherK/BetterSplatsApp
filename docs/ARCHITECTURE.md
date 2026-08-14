@@ -109,6 +109,19 @@ Patches cluster into regions ("Room 1…") via the keyframe covisibility
 graph; weak clusters generate ranked, directional guidance. The
 final report (`final/report.json`) recomputes everything from FINAL data.
 
+After the solve, `final/report.json` carries a **per-image table** —
+registered, surviving observations, reprojection RMSE, capture-time
+`lap_var` and `overexp_frac` — plus four flags: blurry, overexposed,
+weakly_observed, unregistered. Thresholds are relative to the session's own
+distribution, because `lap_var` is not comparable between scenes: a richly
+textured room reads several times higher than a white-walled one at
+identical sharpness, so an absolute cutoff condemns every frame in a plain
+room and none in a busy one. Overexposure is the exception and stays
+absolute — clipped highlights are destroyed information regardless of scene.
+The app reads this back on the screen immediately before the export buttons,
+which is where "train on this or rescan?" actually gets decided, and it is
+far cheaper to decide there than after an hour of GPU time.
+
 Guidance is generated as a code plus numbers and worded in Swift, never as
 engine-side prose. Two rules keep it usable rather than merely correct:
 

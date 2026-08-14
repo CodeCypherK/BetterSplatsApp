@@ -166,6 +166,47 @@ def main() -> int:
             print("ERROR: report.json missing", file=sys.stderr)
             return 1
 
+        # report.json is hand-serialized, and it is a contract with three
+        # consumers: the app's SolveReport decoder, this script, and whatever
+        # the user points at it. Parsing it here catches a stray comma or a
+        # non-finite double at the push that introduces it, rather than on a
+        # phone. The per-image table is checked against the model it
+        # describes, so a mismatch cannot pass as a formatting success.
+        import json as _json
+        report = _json.loads((session / "final" / "report.json").read_text())
+        images = report.get("images")
+        flags = report.get("image_flags")
+        if not isinstance(images, list) or not isinstance(flags, dict):
+            print("ERROR: report.json missing images/image_flags",
+                  file=sys.stderr)
+            return 1
+        listed = flags.get("images_listed")
+        if listed != len(images):
+            print(f"ERROR: report.json says images_listed={listed} but lists "
+                  f"{len(images)}", file=sys.stderr)
+            return 1
+        registered_names = {im.name for im in rec.images.values()}
+        for entry in images:
+            for key in ("frame_id", "name", "registered", "observations",
+                        "reproj_rmse_px", "lap_var", "overexp_frac", "flags"):
+                if key not in entry:
+                    print(f"ERROR: report.json image missing {key}: {entry}",
+                          file=sys.stderr)
+                    return 1
+            # Every image the report calls registered must be in the model,
+            # and carry the flag that says so when it is not.
+            if entry["registered"] != (entry["name"] in registered_names):
+                print(f"ERROR: report.json registered flag disagrees with the "
+                      f"model for {entry['name']}", file=sys.stderr)
+                return 1
+            if not entry["registered"] and "unregistered" not in entry["flags"]:
+                print(f"ERROR: {entry['name']} unplaced but not flagged",
+                      file=sys.stderr)
+                return 1
+        print(f"report.json: {len(images)} images, "
+              f"{flags.get('blurry')} blurry, {flags.get('overexposed')} "
+              f"overexposed, {flags.get('unregistered')} unplaced")
+
         # transforms.json must exist and its camera centres must agree with
         # the actual COLMAP reconstruction (the two are derived independently,
         # so this catches any convention bug in the NeRF export).

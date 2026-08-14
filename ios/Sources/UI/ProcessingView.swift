@@ -59,6 +59,10 @@ struct ProcessingView: View {
                 }
             }
 
+            if model.phase == .done, let report = model.report {
+                qualitySection(report)
+            }
+
             if model.phase == .done {
                 Section("Export") {
                     Button {
@@ -97,6 +101,76 @@ struct ProcessingView: View {
         .onAppear { model.start() }
         .sheet(item: $exportURL) { url in
             ShareSheet(items: [url])
+        }
+    }
+
+    /// How the scan came out, in the user's terms rather than the solver's.
+    ///
+    /// This sits directly above the export buttons on purpose: it is the
+    /// moment someone decides whether to train on this or go back and rescan,
+    /// and that decision is much cheaper to make here than after an hour of
+    /// GPU time. So the wording is about the scan ("94% of your photos were
+    /// placed") rather than about the optimizer ("reprojection RMSE 0.45 px"),
+    /// which is true but not something anyone can act on.
+    @ViewBuilder
+    private func qualitySection(_ report: SolveReport) -> some View {
+        Section("Result") {
+            HStack(spacing: 10) {
+                Image(systemName: verdictIcon(report.verdict))
+                    .font(.title2)
+                    .foregroundStyle(verdictColor(report.verdict))
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(report.headline).font(.headline)
+                    Text(report.summary)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+
+            ForEach(Array(report.advice.enumerated()), id: \.offset) { _, line in
+                Label(line, systemImage: "lightbulb")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            if let height = report.levelCameraHeightM, height > 0 {
+                LabeledContent(
+                    "Camera height",
+                    value: String(format: "%.2f m%@", height,
+                                  report.floorMeasured == true
+                                    ? " (measured floor)" : " (inferred floor)"))
+                    .font(.caption)
+            }
+
+            let flagged = report.flaggedImages
+            if !flagged.isEmpty {
+                NavigationLink {
+                    FlaggedImagesView(images: flagged)
+                } label: {
+                    Label("\(flagged.count) photos worth a look",
+                          systemImage: "photo.badge.exclamationmark")
+                        .font(.caption)
+                }
+            }
+        }
+    }
+
+    private func verdictIcon(_ verdict: SolveReport.Verdict) -> String {
+        switch verdict {
+        case .good: return "checkmark.seal.fill"
+        case .fair: return "exclamationmark.circle.fill"
+        case .poor: return "exclamationmark.triangle.fill"
+        case .unknown: return "questionmark.circle"
+        }
+    }
+
+    private func verdictColor(_ verdict: SolveReport.Verdict) -> Color {
+        switch verdict {
+        case .good: return .green
+        case .fair: return .orange
+        case .poor: return .red
+        case .unknown: return .secondary
         }
     }
 

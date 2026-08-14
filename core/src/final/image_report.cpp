@@ -8,6 +8,13 @@
 namespace bs {
 namespace {
 
+// std::fixed prints a NaN as "nan" and an infinity as "inf", neither of
+// which is JSON. report.json is parsed by the app, by validate_colmap.py and
+// by whatever the user points at it, so one bad double would take the whole
+// file down rather than one field. Nothing here is expected to produce one —
+// this is a guard, not a fix for a known bug.
+double Finite(double v) { return std::isfinite(v) ? v : 0.0; }
+
 // Median of a copy. Small n, called twice; clarity beats nth_element here.
 double Median(std::vector<double> values) {
   if (values.empty()) return 0;
@@ -83,8 +90,8 @@ std::string ImageReportJson(const ImageReport& report, size_t max_listed) {
       << "    \"overexposed\": " << report.overexposed << ",\n"
       << "    \"weakly_observed\": " << report.weakly_observed << ",\n"
       << "    \"unregistered\": " << report.unregistered << ",\n"
-      << "    \"median_lap_var\": " << report.median_lap_var << ",\n"
-      << "    \"median_observations\": " << report.median_observations << ",\n"
+      << "    \"median_lap_var\": " << Finite(report.median_lap_var) << ",\n"
+      << "    \"median_observations\": " << Finite(report.median_observations) << ",\n"
       << "    \"images_listed\": " << std::min(max_listed, ordered.size())
       << " },\n";
 
@@ -96,9 +103,9 @@ std::string ImageReportJson(const ImageReport& report, size_t max_listed) {
         << image.name << "\", \"registered\": "
         << (image.registered ? "true" : "false")
         << ", \"observations\": " << image.observations
-        << ", \"reproj_rmse_px\": " << image.reproj_rmse_px
-        << ", \"lap_var\": " << image.lap_var
-        << ", \"overexp_frac\": " << image.overexp_frac << ", \"flags\": [";
+        << ", \"reproj_rmse_px\": " << Finite(image.reproj_rmse_px)
+        << ", \"lap_var\": " << Finite(image.lap_var)
+        << ", \"overexp_frac\": " << Finite(image.overexp_frac) << ", \"flags\": [";
     bool first = true;
     auto emit = [&](bool on, const char* name) {
       if (!on) return;

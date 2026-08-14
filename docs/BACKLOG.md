@@ -187,6 +187,18 @@ These cannot be settled on synthetic data. Each names what to look for.
 
 Newest first. One line per session: what changed, what it measured.
 
+- **The app now reads `report.json`.** Everything the engine measures about
+  a finished reconstruction was dying in a file nobody was going to open,
+  one screen before the export buttons — which is exactly where "train on
+  this or rescan?" gets decided, and it is far cheaper to decide there than
+  after an hour of GPU time. Verdict, plain-language summary, concrete
+  advice, and a drill-down naming the flagged photos. The drill-down says
+  whether they cluster into a few stretches of the walk (go redo those) or
+  are spread across the session (light level or pace), because those need
+  opposite responses. `validate_colmap.py` now parses report.json and
+  cross-checks the per-image table against the pycolmap model, so the
+  Swift/C++ contract is enforced on every push instead of on a phone.
+
 - **`report.json` now names the frames that hurt the model.** Per-image
   table (registered, observations, reproj rmse, lap_var, overexp_frac) plus
   four flags, with thresholds relative to the session's own distribution —

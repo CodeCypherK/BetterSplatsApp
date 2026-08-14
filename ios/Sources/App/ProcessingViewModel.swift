@@ -41,6 +41,10 @@ final class ProcessingViewModel {
     private(set) var points: UInt32 = 0
     private(set) var rmse: Float = 0
     private(set) var thermalPaused = false
+    /// Read once when the solve finishes. Everything the engine measured
+    /// about the reconstruction lives in final/report.json, and this is the
+    /// only thing that ever looks at it.
+    private(set) var report: SolveReport?
 
     let sessionURL: URL
     let preset: String
@@ -120,6 +124,7 @@ final class ProcessingViewModel {
 
     private func finish(_ result: Phase) {
         phase = result
+        if result == .done { report = SolveReport.read(sessionURL: sessionURL) }
         pollTask?.cancel()
         pollTask = nil
         UIApplication.shared.isIdleTimerDisabled = false

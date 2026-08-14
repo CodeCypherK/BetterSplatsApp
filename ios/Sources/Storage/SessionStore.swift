@@ -163,6 +163,24 @@ actor SessionStore {
         try writeSessionJson()
     }
 
+    /// Records the floor the user measured, against the frame it was
+    /// measured from. Called once, while capture is running: the frame must
+    /// already be stored, or the final solve will find a calibration
+    /// pointing at nothing and fall back to inferring the floor.
+    func setFloorCalibration(frameId: UInt32, normal: (Double, Double, Double),
+                             offsetM: Double, rmseM: Double,
+                             incidenceDeg: Double, inliers: Int32) {
+        sessionDoc.floorCalibration = SessionInfoJSON.FloorCalibrationJSON(
+            frameId: frameId,
+            normal: [normal.0, normal.1, normal.2],
+            offsetM: offsetM,
+            rmseM: rmseM,
+            incidenceDeg: incidenceDeg,
+            inliers: inliers)
+    }
+
+    var hasFloorCalibration: Bool { sessionDoc.floorCalibration != nil }
+
     var storedFrames: UInt32 { frameCount }
     var storedBytes: Int64 { bytesWritten }
 

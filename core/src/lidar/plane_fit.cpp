@@ -121,4 +121,34 @@ DepthPlane FitDepthPlane(const DepthFrame& depth,
   return out;
 }
 
+FloorVerdict CheckFloorPlane(const DepthPlane& plane,
+                             const FloorCheckOptions& options) {
+  if (!plane.valid) return FloorVerdict::kNoSurface;
+  if (plane.offset < options.min_height_m) return FloorVerdict::kTooClose;
+  if (plane.offset > options.max_height_m) return FloorVerdict::kTooFar;
+  if (plane.incidence_deg > options.max_incidence_deg) {
+    return FloorVerdict::kTooOblique;
+  }
+  if (plane.rmse_m > options.max_rmse_m) return FloorVerdict::kTooRough;
+  return FloorVerdict::kGood;
+}
+
+const char* FloorVerdictAdvice(FloorVerdict verdict) {
+  switch (verdict) {
+    case FloorVerdict::kGood:
+      return "Floor found";
+    case FloorVerdict::kNoSurface:
+      return "Point at a clear patch of floor";
+    case FloorVerdict::kTooClose:
+      return "Too close — hold the phone at normal height";
+    case FloorVerdict::kTooFar:
+      return "Aim down at the floor, not across the room";
+    case FloorVerdict::kTooOblique:
+      return "Tilt the phone down toward the floor";
+    case FloorVerdict::kTooRough:
+      return "Find a flatter, clearer patch of floor";
+  }
+  return "Point at the floor";
+}
+
 }  // namespace bs

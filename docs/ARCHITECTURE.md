@@ -214,9 +214,31 @@ was dropped it warns and falls back, which is verified rather than assumed.
 plane from the same depth bytes it wrote to RAW, so the harness exercises
 the actual path rather than asserting the answer.
 
-**Not yet on the phone.** The engine, the format and the solve are done; the
-capture UI that prompts "point at the floor" and calls the fitter is the
-remaining piece.
+### The capture step
+
+The prompt runs over the first stored frames of an ordinary capture, not in
+a mode of its own. That is deliberate: a calibration frame has to be one the
+final solve registers like any other, and a separate mode would be free to
+produce frames that never do. It asks the user to **point at the floor and
+take a step** — the step is load-bearing rather than friction, since a
+calibration captured standing still is pure rotation and the solve drops the
+frame the calibration is attached to.
+
+A reading has to hold for eight consecutive fits before it is accepted (one
+good frame can be a coincidence of where the phone was pointing mid-swing),
+and only ever against a frame id the session has actually written. The
+verdict and its wording come from the engine — `CheckFloorPlane` and
+`FloorVerdictAdvice`, both unit-tested — so the thresholds, which are claims
+about how a phone is held and how flat a floor is, sit with the geometry
+rather than in a view model. Skipping is always available; levelling then
+falls back to inference.
+
+**Verification note.** The engine half is tested on Linux: the fitter, the
+verdict policy, the schema round-trip, and the solve's preference for a
+measured floor over an inferred one. The Swift half — `FloorCalibrator`, the
+capture-view prompt, and the session-writer field — compiles only in the iOS
+CI job and has never run on a device, so it is unproven in the way all of
+this app's Swift is.
 
 ## Levelling: putting the reconstruction the right way up
 

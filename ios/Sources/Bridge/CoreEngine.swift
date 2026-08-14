@@ -34,6 +34,41 @@ final class CoreEngine: @unchecked Sendable {
         return (result == BS_OK, String(cString: buf))
     }
 
+    // MARK: - Floor calibration
+
+    /// One measurement of the surface the phone is pointed at, in that
+    /// frame's camera coordinates.
+    struct FloorPlane {
+        var isUsable: Bool          // verdict == good
+        var advice: String          // what to tell the user to do next
+        var normal: (Double, Double, Double)
+        var heightM: Double         // camera's height above the surface
+        var rmseM: Double
+        var incidenceDeg: Double
+        var inliers: Int32
+    }
+
+    /// Fits the dominant plane in one depth map. Stateless — no engine
+    /// session required, so this runs while the user is still lining the
+    /// shot up. The decision about whether it is a usable floor is made in
+    /// the engine, not here: the thresholds are claims about how a phone is
+    /// held and how flat a floor is, and they belong with the geometry.
+    static func fitFloorPlane(depth: UnsafePointer<Float>, width: Int32,
+                              height: Int32, fx: Double, fy: Double,
+                              cx: Double, cy: Double) -> FloorPlane? {
+        var out = bs_floor_plane()
+        guard bs_fit_floor_plane(depth, width, height, fx, fy, cx, cy, &out)
+                == BS_OK else { return nil }
+        return FloorPlane(
+            isUsable: out.verdict == Int32(BS_FLOOR_GOOD.rawValue),
+            advice: out.advice.map { String(cString: $0) } ?? "Point at the floor",
+            normal: (out.normal.0, out.normal.1, out.normal.2),
+            heightM: out.height_m,
+            rmseM: out.rmse_m,
+            incidenceDeg: out.incidence_deg,
+            inliers: out.inliers)
+    }
+
     // MARK: - Live session
 
     @discardableResult

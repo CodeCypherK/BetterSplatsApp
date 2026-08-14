@@ -112,6 +112,12 @@ struct SessionJSON: Codable {
     var frameCount: UInt32
     var keyframeIds: [UInt32]
     var regions: [RegionJSON]
+    /// Optional: the floor as the depth sensor measured it while the user
+    /// aimed at it, in that frame's CAMERA coordinates. Stored with the
+    /// frame id rather than in world coordinates so the final solve derives
+    /// the world plane from that frame's final pose — a world plane written
+    /// here would bake in whatever the live tracker believed at the time.
+    var floorCalibration: FloorCalibrationJSON?
     var appVersion: String
 
     struct Device: Codable {
@@ -134,6 +140,23 @@ struct SessionJSON: Codable {
         var format: String
         var filtering: Bool
     }
+    struct FloorCalibrationJSON: Codable {
+        var frameId: UInt32
+        var normal: [Double]
+        var offsetM: Double
+        var rmseM: Double
+        var incidenceDeg: Double
+        var inliers: Int32
+        enum CodingKeys: String, CodingKey {
+            case frameId = "frame_id"
+            case normal
+            case offsetM = "offset_m"
+            case rmseM = "rmse_m"
+            case incidenceDeg = "incidence_deg"
+            case inliers
+        }
+    }
+
     struct Capture: Codable {
         var afLocked: Bool
         var aeLocked: Bool
@@ -158,6 +181,7 @@ struct SessionJSON: Codable {
         case frameCount = "frame_count"
         case keyframeIds = "keyframe_ids"
         case regions
+        case floorCalibration = "floor_calibration"
         case appVersion = "app_version"
     }
 }

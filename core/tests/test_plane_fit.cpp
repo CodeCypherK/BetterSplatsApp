@@ -5,6 +5,7 @@
 
 #include <cmath>
 #include <random>
+#include <string>
 
 #include "io/float16.h"
 #include "lidar/plane_fit.h"
@@ -169,6 +170,43 @@ TEST(PlaneFitTest, CameraPlaneAndPoseGiveTheWorldFloor) {
   EXPECT_LT((world_normal - Eigen::Vector3d::UnitY()).norm(), 0.01)
       << "a floor seen from a level camera should come out as world up";
   EXPECT_NEAR(world_offset, 0.0, 0.02) << "floor should sit at y = 0";
+}
+
+// The verdict the capture prompt renders. It lives in the engine so the
+// thresholds — which are claims about how a phone is held and how flat a
+// floor is — sit with the geometry rather than in a view model.
+TEST(PlaneFitTest, VerdictGuidesTheUserToAUsableFloor) {
+  auto at = [](double height, double incidence, double rmse) {
+    DepthPlane p;
+    p.valid = true;
+    p.offset = height;
+    p.incidence_deg = incidence;
+    p.rmse_m = rmse;
+    return p;
+  };
+
+  EXPECT_EQ(CheckFloorPlane(at(1.45, 8.0, 0.008)), FloorVerdict::kGood);
+
+  // A phone at arm's length over a table, not the floor underfoot.
+  EXPECT_EQ(CheckFloorPlane(at(0.35, 5.0, 0.008)), FloorVerdict::kTooClose);
+  // Aimed across the room at the far floor, where depth is unreliable.
+  EXPECT_EQ(CheckFloorPlane(at(3.4, 5.0, 0.008)), FloorVerdict::kTooFar);
+  // Held nearly level: a glancing view, poor depth, poor leverage.
+  EXPECT_EQ(CheckFloorPlane(at(1.45, 70.0, 0.008)), FloorVerdict::kTooOblique);
+  // Planar enough to fit, too rough to trust — gravel, a rug pile, clutter.
+  EXPECT_EQ(CheckFloorPlane(at(1.45, 8.0, 0.09)), FloorVerdict::kTooRough);
+
+  DepthPlane nothing;
+  EXPECT_EQ(CheckFloorPlane(nothing), FloorVerdict::kNoSurface);
+
+  // Every verdict has to say something, including one the compiler cannot
+  // prove is reachable — the prompt must never render an empty string.
+  for (const FloorVerdict v :
+       {FloorVerdict::kGood, FloorVerdict::kNoSurface, FloorVerdict::kTooClose,
+        FloorVerdict::kTooFar, FloorVerdict::kTooOblique,
+        FloorVerdict::kTooRough}) {
+    EXPECT_GT(std::string(FloorVerdictAdvice(v)).size(), 8u);
+  }
 }
 
 }  // namespace

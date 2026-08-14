@@ -78,6 +78,22 @@ final class FrameFeedContext: @unchecked Sendable {
             isKeyframe: false,
             storeReason: "gate")
 
+        // The calibrator needs a frame that is genuinely going to disk: it
+        // records the floor against a frame id, and the solve resolves that
+        // through the frame's final pose. Publishing it only on the stored
+        // path is what keeps that guarantee.
+        //
+        // Gated, because handing over the depth copies a third of a
+        // megabyte, and the floor is measured once in the first seconds of
+        // a session that may run for minutes.
+        if wantsFloorFrames {
+            onStoredFrame?(frameId, depth.f32, Int32(depth.width),
+                           Int32(depth.height),
+                           Self.scaledIntrinsics(frame.calibration,
+                                                 toWidth: depth.width,
+                                                 height: depth.height))
+        }
+
         let pixelBuffer = frame.pixelBuffer  // retained by the closure
         let calibration = frame.calibration
         encodeQueue.async { [self] in
@@ -103,6 +119,14 @@ final class FrameFeedContext: @unchecked Sendable {
             }
         }
     }
+
+    /// Called on the capture queue for each frame that is being stored,
+    /// with its depth and depth intrinsics. Used by the floor calibration.
+    var onStoredFrame: ((UInt32, [Float], Int32, Int32,
+                         PinholeIntrinsicsJSON) -> Void)?
+    /// Cleared once the floor is measured or skipped, so the depth copy
+    /// above stops for the rest of the session.
+    var wantsFloorFrames = false
 
     private func feedEngine(_ frame: CapturedFrame, frameId: UInt32,
                             depth: DepthPacker.Packed) {
@@ -194,6 +218,10 @@ final class CaptureViewModel {
     private(set) var storageNote: String?
     private(set) var readinessOverall: Float = 0
     private(set) var snapshot = CoreEngine.Snapshot()
+    /// Nil once the floor step is done or skipped; drives the prompt.
+    private(set) var floorPhase: FloorCalibrator.Phase?
+
+    private let floorCalibrator = FloorCalibrator()
 
     private let manager = CaptureManager()
     private var context: FrameFeedContext?
@@ -255,6 +283,40 @@ final class CaptureViewModel {
         manager.onFrame = { frame in
             context.handle(frame)  // capture queue
         }
+
+        // Floor calibration runs over the first stored frames. It is part of
+        // the ordinary capture stream on purpose — a calibration frame has
+        // to be one the final solve registers like any other, and a separate
+        // mode would be free to produce frames that never do.
+        floorPhase = .aiming(advice: "Point at the floor and take a step",
+                             heightM: nil)
+        context.wantsFloorFrames = true
+        context.onStoredFrame = { [weak self] frameId, depthF32, w, h, K in
+            Task { @MainActor in
+                guard let self, let store = self.context?.store else { return }
+                guard let accepted = self.floorCalibrator.offer(
+                    depthF32: depthF32, width: w, height: h,
+                    fx: K.fx, fy: K.fy, cx: K.cx, cy: K.cy,
+                    storedFrameId: frameId) else {
+                    self.floorPhase = self.floorCalibrator.isComplete
+                        ? nil : self.floorCalibrator.phase
+                    return
+                }
+                await store.setFloorCalibration(
+                    frameId: accepted.frameId, normal: accepted.normal,
+                    offsetM: accepted.heightM, rmseM: accepted.rmseM,
+                    incidenceDeg: accepted.incidenceDeg,
+                    inliers: accepted.inliers)
+                self.floorPhase = self.floorCalibrator.phase
+                self.context?.wantsFloorFrames = false
+                // Let the confirmation land, then get out of the way.
+                Task { @MainActor in
+                    try? await Task.sleep(nanoseconds: 1_600_000_000)
+                    self.floorPhase = nil
+                }
+            }
+        }
+
         manager.start()
         state = .capturing
         guidance = "Move slowly and keep the scene in view"
@@ -314,6 +376,15 @@ final class CaptureViewModel {
         case BS_GUIDE_COVERAGE_NEEDED: return "More coverage needed here"
         default: return "Capturing"
         }
+    }
+
+    /// The user chose to start scanning without measuring the floor.
+    /// Levelling then infers it from the reconstruction, which works — it is
+    /// simply less certain, and can decline on an ambiguous scan.
+    func skipFloorCalibration() {
+        floorCalibrator.skip()
+        context?.wantsFloorFrames = false
+        floorPhase = nil
     }
 
     func stop() {

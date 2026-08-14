@@ -336,6 +336,41 @@ bs_result bs_thermal_hint(bs_engine* e, int32_t level);
 /* Rename a readiness region (persisted into live/ and final report). */
 bs_result bs_region_rename(bs_engine* e, uint32_t region_id, const char* utf8_name);
 
+/* --------------------------------------------------- floor calibration */
+
+/* One measurement of the surface the phone is pointed at, in that frame's
+ * CAMERA coordinates. The app runs this while the user aims at the floor,
+ * shows `advice`, and records the accepted result into session.json against
+ * the frame it came from — never in world coordinates, so the final solve
+ * derives the world plane from that frame's final pose. */
+typedef struct bs_floor_plane {
+  int32_t valid;         /* a surface was fitted at all                    */
+  int32_t verdict;       /* bs_floor_verdict: is it usable as a floor      */
+  double  normal[3];     /* camera-space, facing the camera                */
+  double  height_m;      /* camera's distance above the surface            */
+  double  rmse_m;
+  double  incidence_deg; /* 0 = phone aimed square at the surface          */
+  double  inlier_frac;
+  int32_t inliers;
+  const char* advice;    /* static UTF-8, what to tell the user to do next */
+} bs_floor_plane;
+
+typedef enum bs_floor_verdict {
+  BS_FLOOR_GOOD = 0,
+  BS_FLOOR_NO_SURFACE = 1,
+  BS_FLOOR_TOO_CLOSE = 2,
+  BS_FLOOR_TOO_FAR = 3,
+  BS_FLOOR_TOO_OBLIQUE = 4,
+  BS_FLOOR_TOO_ROUGH = 5
+} bs_floor_verdict;
+
+/* Stateless: fits the dominant plane in one depth map. Needs no engine and
+ * no session, so the app can run it before capture begins. `depth` is
+ * row-major float32 metres, 0/NaN for invalid. */
+bs_result bs_fit_floor_plane(const float* depth, int32_t width, int32_t height,
+                             double fx, double fy, double cx, double cy,
+                             bs_floor_plane* out);
+
 #ifdef __cplusplus
 } /* extern "C" */
 #endif

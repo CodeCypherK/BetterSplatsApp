@@ -24,7 +24,14 @@ non-expert to that data on the first try.
 
 ## Now
 
-- [ ] **Floor-calibration capture UI.** The engine side is done and tested:
+- [ ] **Field-test the floor calibration on a device.** Built but unrun:
+      the prompt, the eight-frame confirmation, and the session.json write.
+      What to check — does the verdict wording actually guide someone to a
+      usable floor, does the accepted frame survive into the final solve
+      (`report.json` -> `floor_measured: true`), and is one step forward
+      enough movement for it to register.
+
+- [x] ~~**Floor-calibration capture UI.**~~ The engine side is done and tested:
       `FitDepthPlane` measures the plane from one depth frame, session.json
       carries it in camera coordinates, and the solve prefers it over
       inference (measured: cameras at 1.496 m vs 1.447 m inferred, truth

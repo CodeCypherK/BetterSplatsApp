@@ -57,4 +57,39 @@ struct DepthPlane {
 DepthPlane FitDepthPlane(const DepthFrame& depth,
                          const DepthPlaneOptions& options = {});
 
+// Whether a fit is good enough to calibrate the floor from, and if not,
+// what to tell the user about it.
+//
+// This lives here rather than in the capture UI so the decision is testable
+// and identical everywhere. The UI's job is to render a verdict, not to
+// invent one — and the thresholds below are claims about the world (how
+// high a phone is held, how flat a floor is) which belong with the geometry
+// they describe.
+enum class FloorVerdict {
+  kGood,
+  kNoSurface,     // nothing planar dominates the view
+  kTooClose,      // aimed at something at arm's length, not the floor
+  kTooFar,        // aimed across the room, not down at the floor
+  kTooOblique,    // held at a glancing angle; depth is poor there
+  kTooRough,      // planar-ish but not a flat surface
+};
+
+struct FloorCheckOptions {
+  // A phone held to scan a floor is between waist and above-head height.
+  // Outside that, whatever is being measured is not the floor underfoot.
+  double min_height_m = 0.6;
+  double max_height_m = 2.4;
+  // Depth accuracy falls off sharply at a glancing angle, and so does the
+  // plane's leverage on the levelling rotation.
+  double max_incidence_deg = 45.0;
+  double max_rmse_m = 0.03;
+};
+
+FloorVerdict CheckFloorPlane(const DepthPlane& plane,
+                             const FloorCheckOptions& options = {});
+
+// A short, plain description of a verdict, phrased as what to do next.
+// Wording lives here so the engine and the app never drift apart on it.
+const char* FloorVerdictAdvice(FloorVerdict verdict);
+
 }  // namespace bs

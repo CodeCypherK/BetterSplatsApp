@@ -19,6 +19,10 @@ struct CaptureView: View {
             }
             .padding()
 
+            if let phase = model.floorPhase {
+                floorCalibrationPrompt(phase)
+            }
+
             if case .failed(let message) = model.state {
                 errorOverlay(message)
             }
@@ -28,6 +32,65 @@ struct CaptureView: View {
         .onAppear { model.start() }
         .onDisappear { if model.isCapturing { model.stop() } }
         .statusBarHidden()
+    }
+
+    /// The opening step: measure the floor so the finished scan comes out
+    /// level and square instead of on a slope at an arbitrary bearing.
+    ///
+    /// The instruction asks for a step forward, not just an aim, and that is
+    /// load-bearing rather than friction: a calibration frame captured while
+    /// standing still is pure rotation, nothing triangulates around it, and
+    /// the solve drops the frame the calibration is attached to. Measured on
+    /// the harness, adding the movement took registration from 71/84 to
+    /// 84/84.
+    @ViewBuilder
+    private func floorCalibrationPrompt(_ phase: FloorCalibrator.Phase) -> some View {
+        VStack {
+            Spacer()
+            VStack(spacing: 12) {
+                switch phase {
+                case .aiming(let advice, let heightM):
+                    Image(systemName: "arrow.down.to.line")
+                        .font(.system(size: 30, weight: .semibold))
+                        .foregroundStyle(.tint)
+                    Text("Point at the floor and take a step")
+                        .font(.headline)
+                    Text(advice)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                    if let heightM {
+                        Text(String(format: "%.2f m above the floor", heightM))
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                    }
+                    Button("Skip") { model.skipFloorCalibration() }
+                        .font(.subheadline)
+                        .buttonStyle(.bordered)
+
+                case .measured(let heightM):
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.system(size: 30, weight: .semibold))
+                        .foregroundStyle(.green)
+                    Text("Floor measured")
+                        .font(.headline)
+                    Text(String(format: "%.2f m below the camera — carry on scanning",
+                                heightM))
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+
+                case .skipped:
+                    EmptyView()
+                }
+            }
+            .padding(20)
+            .frame(maxWidth: 340)
+            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
+            .padding(.bottom, 60)
+        }
+        .transition(.opacity)
+        .animation(.easeInOut(duration: 0.2), value: model.floorPhase)
     }
 
     private var statusPill: some View {

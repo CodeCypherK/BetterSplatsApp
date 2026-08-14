@@ -4,8 +4,18 @@ import SwiftUI
 /// Live capture screen: full-screen camera preview with the guidance pill,
 /// capture counters and start/stop control.
 struct CaptureView: View {
-    @State private var model = CaptureViewModel()
+    @State private var model: CaptureViewModel
     @Environment(\.dismiss) private var dismiss
+
+    /// `project` continues an existing one; `newProjectName` starts a new one.
+    /// Both nil is a standalone capture, which is what the old entry point
+    /// did and still works.
+    init(project: ProjectStore.Project? = nil, newProjectName: String? = nil) {
+        let model = CaptureViewModel()
+        model.continuingProject = project
+        model.newProjectName = newProjectName
+        _model = State(initialValue: model)
+    }
 
     var body: some View {
         ZStack {

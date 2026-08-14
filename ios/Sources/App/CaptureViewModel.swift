@@ -320,6 +320,11 @@ final class CaptureViewModel {
 
     private(set) var state: State = .idle
     private(set) var plan: Plan = .captureOnly
+    /// Set before start() to add this capture to an existing project rather
+    /// than beginning a new one.
+    var continuingProject: ProjectStore.Project?
+    /// Name for a brand-new project. Ignored when continuing one.
+    var newProjectName: String?
     private(set) var guidance = "Preparing…"
     private(set) var framesSeen: UInt32 = 0
     private(set) var framesStored: UInt32 = 0
@@ -396,7 +401,9 @@ final class CaptureViewModel {
                 videoH: manager.videoDimensions.height,
                 depthW: manager.depthDimensions.width,
                 depthH: manager.depthDimensions.height,
-                fps: 30)
+                fps: 30,
+                continuing: continuingProject,
+                newProjectName: newProjectName)
         } catch {
             state = .failed("Could not create session storage: \(error)")
             return
@@ -414,6 +421,11 @@ final class CaptureViewModel {
         let context = FrameFeedContext(
             store: store, previewRenderer: previewRenderer,
             videoDims: manager.videoDimensions)
+        // Continue the project's numbering. Restarting at 1 in every capture
+        // would give two captures the same frame ids, and a chain with
+        // duplicates is rejected outright rather than silently resolving to
+        // one of them.
+        context.nextFrameId = await store.firstFrameId
         context.pass = plan == .scoutThenCapture ? "scout" : "capture"
         self.context = context
         manager.onFrame = { frame in

@@ -29,12 +29,18 @@ actor SessionStore {
     let directory: URL
     private var sessionDoc: SessionJSON
     private var frameCount: UInt32 = 0
+    /// Where this capture starts numbering; see init.
+    private(set) var firstFrameId: UInt32 = 1
     private var bytesWritten: Int64 = 0
     private var calibrationWritten = false
     private let encoder: JSONEncoder
 
     static func documentsDirectory() -> URL {
         FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+    }
+
+    static func makeProjectId() -> String {
+        String(format: "proj_%08x", UInt32.random(in: 0...UInt32.max))
     }
 
     static func makeSessionId(date: Date = Date()) -> String {
@@ -45,7 +51,12 @@ actor SessionStore {
         return "session_\(fmt.string(from: date))_\(suffix)"
     }
 
-    init(videoW: Int, videoH: Int, depthW: Int, depthH: Int, fps: Int) throws {
+    /// `continuing` links this capture to an existing project: it inherits
+    /// the project's identity and names its predecessor, so the engine loads
+    /// that capture's map and both share one world frame.
+    init(videoW: Int, videoH: Int, depthW: Int, depthH: Int, fps: Int,
+         continuing: ProjectStore.Project? = nil,
+         newProjectName: String? = nil) throws {
         let id = Self.makeSessionId()
         directory = Self.documentsDirectory().appendingPathComponent(id)
 
@@ -77,8 +88,18 @@ actor SessionStore {
             frameCount: 0,
             keyframeIds: [],
             regions: [RegionJSON(id: 1, name: "Room 1", renamed: false)],
+            projectId: continuing?.id ?? Self.makeProjectId(),
+            projectName: continuing?.name ?? (newProjectName ?? "Untitled"),
+            parentSession: continuing?.latestSessionName ?? "",
+            supersedes: [],
             appVersion: Bundle.main.infoDictionary?["CFBundleShortVersionString"]
                 as? String ?? "0")
+        // Frame ids continue across the whole project rather than restarting.
+        // Two captures both numbering from 1 would collide, and the reader
+        // rejects a chain with duplicate ids outright — every downstream id,
+        // from COLMAP image ids to the exported filenames, would otherwise
+        // describe the wrong picture.
+        firstFrameId = (continuing?.lastFrameId ?? 0) + 1
         try writeSessionJson()
     }
 

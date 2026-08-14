@@ -15,10 +15,17 @@ struct RootView: View {
             List {
                 Section {
                     NavigationLink {
+                        ProjectsView()
+                    } label: {
+                        Label("Projects", systemImage: "square.stack.3d.up.fill")
+                            .font(.headline)
+                    }
+                    .disabled(!hasLiDAR)
+
+                    NavigationLink {
                         CaptureView()
                     } label: {
-                        Label("Start Capture", systemImage: "camera.viewfinder")
-                            .font(.headline)
+                        Label("Quick Capture", systemImage: "camera.viewfinder")
                     }
                     .disabled(!hasLiDAR)
 

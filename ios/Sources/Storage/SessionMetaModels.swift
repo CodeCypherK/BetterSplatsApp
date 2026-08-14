@@ -125,7 +125,33 @@ struct SessionJSON: Codable {
     /// the world plane from that frame's final pose — a world plane written
     /// here would bake in whatever the live tracker believed at the time.
     var floorCalibration: FloorCalibrationJSON?
+    /// The project this capture belongs to, and the sibling capture it
+    /// continues. A space bigger than one capture is a chain of these, all
+    /// sharing one world frame.
+    ///
+    /// `parentSession` is a NAME, not a path, so a project survives being
+    /// zipped up here and unzipped on another machine.
+    ///
+    /// Optional because Swift's synthesized Codable requires every
+    /// non-optional key to be PRESENT: declaring these outright would make
+    /// every session written before projects existed fail to decode, and
+    /// vanish from the app. Defaults live at the use site, matching how the
+    /// C++ reader treats the same keys.
+    var projectId: String?
+    var projectName: String?
+    var parentSession: String?
+    /// World volumes this capture re-covered, superseding what earlier
+    /// captures in the project recorded there. The frames themselves are
+    /// never touched — the final solve just declines to reconstruct from
+    /// them, so the decision is reversible.
+    var supersedes: [SupersedeJSON]?
     var appVersion: String
+
+    struct SupersedeJSON: Codable {
+        var min: [Double]  // x, y, z
+        var max: [Double]
+        var label: String
+    }
 
     struct Device: Codable {
         var model: String
@@ -189,6 +215,10 @@ struct SessionJSON: Codable {
         case keyframeIds = "keyframe_ids"
         case regions
         case floorCalibration = "floor_calibration"
+        case projectId = "project_id"
+        case projectName = "project_name"
+        case parentSession = "parent_session"
+        case supersedes
         case appVersion = "app_version"
     }
 }

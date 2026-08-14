@@ -185,6 +185,15 @@ bool GenerateSession(const GenerateOptions& o) {
     ropts.gain = static_cast<float>(std::clamp(gain, 0.35, 1.7));
     // Motion blur from the apparent image motion of the scene-centre point
     // between this frame and the last, times a plausible exposure fraction.
+    //
+    // Deliberately a smooth function of speed, with no footfall or tremor
+    // term. One was tried: a real walking capture does jolt at each step,
+    // and the intent was to give frame-selection-by-sharpness something to
+    // choose between. It did not — rendered blur moves this scene's
+    // Laplacian variance by far less than its own texture does, so the
+    // spread stayed at 1.2x either way — and its only measurable effect was
+    // to break the hard-scene bound through an amplitude that was guessed
+    // rather than measured off a device. See docs/ARCHITECTURE.md.
     if (o.motion_blur && i > 0 && i != scout_count) {
       const Eigen::Vector3d fwd =
           pose.Inverse().q * Eigen::Vector3d(0, 0, 1);

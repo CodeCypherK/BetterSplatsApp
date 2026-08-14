@@ -62,6 +62,24 @@ non-expert to that data on the first try.
       (~2300 frames at walking pace ≈ 13 min). Consider a shorter realistic
       path, or a cached fixture committed to `core/testdata/`.
 
+## Needs a real device session
+
+These cannot be settled on synthetic data. Each names what to look for.
+
+- [ ] **Does frame-selection-by-sharpness help?** `bs_replay --live` prints
+      `storage: kept N of M frames, sharpness X vs Y sequence mean`. On a
+      real handheld walk that number should be clearly positive; on synth it
+      is 0.4%. If it is not positive on device, drop the gate.
+- [ ] **Is blur intermittent or smooth on a real walk?** Plot `lap_var`
+      across a device session. The synthetic model assumes smooth-with-speed;
+      if real captures spike at footfalls, the harness should model that —
+      with an amplitude measured from the session, not guessed.
+- [ ] **Does AF/AE/AWB lock on the right thing?** Capture currently locks all
+      three on a fixed 1.5 s timer after start, regardless of whether they
+      have converged and regardless of what the phone is pointed at. Start
+      while pointing at the floor and the whole session is focused at 40 cm
+      with no recovery, since the locks deliberately never re-adjust.
+
 ## Ideas (unranked, unvalidated)
 
 - Exposure/white-balance normalization across frames before the final solve.
@@ -74,6 +92,18 @@ non-expert to that data on the first try.
 ## Log
 
 Newest first. One line per session: what changed, what it measured.
+
+- Storage gate now prefers sharp frames (it was purely geometric, so a
+  smeared frame landing on the 5 cm boundary went into immutable RAW and the
+  final solve reconstructed from it). Guarded: stores regardless past 2x the
+  geometric threshold, so coverage never suffers. **Unverified** — three
+  attempts to measure it failed because synthetic blur moves lap_var far
+  less than the procedural texture does (1.2x spread either way, stored
+  sharpness within 0.4% of the mean with the gate on or off). A footfall
+  blur term was tried to create variance, did not, and broke the hard-scene
+  bound via a guessed amplitude — reverted. Needs a device session.
+  `bs_replay` now reports what the gate selected, which is how any of this
+  became visible.
 
 - Reshaped both two-room paths so they cross the doorway **square to the
   opening** instead of cutting in diagonally from a far corner and pinching

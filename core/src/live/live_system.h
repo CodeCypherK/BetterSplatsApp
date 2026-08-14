@@ -119,7 +119,8 @@ class LiveSystem {
 
   // --- bookkeeping ---
   void EmitDirective(uint32_t frame_id, bs_store_reason reason, bool keyframe);
-  void UpdateStoreGate(const LiveFrameInput& input);
+  void UpdateStoreGate(const LiveFrameInput& input,
+                       const FrameFeatures& features);
   void LogPose(const LiveFrameInput& input, bool tracked);
   std::shared_ptr<DepthFrame> MakeDepthFrame(const LiveFrameInput& input) const;
   double MeanGradientAt(const cv::Mat& gray, const cv::Point2f& pt) const;

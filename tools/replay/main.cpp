@@ -10,6 +10,8 @@
 #include <cstdio>
 #include <cstring>
 #include <fstream>
+#include <map>
+#include <set>
 #include <string>
 #include <thread>
 #include <vector>
@@ -370,6 +372,8 @@ int FeedPass(const bs::SessionReader& session, const std::string& config,
   }
 
   uint32_t fed = 0;
+  std::set<uint32_t> stored_ids;
+  std::map<uint32_t, double> sharpness;
   for (const uint32_t frame_id : frame_ids) {
     const auto meta = session.ReadMeta(frame_id);
     const auto depth = session.ReadDepth(frame_id);
@@ -413,15 +417,53 @@ int FeedPass(const bs::SessionReader& session, const std::string& config,
       std::fprintf(stderr, "feed(%06u) error: %s\n", frame_id,
                    bs_last_error(engine));
     }
+
+    // Drain storage directives as they are produced. On device these tell
+    // the app which frames to keep out of its ring buffer; here they say
+    // which frames the final solve will actually get, which is the number
+    // that decides reconstruction quality.
+    bs_live_status poll{};
+    if (bs_live_poll_status(engine, &poll) == BS_OK) {
+      for (int32_t i = 0; i < poll.directive_count; ++i) {
+        stored_ids.insert(poll.directives[i].frame_id);
+      }
+    }
+    if (meta->quality.lap_var > 0) sharpness[frame_id] = meta->quality.lap_var;
   }
 
   bs_live_poll_status(engine, &status_out);
+  for (int32_t i = 0; i < status_out.directive_count; ++i) {
+    stored_ids.insert(status_out.directives[i].frame_id);
+  }
   std::printf("%s pass: fed %u frames, engine processed %u, state=%d, "
               "keyframes=%u, points=%u, scale_locked=%d\n",
               pass == BS_PASS_SCOUT ? "scout" : "live", fed,
               status_out.frames_processed, status_out.state,
               status_out.keyframes, status_out.map_points,
               status_out.scale_locked);
+
+  // What the storage gate actually selected. The gate prefers sharp frames,
+  // so stored sharpness should sit above the sequence average — if it does
+  // not, the gate is taking whatever geometry lands on.
+  if (!stored_ids.empty() && !sharpness.empty()) {
+    double stored_sum = 0, all_sum = 0;
+    int stored_n = 0, all_n = 0;
+    for (const auto& [id, lv] : sharpness) {
+      all_sum += lv;
+      ++all_n;
+      if (stored_ids.count(id)) {
+        stored_sum += lv;
+        ++stored_n;
+      }
+    }
+    if (stored_n > 0 && all_n > 0) {
+      std::printf("%s storage: kept %d of %d frames, sharpness %.0f vs %.0f "
+                  "sequence mean (%+.1f%%)\n",
+                  pass == BS_PASS_SCOUT ? "scout" : "live", stored_n, all_n,
+                  stored_sum / stored_n, all_sum / all_n,
+                  100.0 * ((stored_sum / stored_n) / (all_sum / all_n) - 1.0));
+    }
+  }
 
   const bs_result end = bs_live_end(engine);
   if (end != BS_OK) {

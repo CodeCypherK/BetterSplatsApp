@@ -721,7 +721,7 @@ bool LiveSystem::TrackFrame(const LiveFrameInput& input,
     guidance_ = BS_GUIDE_GOOD;
   }
 
-  UpdateStoreGate(input);
+  UpdateStoreGate(input, features);
 
   if (ShouldInsertKeyframe(input, features, last_inliers_)) {
     std::vector<std::pair<int32_t, int>> associations;
@@ -886,7 +886,8 @@ void LiveSystem::EmitDirective(uint32_t frame_id, bs_store_reason reason,
   while (directives_.size() > 4 * BS_MAX_DIRECTIVES) directives_.pop_front();
 }
 
-void LiveSystem::UpdateStoreGate(const LiveFrameInput& input) {
+void LiveSystem::UpdateStoreGate(const LiveFrameInput& input,
+                                 const FrameFeatures& features) {
   if (!have_store_pose_) {
     last_store_pose_ = last_pose_;
     have_store_pose_ = true;
@@ -897,10 +898,41 @@ void LiveSystem::UpdateStoreGate(const LiveFrameInput& input) {
       (last_pose_.CameraCenter() - last_store_pose_.CameraCenter()).norm();
   const double rotation_deg =
       RadToDeg(AngularDistance(last_pose_.q, last_store_pose_.q));
-  if (translation > config_.store_min_translation_m ||
-      rotation_deg > config_.store_min_rotation_deg) {
-    last_store_pose_ = last_pose_;
-    EmitDirective(input.frame_id, BS_STORE_GATE, false);
+  const bool moved = translation > config_.store_min_translation_m ||
+                     rotation_deg > config_.store_min_rotation_deg;
+  if (!moved) return;
+
+  // Geometry says a frame is due here. Sharpness decides WHICH frame that
+  // is. RAW is the layer the final solve reconstructs from and it is never
+  // rewritten, so a smeared frame stored now is a smeared frame forever:
+  // SIFT finds fewer and worse-localized keypoints on it, and every later
+  // stage inherits that. Walking at 1 m/s a good fraction of frames carry
+  // motion blur, and the ones that happen to land on the 5 cm boundary are
+  // no likelier to be the sharp ones — so wait a few frames for a sharp one
+  // instead of taking whatever the geometry lands on.
+  //
+  // The threshold is relative to recent sharpness, because absolute
+  // Laplacian variance is a property of the scene as much as the optics.
+  const bool sharp = config_.store_min_sharpness_frac <= 0.0f ||
+                     features.lap_var >=
+                         BlurThreshold(config_.store_min_sharpness_frac);
+
+  // ...but coverage beats sharpness. If the camera has travelled well past
+  // where a frame was due and nothing sharp has come along — a dim room, a
+  // continuous pan — store what there is. A gap in coverage cannot be fixed
+  // later; a slightly soft frame can at least be down-weighted.
+  const bool overdue =
+      translation > 2.0 * config_.store_min_translation_m ||
+      rotation_deg > 2.0 * config_.store_min_rotation_deg;
+
+  if (!sharp && !overdue) return;
+
+  last_store_pose_ = last_pose_;
+  EmitDirective(input.frame_id, BS_STORE_GATE, false);
+  if (!sharp) {
+    BS_LOGD("live", "frame %u stored soft (lap_var %.0f < %.0f) after %.2f m",
+            input.frame_id, features.lap_var,
+            BlurThreshold(config_.store_min_sharpness_frac), translation);
   }
 }
 

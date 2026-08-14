@@ -73,6 +73,13 @@ struct EngineConfig {
   // --- storage gating ---
   float store_min_translation_m = 0.05f;
   float store_min_rotation_deg = 5.0f;
+  // Sharpness a frame must reach, as a fraction of recent typical sharpness,
+  // to be stored when geometry says one is due. RAW is never rewritten, so a
+  // smeared frame stored here is what the final solve reconstructs from
+  // forever. 0 disables the check and stores whatever the geometry lands on.
+  // Past twice the geometric threshold the gate stores regardless: a gap in
+  // coverage cannot be fixed later, a soft frame can at least be weighted.
+  float store_min_sharpness_frac = 0.6f;
 
   // --- live map caps (LIVE layer is disposable; caps are safe) ---
   int live_max_keyframes = 600;

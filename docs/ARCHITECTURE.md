@@ -272,6 +272,36 @@ surviving the doorway means the hardest poses now count where before they
 were simply absent — but the size of it is no longer comfortably explained
 that way, and it is an open item rather than a settled caveat.
 
+## What reaches RAW
+
+The storage gate decides which frames are written to the immutable layer,
+and therefore which frames the final solve ever sees. It was purely
+geometric — store one every 5 cm or 5 deg — with no quality check at all,
+while the *keyframe* gate beside it has always rejected blurred and
+blown-out frames. So a smeared frame that happened to land on the 5 cm
+boundary was stored, permanently, and SIFT then had to work with it.
+
+The gate now also asks for sharpness, relative to recent typical sharpness
+(the same content-adaptive threshold the keyframe gate uses, since absolute
+Laplacian variance is a property of the scene as much as the optics). If the
+frame is soft it waits for a better one — but only up to twice the geometric
+threshold, after which it stores regardless. Coverage beats sharpness: a gap
+cannot be fixed later, a soft frame can at least be down-weighted.
+
+**This one is reasoned, not measured, and the harness is why.** Three
+attempts to demonstrate it failed. Synthetic blur moves this scene's
+Laplacian variance far less than its own procedural texture does, so
+sharpness spread across a sequence stays around 1.2x between the 10th and
+90th percentile whatever the motion — there is nothing for a selection gate
+to choose between, and stored-frame sharpness lands within 0.4% of the
+sequence mean with the gate on or off. Adding a footfall-and-tremor term to
+the blur model (real captures do jolt at each step) did not change that
+either; its only measurable effect was to push hard-scene ATE past its bound
+through an amplitude that was guessed rather than measured off a device, so
+it was reverted. Validating this needs a real handheld session, where blur
+is intermittent and severe rather than smooth and mild.
+`store_min_sharpness_frac` sets the threshold and 0 disables it.
+
 ## Known limitations (measured)
 
 **Turning outruns mapping.** A new point needs two keyframes that both see

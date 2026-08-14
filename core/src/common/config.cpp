@@ -72,6 +72,7 @@ EngineConfig EngineConfig::FromJson(const char* text, bool* ok) {
 
   get_to(j, "store_min_translation_m", c.store_min_translation_m);
   get_to(j, "store_min_rotation_deg", c.store_min_rotation_deg);
+  get_to(j, "store_min_sharpness_frac", c.store_min_sharpness_frac);
 
   get_to(j, "live_max_keyframes", c.live_max_keyframes);
   get_to(j, "live_max_points", c.live_max_points);

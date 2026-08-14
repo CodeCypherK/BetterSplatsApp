@@ -70,6 +70,10 @@ class DepthFrame {
   // (x, y) is fully valid — the association gate for solver residuals.
   bool BicubicSafe(double x, double y) const;
 
+  // Whether this frame carried sensor-reported confidence, as opposed to
+  // the geometric model reconstructing it.
+  bool has_sensor_confidence() const { return !sensor_confidence_.empty(); }
+
   // Depth values with NaN/invalid replaced by 0, for solver-side
   // interpolation (only ever sampled where BicubicSafe held).
   const std::vector<double>& SanitizedDepth() const { return sanitized_; }
@@ -77,6 +81,8 @@ class DepthFrame {
   const LidarConfidenceOptions& options() const { return options_; }
 
  private:
+  // 0-255 as the sensor reported it, empty when unavailable.
+  std::vector<uint8_t> sensor_confidence_;
   int width_ = 0;
   int height_ = 0;
   Intrinsics K_;

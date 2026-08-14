@@ -680,13 +680,42 @@ decisions rather than ours; and its `sceneDepth` is RGB-fused and temporally
 smoothed, which conflicts with RAW being an immutable record of what the
 sensor measured.
 
-**The middle path, if the confidence model proves inadequate on device:** run
-ARKit purely as a depth-and-confidence provider while keeping image-first SfM
-for poses. ARKit poses would never enter the optimization or the export, so
-the mandate — which forbids ARKit *tracking* — is intact. Not to be attempted
-before the device field test: the current confidence model is untested against
-real LiDAR behaviour, and replacing an untested component with a large
-architectural change is the wrong order.
+**The middle path: ARKit as a depth-and-confidence provider, poses still
+image-first.** ARKit poses never enter the optimization or the export, so the
+mandate — which forbids ARKit *tracking* — is intact.
+
+The engine seam for this **exists and is tested**. `DepthImage.confidence`
+carries per-pixel sensor confidence (empty when the backend has none), and
+`DepthFrame::ConfidenceAt` multiplies it into the geometric model. Two
+properties make it safe to land before the backend does:
+
+- **Absent changes nothing.** Every existing session, and any backend that
+  cannot supply confidence, behaves bit-identically. Absent means "no
+  opinion", never "zero confidence".
+- **It can only lower, never raise.** A sensor claiming high confidence
+  cannot rescue depth the geometric model rejects. The worst case is a usable
+  pixel down-weighted; there is no case where a fabricated one gets trusted.
+
+Multiplied rather than substituted because the two measure different things:
+sensor confidence says how sure the return is, `w_range` and `w_angle` say
+whether the surface was at a usable range and angle. A confident reading of a
+wall at 60 degrees is still a poor constraint.
+
+What remains for the ARKit backend is entirely on the iOS side, and is the
+part that **cannot be verified here** — only CI compiles it and CI cannot run
+it. The specific unknowns, each of which would change the design:
+
+| question | why it matters |
+|---|---|
+| Does `ARConfiguration.configurableCaptureDeviceForPrimaryCamera` (iOS 16+) really permit AE/AWB locking? | Photometric consistency is non-negotiable for splat appearance. Without it, ARKit is not usable as the capture path. |
+| Is `.sceneDepth` genuinely per-frame, or already temporally fused? | RAW must be an immutable record of what the sensor measured. `.smoothedSceneDepth` is explicitly not that. |
+| Does ARKit expose a lens-distortion LUT? | The COLMAP `OPENCV` k1/k2 fit comes from AVFoundation's `lensDistortionLookupTable`. Without it we fall back to PINHOLE and lose distortion modelling. |
+| ARKit `sceneDepth` is 256x192 vs AVFoundation's 320x240. | Fewer depth samples per frame, against a better confidence signal. Net effect unmeasured. |
+
+Because of those, the backend should arrive as a **swappable capture source
+behind one interface**, with the AVFoundation path left intact — so the field
+test can A/B them on the same room rather than betting the capture path on
+untested API behaviour.
 
 ## Camera: locked to the wide, by device not by depth
 

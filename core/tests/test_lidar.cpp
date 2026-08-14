@@ -135,5 +135,94 @@ TEST(DepthFrame, SigmaModel) {
   EXPECT_GT(frame.Sigma(3.0), frame.Sigma(1.0));
 }
 
+
+// --- sensor-reported confidence (ARKit's confidenceMap, when available) ---
+
+namespace {
+
+// A slanted plane, so the geometric model produces an interesting spread
+// rather than a constant.
+DepthImage PlaneDepth(int w, int h) {
+  DepthImage d;
+  d.width = w;
+  d.height = h;
+  d.f16.resize(static_cast<size_t>(w) * h);
+  for (int y = 0; y < h; ++y) {
+    for (int x = 0; x < w; ++x) {
+      const float metres = 1.5f + 0.004f * static_cast<float>(x);
+      d.f16[static_cast<size_t>(y) * w + x] = F32ToF16(metres);
+    }
+  }
+  return d;
+}
+
+Intrinsics PlaneK(int w, int h) {
+  return {static_cast<double>(w), static_cast<double>(w),
+          w * 0.5 - 0.5, h * 0.5 - 0.5, w, h};
+}
+
+}  // namespace
+
+TEST(LidarSensorConfidence, AbsentChangesNothing) {
+  // The load-bearing property: every existing session, and every capture
+  // backend that cannot supply confidence, must behave EXACTLY as before.
+  // Absent means "no opinion", never "zero confidence".
+  const int w = 24, h = 18;
+  const DepthImage plain = PlaneDepth(w, h);
+  DepthFrame frame(plain, PlaneK(w, h));
+  EXPECT_FALSE(frame.has_sensor_confidence());
+
+  DepthImage with_full = plain;
+  with_full.confidence.assign(plain.f16.size(), 255);
+  DepthFrame full(with_full, PlaneK(w, h));
+  ASSERT_TRUE(full.has_sensor_confidence());
+
+  for (int y = 1; y < h - 1; ++y) {
+    for (int x = 1; x < w - 1; ++x) {
+      EXPECT_NEAR(frame.ConfidenceAt(x, y), full.ConfidenceAt(x, y), 1e-12)
+          << "at " << x << "," << y;
+    }
+  }
+}
+
+TEST(LidarSensorConfidence, LowSensorConfidenceDeratesAPixelTheModelTrusts) {
+  const int w = 24, h = 18;
+  DepthImage plain = PlaneDepth(w, h);
+  DepthFrame baseline(plain, PlaneK(w, h));
+  const double trusted = baseline.ConfidenceAt(12, 9);
+  ASSERT_GT(trusted, 0.5) << "pick a pixel the geometric model likes";
+
+  // ARKit reports low confidence here — the sensor knows something the
+  // depth map's own geometry does not show.
+  plain.confidence.assign(plain.f16.size(), 255);
+  plain.confidence[static_cast<size_t>(9) * w + 12] = 26;  // ~0.1
+  DepthFrame derated(plain, PlaneK(w, h));
+  EXPECT_NEAR(derated.ConfidenceAt(12, 9), trusted * 26.0 / 255.0, 1e-9);
+}
+
+TEST(LidarSensorConfidence, CanOnlyLowerNeverRaise) {
+  // A sensor claiming high confidence must not rescue depth the geometric
+  // model rejects — that is the safety property that makes this additive.
+  const int w = 24, h = 18;
+  DepthImage plain = PlaneDepth(w, h);
+  // Force an invalid pixel: the model returns 0 regardless.
+  plain.f16[static_cast<size_t>(9) * w + 12] = F32ToF16(0.0f);
+  plain.confidence.assign(plain.f16.size(), 255);
+  DepthFrame frame(plain, PlaneK(w, h));
+  EXPECT_DOUBLE_EQ(frame.ConfidenceAt(12, 9), 0.0);
+}
+
+TEST(LidarSensorConfidence, WrongSizedConfidenceIsIgnored) {
+  // A backend bug that supplies a mismatched plane must not index out of
+  // range or silently derate half the frame.
+  const int w = 24, h = 18;
+  DepthImage plain = PlaneDepth(w, h);
+  DepthFrame baseline(plain, PlaneK(w, h));
+  plain.confidence.assign(10, 0);  // nonsense
+  DepthFrame frame(plain, PlaneK(w, h));
+  EXPECT_FALSE(frame.has_sensor_confidence());
+  EXPECT_NEAR(frame.ConfidenceAt(12, 9), baseline.ConfidenceAt(12, 9), 1e-12);
+}
+
 }  // namespace
 }  // namespace bs

@@ -11,6 +11,7 @@ DepthFrame::DepthFrame(const DepthImage& depth, const Intrinsics& K,
   depth_.resize(n);
   valid_.resize(n);
   sanitized_.resize(n);
+  if (depth.has_confidence()) sensor_confidence_ = depth.confidence;
   const std::vector<float> meters = depth.ToFloat();
   for (size_t i = 0; i < n; ++i) {
     const float m = meters[i];
@@ -131,7 +132,27 @@ double DepthFrame::ConfidenceAt(int x, int y) const {
     if (cos_inc >= cos_max) w_angle = 1.0;
   }
 
-  return w_edge * w_range * w_angle;
+  // Sensor-reported confidence MULTIPLIES the geometric model rather than
+  // replacing it, for two reasons.
+  //
+  // It measures something different: how sure the sensor is of this return.
+  // It says nothing about whether the surface is at a usable range or hit at
+  // a usable angle, which is what w_range and w_angle are for — a confident
+  // reading of a wall at 60 degrees is still a poor constraint.
+  //
+  // And multiplying can only ever LOWER confidence. A sensor that reports
+  // high confidence on depth our model distrusts does not get to overrule
+  // it, which keeps this a strictly safe addition: the worst case is that a
+  // usable pixel is down-weighted, never that a fabricated one is trusted.
+  double w_sensor = 1.0;
+  if (!sensor_confidence_.empty()) {
+    const size_t i = static_cast<size_t>(y) * width_ + x;
+    if (i < sensor_confidence_.size()) {
+      w_sensor = static_cast<double>(sensor_confidence_[i]) / 255.0;
+    }
+  }
+
+  return w_edge * w_range * w_angle * w_sensor;
 }
 
 bool DepthFrame::BicubicSafe(double x, double y) const {

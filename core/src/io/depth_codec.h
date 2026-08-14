@@ -16,6 +16,20 @@ struct DepthImage {
   int height = 0;
   std::vector<uint16_t> f16;  // row-major, width*height
 
+  // Per-pixel confidence AS REPORTED BY THE SENSOR, 0-255, empty when the
+  // capture source does not provide one.
+  //
+  // AVFoundation exposes no such thing — the depth confidence model in
+  // lidar/ exists precisely to reconstruct it from geometry. ARKit does
+  // (`ARDepthData.confidenceMap`), so a capture backend that can supply it
+  // has somewhere to put it, and one that cannot is unaffected: absent
+  // reads as "no opinion", never as "zero confidence".
+  std::vector<uint8_t> confidence;
+
+  bool has_confidence() const {
+    return confidence.size() == f16.size() && !confidence.empty();
+  }
+
   float MetersAt(int x, int y) const;
   bool ValidAt(int x, int y) const;  // finite and > 0
   std::vector<float> ToFloat() const;

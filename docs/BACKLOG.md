@@ -196,6 +196,15 @@ These cannot be settled on synthetic data. Each names what to look for.
 
 ## Ideas (unranked, unvalidated)
 
+- **ARKit capture backend (depth + confidence only, poses still image-first).**
+  Engine seam is DONE and tested (`DepthImage.confidence`). What remains is
+  iOS-side and unverifiable without hardware — see the table in
+  ARCHITECTURE.md "Why not ARKit". Build it as a swappable backend beside the
+  AVFoundation one, never as a replacement, so the field test can A/B them on
+  the same room. Blocked on answering: does
+  `configurableCaptureDeviceForPrimaryCamera` really allow AE/AWB lock; is
+  `.sceneDepth` unsmoothed; is there a distortion LUT.
+
 - **Restore user region names when a project is reopened.** Renames are now
   PERSISTED to session.json (they used to die with the session), but nothing
   reads them back into the engine. Naive restore-by-id is wrong: region ids

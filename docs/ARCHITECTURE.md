@@ -649,6 +649,64 @@ it was reverted. Validating this needs a real handheld session, where blur
 is intermittent and severe rather than smooth and mild.
 `store_min_sharpness_frac` sets the threshold and 0 disables it.
 
+## Why not ARKit, and what it would cost
+
+ARKit is prohibited as a **pose source** by the spec, and that prohibition is
+load-bearing rather than ideological. But the trade is worth stating honestly,
+because ARKit does offer one thing this project genuinely lacks.
+
+**What ARKit would give us.** `ARDepthData.confidenceMap` — per-pixel depth
+confidence, which AVFoundation does not expose at all. The entire
+`w_edge · w_range · w_angle` model in `fusion/residuals.h` exists to
+*reconstruct* what Apple already computes: inferring fabricated depth at
+discontinuities from gradients, rather than being told. ARKit's VIO is also
+IMU-fused, so it survives fast turns and blank walls where our image-only
+tracker loses lock — which is precisely the remaining 25% of the capture
+pass. Plus plane detection (the floor calibration for free) and `ARWorldMap`
+(a battle-tested version of the scout scaffold).
+
+**What it would cost.** ARKit poses are optimized for visual stability in AR:
+low-latency, IMU-smoothed, and drift-corrected by discrete relocalization
+jumps. They are not bundle-adjusted and not photogrammetrically consistent. A
+splat trained on them inherits those jumps as geometry error that is invisible
+until training finishes. The final solve produces globally consistent
+sub-pixel poses — **1.3 mm ATE at 0.22 px** on the clean gate — which is a
+different class of output, and is the entire reason this project exists
+rather than using any of the several ARKit scanners that already ship.
+
+ARKit also owns the capture session, so GDC-off, stabilization-off,
+depth-filtering-off, AF/AE/AWB locking and format selection become its
+decisions rather than ours; and its `sceneDepth` is RGB-fused and temporally
+smoothed, which conflicts with RAW being an immutable record of what the
+sensor measured.
+
+**The middle path, if the confidence model proves inadequate on device:** run
+ARKit purely as a depth-and-confidence provider while keeping image-first SfM
+for poses. ARKit poses would never enter the optimization or the export, so
+the mandate — which forbids ARKit *tracking* — is intact. Not to be attempted
+before the device field test: the current confidence model is untested against
+real LiDAR behaviour, and replacing an untested component with a large
+architectural change is the wrong order.
+
+## Camera: locked to the wide, by device not by depth
+
+`AVCaptureDevice.default(.builtInLiDARDepthCamera, ...)` is a virtual device
+with exactly two constituents — the **wide** camera and the LiDAR. The
+ultra-wide (0.5x) is a separate physical device and Apple ships no
+LiDAR-fused virtual device containing it, so **0.5x is unavailable whenever
+synchronized depth is required.** This is not a depth-format restriction; the
+lens is simply not part of the device.
+
+`videoZoomFactor` is never set, so capture runs at native wide. Zooming in is
+possible and undesirable: it crops the FOV, and wide FOV is what supplies
+overlap and well-conditioned triangulation. Digital zoom would also change
+effective intrinsics per frame, against the one-COLMAP-camera-per-session
+model the export depends on.
+
+Getting 0.5x would mean a second capture input on `.builtInUltraWideCamera`
+with no depth, exported as a separate COLMAP camera — real work, and it
+forfeits LiDAR anchoring on those frames, which is what carries blank walls.
+
 ## Known limitations (measured)
 
 **Turning outruns mapping.** A new point needs two keyframes that both see

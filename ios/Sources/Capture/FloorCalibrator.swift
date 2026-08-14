@@ -43,9 +43,18 @@ final class FloorCalibrator {
     /// One good frame can be a coincidence of where the phone happened to be
     /// pointing mid-swing; a second of them is a decision.
     private static let framesToConfirm = 8
-    /// Fitting every frame is wasted work — the phone does not move far in
-    /// 33 ms, and the fit is the expensive part of this screen.
-    private static let frameInterval = 3
+    /// Frames are offered from the STORED stream, which is already thinned to
+    /// about 3 fps — so every offered frame gets fitted. This was decimating
+    /// by 3 on the assumption of a 30 fps feed, which stretched the eight
+    /// confirmations to roughly seven seconds of holding the phone at the
+    /// floor. At the stored rate it is about two and a half.
+    private static let frameInterval = 1
+
+    /// Frames offered before giving up and letting the session get on with
+    /// it. Someone in a room where the fit will never converge — deep pile
+    /// carpet, a mirror floor, a cluttered workshop — should not be held at a
+    /// prompt that cannot be satisfied. Inference still levels the scan.
+    private static let framesBeforeGivingUp = 60
 
     private var consecutiveGood = 0
     private var frameCounter = 0
@@ -71,6 +80,10 @@ final class FloorCalibrator {
         guard !isComplete else { return nil }
 
         frameCounter += 1
+        if frameCounter >= Self.framesBeforeGivingUp {
+            skip()
+            return nil
+        }
         guard frameCounter % Self.frameInterval == 0 else { return nil }
 
         let plane = depthF32.withUnsafeBufferPointer { buffer -> CoreEngine.FloorPlane? in

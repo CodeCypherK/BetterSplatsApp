@@ -45,6 +45,20 @@ struct CaptureView: View {
     /// a localization scaffold" is unanswerable by the person holding the
     /// phone; "how many rooms" is the same decision in terms they can see.
     private var planChooser: some View {
+        // The scrim is not decoration: without it the shutter button in the
+        // bottom bar sits under this card and stays tappable, so a tap
+        // meant for "several rooms" that misses the card silently starts a
+        // single-room session instead.
+        ZStack {
+            Color.black.opacity(0.45)
+                .ignoresSafeArea()
+                .contentShape(Rectangle())
+                .onTapGesture {}
+            planChooserCard
+        }
+    }
+
+    private var planChooserCard: some View {
         VStack(spacing: 18) {
             Image(systemName: "map")
                 .font(.system(size: 34, weight: .semibold))
@@ -149,7 +163,15 @@ struct CaptureView: View {
                         .multilineTextAlignment(.center)
 
                 case .skipped:
-                    EmptyView()
+                    Image(systemName: "arrow.turn.down.right")
+                        .font(.system(size: 26, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                    Text("Carrying on without it")
+                        .font(.headline)
+                    Text("The floor will be worked out from the scan instead.")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
                 }
             }
             .padding(20)

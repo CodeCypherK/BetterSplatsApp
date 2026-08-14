@@ -401,8 +401,24 @@ final class CaptureViewModel {
                     depthF32: depthF32, width: w, height: h,
                     fx: K.fx, fy: K.fy, cx: K.cx, cy: K.cy,
                     storedFrameId: frameId) else {
-                    self.floorPhase = self.floorCalibrator.isComplete
-                        ? nil : self.floorCalibrator.phase
+                    // The calibrator gives up on its own after a while. That
+                    // path has to end the floor step properly, or the camera
+                    // never locks and the depth copy runs all session.
+                    if self.floorCalibrator.isComplete {
+                        // Gave up on its own. Say so rather than letting the
+                        // prompt vanish — someone who was following an
+                        // instruction deserves to know it was dropped, and
+                        // that the scan is fine without it.
+                        self.floorPhase = .skipped
+                        self.context?.wantsFloorFrames = false
+                        self.endFloorStep()
+                        Task { @MainActor in
+                            try? await Task.sleep(nanoseconds: 2_000_000_000)
+                            self.floorPhase = nil
+                        }
+                    } else {
+                        self.floorPhase = self.floorCalibrator.phase
+                    }
                     return
                 }
                 await store.setFloorCalibration(
@@ -412,6 +428,7 @@ final class CaptureViewModel {
                     inliers: accepted.inliers)
                 self.floorPhase = self.floorCalibrator.phase
                 self.context?.wantsFloorFrames = false
+                self.endFloorStep()
                 // Let the confirmation land, then get out of the way.
                 Task { @MainActor in
                     try? await Task.sleep(nanoseconds: 1_600_000_000)
@@ -420,6 +437,17 @@ final class CaptureViewModel {
             }
         }
     }
+
+    /// The floor step is over, one way or another. This is the moment the
+    /// camera is finally pointed at the scene the user is going to scan, so
+    /// it is the moment to converge AF/AE/AWB and freeze them — not session
+    /// start, when the phone is aimed at the floor because we asked it to be.
+    private func endFloorStep() {
+        guard !photometryLocked else { return }
+        photometryLocked = true
+        manager.settleThenLock()
+    }
+    private var photometryLocked = false
 
     private func startPolling() {
         pollTask?.cancel()
@@ -503,6 +531,7 @@ final class CaptureViewModel {
         floorCalibrator.skip()
         context?.wantsFloorFrames = false
         floorPhase = nil
+        endFloorStep()
     }
 
     func stop() {

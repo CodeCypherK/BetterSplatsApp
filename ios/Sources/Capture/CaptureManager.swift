@@ -9,9 +9,10 @@ import UIKit
 /// docs/ARCHITECTURE.md): geometric distortion correction OFF (we model the
 /// lens ourselves from the calibration LUT), stabilization OFF (warping
 /// invalidates intrinsics), depth temporal filtering OFF (raw measurements
-/// only), and focus + exposure + white balance all locked shortly after
-/// start so one camera model and one photometric response serve the whole
-/// session.
+/// only), and focus + exposure + white balance all locked — once, for good —
+/// so one camera model and one photometric response serve the whole session.
+/// WHEN they lock is the caller's decision, not this class's: see
+/// `settleThenLock()`.
 final class CaptureManager: NSObject {
     enum CaptureError: LocalizedError {
         case noLiDARDevice
@@ -174,15 +175,83 @@ final class CaptureManager: NSObject {
 
     func start() {
         startGyro()
-        captureQueue.async { [session, weak self] in
+        captureQueue.async { [session] in
             session.startRunning()
-            // Let AF/AE/AWB converge on the scene, then freeze all three for
-            // the rest of the session (one camera model, one exposure, one
-            // white point).
-            self?.captureQueue.asyncAfter(deadline: .now() + 1.5) {
-                self?.lockCaptureSettings()
-            }
         }
+        // NOTE: nothing is locked here. See settleThenLock() — locking on a
+        // timer from start() aims the whole session at whatever the phone
+        // happened to be pointing at in its first second and a half.
+    }
+
+    /// Converges AF/AE/AWB on what the camera is looking at NOW, then freezes
+    /// all three for the rest of the session.
+    ///
+    /// The caller decides when the view is representative, and that decision
+    /// cannot be made in here. This used to fire on a 1.5 s timer from
+    /// `start()`, which is wrong in the exact case the app now creates on
+    /// purpose: the floor calibration asks the user to point the phone at the
+    /// floor and step forward, so the timer locked focus at about a metre,
+    /// exposure for a patch of floor, and white balance to the floor's
+    /// colour — and none of the three ever re-adjusts, by design. Everything
+    /// past the first couple of metres would be soft for the whole session,
+    /// with nothing in the UI to say so.
+    ///
+    /// The one-shot `.autoFocus` / `.autoExpose` / `.autoWhiteBalance` modes
+    /// do the work: each performs a single convergence on the current scene
+    /// and then reverts to `.locked` by itself. Polling `isAdjusting*` is
+    /// only to find out when that has happened, so what gets written into
+    /// session.json is what the hardware actually did rather than what was
+    /// asked of it.
+    func settleThenLock() {
+        captureQueue.async { [weak self] in
+            guard let self, let device = self.device else { return }
+            do {
+                try device.lockForConfiguration()
+                defer { device.unlockForConfiguration() }
+                // Centre-weighted: the middle of the frame is the surface the
+                // user is walking toward, which is what the session should be
+                // exposed and focused for.
+                if device.isFocusPointOfInterestSupported {
+                    device.focusPointOfInterest = CGPoint(x: 0.5, y: 0.5)
+                }
+                if device.isExposurePointOfInterestSupported {
+                    device.exposurePointOfInterest = CGPoint(x: 0.5, y: 0.5)
+                }
+                if device.isFocusModeSupported(.autoFocus) {
+                    device.focusMode = .autoFocus
+                }
+                if device.isExposureModeSupported(.autoExpose) {
+                    device.exposureMode = .autoExpose
+                }
+                if device.isWhiteBalanceModeSupported(.autoWhiteBalance) {
+                    device.whiteBalanceMode = .autoWhiteBalance
+                }
+            } catch {
+                // Could not even ask. Fall through to the forced lock below,
+                // which reports honestly whatever it manages.
+            }
+            self.awaitConvergence(attemptsLeft: Self.convergenceAttempts)
+        }
+    }
+
+    /// ~4 s of 100 ms polls. The deadline is a backstop, not the mechanism:
+    /// a scene with nothing to focus on (a blank wall in dim light) can hunt
+    /// indefinitely, and a session that never locks is worse than one locked
+    /// on an imperfect guess — at least the imperfect guess is consistent
+    /// across every frame, which is what the splat actually needs.
+    private static let convergenceAttempts = 40
+
+    private func awaitConvergence(attemptsLeft: Int) {
+        guard let device else { return }
+        let settled = !device.isAdjustingFocus && !device.isAdjustingExposure
+            && !device.isAdjustingWhiteBalance
+        guard settled || attemptsLeft <= 0 else {
+            captureQueue.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+                self?.awaitConvergence(attemptsLeft: attemptsLeft - 1)
+            }
+            return
+        }
+        lockCaptureSettings()
     }
 
     func stop() {
@@ -192,7 +261,8 @@ final class CaptureManager: NSObject {
         }
     }
 
-    /// Freezes focus, exposure and white balance after a short settle window.
+    /// Freezes focus, exposure and white balance on whatever they converged
+    /// to, and records what actually stuck.
     ///
     /// All three matter for reconstruction quality. Focus keeps one camera
     /// model valid for the whole session. Exposure and white balance keep the
@@ -208,20 +278,23 @@ final class CaptureManager: NSObject {
             defer { device.unlockForConfiguration() }
             if device.isFocusModeSupported(.locked) {
                 device.focusMode = .locked
-                state.focus = true
             }
             if device.isExposureModeSupported(.locked) {
                 device.exposureMode = .locked
-                state.exposure = true
             }
             if device.isWhiteBalanceModeSupported(.locked) {
                 device.whiteBalanceMode = .locked
-                state.whiteBalance = true
             }
         } catch {
             // Settings stay continuous; per-frame intrinsics and exposure are
             // still recorded, so the solve can compensate after the fact.
         }
+        // Read back rather than assuming the assignment took. The one-shot
+        // auto modes revert to .locked on their own, and a mode we set may be
+        // overridden by the device; session.json should say what is true.
+        state.focus = device.focusMode == .locked
+        state.exposure = device.exposureMode == .locked
+        state.whiteBalance = device.whiteBalanceMode == .locked
         lockState = state
     }
 

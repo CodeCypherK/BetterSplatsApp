@@ -143,7 +143,7 @@ struct ProjectDetailView: View {
                    + "line up without alignment work later.")
             }
 
-            Section("Continue") {
+            Section {
                 NavigationLink {
                     CaptureView(project: current, newProjectName: nil)
                 } label: {
@@ -165,6 +165,8 @@ struct ProjectDetailView: View {
                               systemImage: "cube.transparent")
                     }
                 }
+            } header: {
+                Text("Continue")
             } footer: {
                 Text("Redoing a room replaces the old frames wherever you "
                    + "walk. They stay on the phone — the reconstruction just "

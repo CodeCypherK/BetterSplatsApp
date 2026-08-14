@@ -105,11 +105,22 @@ non-expert to that data on the first try.
 - [ ] **Should the scout circuit store frames as densely as capture does?**
       It currently shares the 0.30 s gate, so a one-minute lap spends ~200 of
       the 900-frame budget and ~260 MB on frames the final solve throws away.
-      Thinning them frees that for the scan. Against: replay only ever sees
-      STORED frames, so a sparser scout makes replay's scout pass much harder
-      than the device's ever was, and that gap is already the weakest part of
-      the dev loop. Do not guess an interval — measure scout tracking against
-      stored-frame cadence first.
+      Measured now (`--decimate`, table in ARCHITECTURE.md): stored cadence
+      does **not** affect on-device scout quality at all — the device feeds
+      the tracker every frame at 30 fps regardless of what it stores. It only
+      affects replay fidelity and disk. And replay of the scout pass at
+      device cadence is already 34.5% tracked, i.e. already broken, so
+      thinning costs little that is not already lost. Leaning toward thinning
+      the scout gate; wants one more look at whether anything else reads
+      scout frames first.
+
+- [ ] **Why does 1/2 decimation track BETTER than full rate?** 30 fps ->
+      15 fps took scout 85.9% -> 99.4% and capture 75.4% -> 83.0%, which is
+      the opposite of the trend either side of it (6 fps and 3 fps both
+      collapse). Possibly 3.4 cm between frames is too little baseline to be
+      worth the work; possibly specific to this trajectory. **Do not halve
+      the device feed rate on the strength of this** — find the mechanism
+      first. If it is real it is free accuracy and battery.
 - [ ] **Two-room walkthrough as a CI gate.** Blocked on render cost
       (~2377 frames at walking pace ≈ 13 min to generate, ~7 min to replay).
       Consider a shorter realistic path, or a cached fixture committed to
@@ -162,6 +173,17 @@ These cannot be settled on synthetic data. Each names what to look for.
 ## Log
 
 Newest first. One line per session: what changed, what it measured.
+
+- **`bs_replay --live` cannot validate live tracking on a real device
+  session, and now we know by how much.** `--decimate N` feeds every Nth
+  frame; at the ~3 fps a device stores, the live pipeline tracks 34.5% of
+  the scout pass and essentially none of the capture pass. That is not the
+  tracker failing, it is the tracker being fed a tenth of its input — synth
+  sessions hold all 30 fps, device sessions hold only stored frames. Live
+  work has to be validated on synth or on a device. The Linux handoff for
+  outsized scans is unaffected: the exported zip carries `live/`, so the
+  final solve reads the poses the device computed rather than recomputing
+  them.
 
 - **The capture-pass ATE regression was never real.** Anchoring the
   trajectory at its first tracked pose multiplies that pose's rotation error

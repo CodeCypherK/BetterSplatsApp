@@ -388,6 +388,39 @@ separately from `live/poses.jsonl`, so the capture pass no longer erases the
 evidence for the scout pass, and a replay that is feeding decimated frames
 says so.
 
+### Replay does not see what the device sees
+
+A synthetic session holds every frame the harness rendered, so `--live`
+hands the tracker the full 30 fps. An exported **device** session holds only
+STORED frames — roughly 3 fps — so the same code sees ten times the
+inter-frame motion. `--decimate N` feeds every Nth frame, which turns that
+difference from an asterisk into a measurement. On the two-room walk:
+
+| input rate | scout tracked | scout ATE (rigid) | capture tracked | capture ATE (rigid) |
+|---|---|---|---|---|
+| 30 fps (1/1) | 85.9% | 0.024 m | 75.4% | 0.035 m |
+| 15 fps (1/2) | **99.4%** | 0.018 m | **83.0%** | 0.064 m |
+| 6 fps (1/5) | 99.3% | 0.028 m | 49.0% | 0.681 m |
+| 3 fps (1/10) | 34.5% | 0.044 m | — (2 poses) | — |
+
+The load-bearing consequence: **`bs_replay --live` cannot validate live
+tracking against a real device session.** At the cadence a device actually
+stores, the live pipeline does not track — that is not a bug in the tracker,
+it is the tracker being fed a tenth of its input. Live-tracking work has to
+be validated on synthetic sessions, or on a device.
+
+The Linux handoff for outsized scans is *not* affected, and it is worth
+being precise about why: the exported zip carries `live/`, so the final
+solve reads the poses the **device** computed at 30 fps (`LoadLivePoses`)
+rather than recomputing them. Only re-running the live tracker is broken.
+
+The 1/2 row is unexplained and deliberately not acted on. Halving the input
+rate measured *better* than full rate on both passes, which is the opposite
+of the trend either side of it. It may be that 3.4 cm between frames is too
+little baseline to be worth the extra work, or it may be specific to this
+trajectory. It is not a licence to halve the device's feed rate until
+someone has found the mechanism.
+
 ## Crossing a doorway
 
 The scout circuit looks into the room it is **entering**, not at the doorway

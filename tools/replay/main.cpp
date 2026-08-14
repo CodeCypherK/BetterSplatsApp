@@ -43,6 +43,9 @@ void PrintUsage() {
                "              truth when present\n"
                "  --final     run the full global reconstruction + COLMAP export\n"
                "  --check     exit nonzero when error bounds are exceeded\n"
+               "  --decimate N feed every Nth frame (a device session holds\n"
+               "              only stored frames, ~3 fps, where synth holds all\n"
+               "              30 - this asks which regime a result holds in)\n"
                "  --config    engine config JSON string (default {})\n");
 }
 
@@ -674,7 +677,7 @@ PassAccuracy EvaluatePass(const bs::SessionReader& session,
 }
 
 int RunLive(const bs::SessionReader& session, const std::string& config,
-            bool check) {
+            bool check, int decimate) {
   // Split the session by pass. A scout circuit runs first and writes the
   // scaffold; the capture pass then loads it — the same order the app uses,
   // so replay reproduces on-device behavior rather than approximating it.
@@ -686,6 +689,35 @@ int RunLive(const bs::SessionReader& session, const std::string& config,
     } else {
       capture_ids.push_back(frame_id);
     }
+  }
+
+  // Feed every Nth frame instead of all of them.
+  //
+  // This exists because replay and the device do not see the same stream, and
+  // that difference is easy to forget. A synthetic session holds every frame
+  // the harness rendered, so replay hands the tracker the full 30 fps; an
+  // exported device session holds only STORED frames, roughly 3 fps, so the
+  // same code sees ten times the inter-frame motion. A tracking result from
+  // one is not a prediction about the other. Decimating on purpose is how to
+  // find out which regime a change actually holds up in — and it is the only
+  // way to ask what a sparser storage cadence would cost, without shipping
+  // one and finding out from a user.
+  if (decimate > 1) {
+    auto thin = [decimate](std::vector<uint32_t>& ids) {
+      std::vector<uint32_t> kept;
+      for (size_t i = 0; i < ids.size(); i += static_cast<size_t>(decimate)) {
+        kept.push_back(ids[i]);
+      }
+      ids.swap(kept);
+    };
+    const size_t before_scout = scout_ids.size();
+    const size_t before_capture = capture_ids.size();
+    thin(scout_ids);
+    thin(capture_ids);
+    std::printf(
+        "decimate 1/%d: scout %zu -> %zu frames, capture %zu -> %zu\n",
+        decimate, before_scout, scout_ids.size(), before_capture,
+        capture_ids.size());
   }
 
   bs_live_status status{};
@@ -779,6 +811,7 @@ int main(int argc, char** argv) {
   bool do_final = false;
   bool check = false;
   int gap = 4;
+  int decimate = 1;
   std::string preset = "quality";
   std::string config = "{}";
   for (int i = 2; i < argc; ++i) {
@@ -786,6 +819,9 @@ int main(int argc, char** argv) {
     if (arg == "--info") do_info = true;
     else if (arg == "--live") do_live = true;
     else if (arg == "--check") check = true;
+    else if (arg == "--decimate" && i + 1 < argc) {
+      decimate = std::max(1, std::atoi(argv[++i]));
+    }
     else if (arg == "--two-view") {
       do_two_view = true;
       if (i + 1 < argc && argv[i + 1][0] != '-') gap = std::atoi(argv[++i]);
@@ -817,7 +853,7 @@ int main(int argc, char** argv) {
     if (rc != 0 || (!do_live && !do_final)) return rc;
   }
   if (do_live) {
-    const int rc = RunLive(*session, config, check);
+    const int rc = RunLive(*session, config, check, decimate);
     if (rc != 0 || !do_final) return rc;
   }
   return RunFinal(*session, config, preset, check);

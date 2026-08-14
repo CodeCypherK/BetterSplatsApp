@@ -172,6 +172,15 @@ std::string SessionInfo::ToJson() const {
         {"incidence_deg", floor_calibration.incidence_deg},
         {"inliers", floor_calibration.inliers}};
   }
+  json supersedes_json = json::array();
+  for (const auto& v : supersedes) {
+    supersedes_json.push_back({{"min", {v.min[0], v.min[1], v.min[2]}},
+                               {"max", {v.max[0], v.max[1], v.max[2]}},
+                               {"label", v.label}});
+  }
+  j["supersedes"] = supersedes_json;
+  j["project_id"] = project_id;
+  j["project_name"] = project_name;
   j["parent_session"] = parent_session;
   j["app_version"] = app_version;
   return j.dump(2);
@@ -238,6 +247,24 @@ std::optional<SessionInfo> SessionInfo::FromJson(const std::string& text) {
       e.name = r.value("name", "");
       e.renamed = r.value("renamed", false);
       s.regions.push_back(std::move(e));
+    }
+  }
+  s.project_id = j.value("project_id", "");
+  s.project_name = j.value("project_name", "");
+  if (j.contains("supersedes")) {
+    for (const auto& v : j["supersedes"]) {
+      SupersededVolume vol;
+      if (v.contains("min") && v["min"].size() == 3 &&
+          v.contains("max") && v["max"].size() == 3) {
+        for (int i = 0; i < 3; ++i) {
+          vol.min[i] = v["min"][i].get<double>();
+          vol.max[i] = v["max"][i].get<double>();
+        }
+      }
+      vol.label = v.value("label", "");
+      // An inverted or degenerate box would exclude nothing or everything
+      // depending on the comparison; drop it rather than guess the intent.
+      if (vol.valid()) s.supersedes.push_back(std::move(vol));
     }
   }
   s.parent_session = j.value("parent_session", "");

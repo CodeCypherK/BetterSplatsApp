@@ -103,6 +103,34 @@ struct SurfaceCalibration {
   int inliers = 0;
 };
 
+// A volume of the world this session re-covered, superseding whatever
+// earlier sessions in the same project captured there.
+//
+// This is how "go back and rescan that room" works without breaking the
+// immutable-RAW rule. Nothing is deleted or rewritten: the old frames stay
+// exactly as the sensor recorded them, and the SOLVE declines to
+// reconstruct from them — the same mechanism, and the same principle, as
+// scout frames. "Not reconstructed from" is a solve-time decision, never a
+// licence to discard captured data. Change your mind later and the old room
+// is still there, byte for byte.
+//
+// World coordinates, axis-aligned, in the project's shared frame — which is
+// meaningful precisely because a chain inherits one world frame across all
+// its sessions.
+struct SupersededVolume {
+  double min[3] = {0, 0, 0};
+  double max[3] = {0, 0, 0};
+  std::string label;  // "Room 3", for explaining the exclusion to the user
+
+  bool Contains(double x, double y, double z) const {
+    return x >= min[0] && x <= max[0] && y >= min[1] && y <= max[1] &&
+           z >= min[2] && z <= max[2];
+  }
+  bool valid() const {
+    return max[0] >= min[0] && max[1] >= min[1] && max[2] >= min[2];
+  }
+};
+
 struct SessionInfo {
   int schema_version = kSchemaVersion;
   std::string session_id;
@@ -130,6 +158,14 @@ struct SessionInfo {
   // the app offered it, and absent whenever the user skipped the step, so
   // the final solve falls back to inferring the floor from the geometry.
   SurfaceCalibration floor_calibration;
+  // The project this session belongs to: a space captured over several
+  // sittings. Stable across a whole chain, so the app can group sessions
+  // into one reopenable thing rather than a list of dated folders.
+  std::string project_id;
+  std::string project_name;
+  // Volumes this session re-covered. Only ever supersedes sessions EARLIER
+  // in the chain — a rescan cannot invalidate work done after it.
+  std::vector<SupersededVolume> supersedes;
   // Name (not path) of the sibling session this one continues, or empty.
   //
   // A facility bigger than one capture's frame budget is walked as a chain

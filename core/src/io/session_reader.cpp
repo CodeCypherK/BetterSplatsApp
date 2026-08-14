@@ -89,11 +89,56 @@ std::optional<SessionReader> SessionReader::Open(const std::string& session_dir)
   r.chain_.push_back(session_dir);
 
   std::sort(r.frame_ids_.begin(), r.frame_ids_.end());
-  if (r.chain_.size() > 1) {
-    BS_LOGI("session", "chained session: %zu sessions, %zu frames total",
-            r.chain_.size(), r.frame_ids_.size());
+
+  // Collect every rescan declared anywhere in the chain, tagged with where it
+  // sits, so a frame can be tested against only the rescans that came after
+  // it. Re-reading each session.json is a handful of small files and keeps
+  // the walk above concerned with one thing.
+  for (size_t i = 0; i < r.chain_.size(); ++i) {
+    const SessionInfo* info_at = &r.info_;
+    std::optional<SessionInfo> parsed;
+    if (r.chain_[i] != session_dir) {
+      parsed = SessionInfo::FromJson(
+          ReadTextFile((fs::path(r.chain_[i]) / "session.json").string()));
+      if (!parsed) continue;
+      info_at = &*parsed;
+    }
+    for (const auto& volume : info_at->supersedes) {
+      r.supersessions_.push_back({volume, i});
+    }
+  }
+
+  if (r.chain_.size() > 1 || !r.supersessions_.empty()) {
+    BS_LOGI("session",
+            "chained session: %zu sessions, %zu frames, %zu rescan volumes",
+            r.chain_.size(), r.frame_ids_.size(), r.supersessions_.size());
   }
   return r;
+}
+
+size_t SessionReader::ChainIndexOf(uint32_t frame_id) const {
+  const auto it = owner_.find(frame_id);
+  if (it == owner_.end()) return chain_.size();
+  const auto at = std::find(chain_.begin(), chain_.end(), it->second);
+  return static_cast<size_t>(std::distance(chain_.begin(), at));
+}
+
+bool SessionReader::IsSuperseded(uint32_t frame_id,
+                                 const double world_position[3],
+                                 std::string* label) const {
+  if (supersessions_.empty()) return false;
+  const size_t frame_chain_index = ChainIndexOf(frame_id);
+  for (const auto& s : supersessions_) {
+    // Strictly later. A session does not supersede its own frames — it IS
+    // the rescan — and a rescan cannot invalidate work done after it.
+    if (s.chain_index <= frame_chain_index) continue;
+    if (s.volume.Contains(world_position[0], world_position[1],
+                          world_position[2])) {
+      if (label != nullptr) *label = s.volume.label;
+      return true;
+    }
+  }
+  return false;
 }
 
 bool SessionReader::AddFramesFrom(const std::string& dir) {

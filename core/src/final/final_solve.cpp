@@ -365,8 +365,31 @@ FinalOutcome RunFinalSolve(const EngineConfig& config,
   // room only briefly. Their images would drag a splat's appearance and
   // their geometry adds nothing the capture pass does not cover, so they are
   // excluded here — which also keeps them out of the exported images/.
+  // Frames superseded by a later rescan are dropped on the same principle.
+  // "Go back and redo that room" would be worthless if the old, worse frames
+  // still trained the splat alongside the new ones — but deleting them would
+  // break the immutable-RAW rule and make the decision irreversible. So the
+  // old frames stay on disk exactly as recorded, and the SOLVE declines to
+  // reconstruct from them.
+  //
+  // Position comes from the live poses, which share one world frame across
+  // the whole chain — that is what makes a volume from one session mean
+  // anything to another. A frame the live pass never posed cannot be
+  // located, and is KEPT: excluding data we cannot place would throw away
+  // frames on a guess, which is the more damaging mistake of the two.
+  std::unordered_map<uint32_t, SE3> supersede_poses;
+  if (!session->supersessions().empty()) {
+    for (const auto& dir : session->chain()) {
+      for (auto& [id, pose] : LoadLivePoses(dir)) {
+        supersede_poses.emplace(id, pose);
+      }
+    }
+  }
+
   std::vector<uint32_t> solve_frame_ids;
   uint32_t scout_skipped = 0;
+  uint32_t superseded_skipped = 0;
+  uint32_t superseded_unlocatable = 0;
   for (const uint32_t frame_id : session->frame_ids()) {
     if (!config.final_include_scout) {
       const auto meta = session->ReadMeta(frame_id);
@@ -375,8 +398,28 @@ FinalOutcome RunFinalSolve(const EngineConfig& config,
         continue;
       }
     }
+    if (!session->supersessions().empty()) {
+      const auto at = supersede_poses.find(frame_id);
+      if (at == supersede_poses.end()) {
+        ++superseded_unlocatable;
+      } else {
+        const Eigen::Vector3d centre = at->second.CameraCenter();
+        const double position[3] = {centre.x(), centre.y(), centre.z()};
+        if (session->IsSuperseded(frame_id, position)) {
+          ++superseded_skipped;
+          continue;
+        }
+      }
+    }
     solve_frame_ids.push_back(frame_id);
   }
+  if (superseded_skipped > 0 || superseded_unlocatable > 0) {
+    BS_LOGI("final",
+            "rescan: excluding %u superseded frames; %u could not be located "
+            "and were kept",
+            superseded_skipped, superseded_unlocatable);
+  }
+  metrics.frames_superseded = superseded_skipped;
   if (scout_skipped > 0) {
     BS_LOGI("final", "excluding %u scout frames; solving on %zu capture frames",
             scout_skipped, solve_frame_ids.size());
@@ -1688,6 +1731,8 @@ FinalOutcome RunFinalSolve(const EngineConfig& config,
                << "  \"points\": " << model.points.size() << ",\n"
                << "  \"reproj_rmse_px\": " << metrics.reproj_rmse_px << ",\n"
                << "  \"mean_track_len\": " << metrics.mean_track_len << ",\n"
+               << "  \"frames_superseded\": " << metrics.frames_superseded
+               << ",\n"
                << "  \"floaters_removed\": " << metrics.floaters_removed
                << ",\n"
                << "  \"lidar_residuals\": " << metrics.lidar_residuals << ",\n"

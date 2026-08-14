@@ -187,6 +187,19 @@ These cannot be settled on synthetic data. Each names what to look for.
 
 Newest first. One line per session: what changed, what it measured.
 
+- **Rescanning a room.** A project is a chain of sessions over one space;
+  going back to redo a room writes a new session declaring the world volume
+  it re-covered, and the solve declines to reconstruct from earlier frames
+  inside it. Same principle as scout frames: RAW is untouched, "not
+  reconstructed from" is a solve-time decision, and deleting the volume
+  brings the old room back byte for byte. Measured end to end on a split
+  60-frame session: **15 superseded frames excluded, 3 unlocatable ones
+  kept, 45/45 registered, all 60 frames still on disk**. Position comes from
+  the live poses, which share one world frame across the chain — that is
+  what makes a volume from one session mean anything to another. A frame the
+  live pass never posed cannot be located and is KEPT: discarding data we
+  cannot place would be the more damaging mistake.
+
 - **Session chaining: a facility bigger than one capture.** The app caps at
   900 stored frames (~5 min) and there was no way to join two captures, so
   the stated use case — large facilities, many rooms — could not be captured

@@ -43,6 +43,30 @@ class SessionReader {
   const std::vector<std::string>& chain() const { return chain_; }
   bool is_chained() const { return chain_.size() > 1; }
 
+  // A volume some session in the chain re-covered, and where in the chain
+  // that declaration came from.
+  struct Supersession {
+    SupersededVolume volume;
+    size_t chain_index = 0;  // declared by chain()[chain_index]
+  };
+  const std::vector<Supersession>& supersessions() const {
+    return supersessions_;
+  }
+
+  // Which session in the chain holds this frame, or chain().size() when the
+  // id is unknown. Lets the solve ask "was this frame captured before the
+  // rescan that supersedes its location" without re-deriving the mapping.
+  size_t ChainIndexOf(uint32_t frame_id) const;
+
+  // Whether a rescan later in the chain re-covered `world_position`, which
+  // must be the camera centre of `frame_id` in the project's shared world
+  // frame. `label` receives the superseding volume's name when it does.
+  //
+  // Strictly LATER: a session never supersedes its own frames, and a rescan
+  // cannot invalidate work done after it.
+  bool IsSuperseded(uint32_t frame_id, const double world_position[3],
+                    std::string* label = nullptr) const;
+
   std::string FramePath(uint32_t frame_id) const;
   std::string ImagePath(uint32_t frame_id) const;
 
@@ -67,6 +91,7 @@ class SessionReader {
   CalibrationInfo calibration_;
   std::vector<uint32_t> frame_ids_;
   std::vector<std::string> chain_;
+  std::vector<Supersession> supersessions_;
   // frame id -> the session directory holding it. Single-session sessions
   // pay one small map for the uniformity of never special-casing a chain.
   std::map<uint32_t, std::string> owner_;

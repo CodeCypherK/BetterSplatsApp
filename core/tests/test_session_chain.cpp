@@ -194,5 +194,113 @@ TEST_F(SessionChainTest, ParentIsANameNotAPathSoAChainSurvivesBeingMoved) {
   EXPECT_EQ(reader->frame_ids(), (std::vector<uint32_t>{1, 2, 3, 4}));
 }
 
+// ------------------------------------------------------- rescanning a room
+
+// Writes a session that re-covers `volume`, superseding earlier sessions.
+SupersededVolume Box(double x0, double y0, double z0, double x1, double y1,
+                     double z1, const std::string& label) {
+  SupersededVolume v;
+  v.min[0] = x0; v.min[1] = y0; v.min[2] = z0;
+  v.max[0] = x1; v.max[1] = y1; v.max[2] = z1;
+  v.label = label;
+  return v;
+}
+
+TEST_F(SessionChainTest, RescanSupersedesEarlierFramesInThatVolumeOnly) {
+  WriteSession("s1", 1, 2);                 // original pass
+  const std::string dir = (fs::path(root_) / "s2").string();
+  SessionWriter writer;
+  SessionInfo info = MakeInfo("s2", "s1");
+  info.supersedes.push_back(Box(-1, -1, -1, 1, 1, 1, "Room 3"));
+  ASSERT_TRUE(SessionWriter::Create(dir, info, MakeCalibration(), writer));
+  ASSERT_TRUE(writer.WriteFrame(MakeMeta(3), {0xFF}, MakeDepth(3)));
+
+  auto reader = SessionReader::Open(dir);
+  ASSERT_TRUE(reader.has_value());
+  ASSERT_EQ(reader->supersessions().size(), 1u);
+
+  // An old frame inside the rescanned room is superseded, and says by what.
+  const double inside[3] = {0.5, 0.0, 0.5};
+  std::string label;
+  EXPECT_TRUE(reader->IsSuperseded(1, inside, &label));
+  EXPECT_EQ(label, "Room 3");
+
+  // An old frame in a different room is untouched — a rescan of one room
+  // must not quietly discard the rest of the building.
+  const double elsewhere[3] = {9.0, 0.0, 9.0};
+  EXPECT_FALSE(reader->IsSuperseded(1, elsewhere, nullptr));
+}
+
+TEST_F(SessionChainTest, RescanDoesNotSupersedeItsOwnFrames) {
+  // The rescan's frames sit inside the volume it declares, by definition.
+  // Superseding them would exclude the very data the user went back for and
+  // leave the room with nothing at all.
+  WriteSession("s1", 1, 2);
+  const std::string dir = (fs::path(root_) / "s2").string();
+  SessionWriter writer;
+  SessionInfo info = MakeInfo("s2", "s1");
+  info.supersedes.push_back(Box(-1, -1, -1, 1, 1, 1, "Room 3"));
+  ASSERT_TRUE(SessionWriter::Create(dir, info, MakeCalibration(), writer));
+  ASSERT_TRUE(writer.WriteFrame(MakeMeta(3), {0xFF}, MakeDepth(3)));
+
+  auto reader = SessionReader::Open(dir);
+  ASSERT_TRUE(reader.has_value());
+  const double inside[3] = {0.0, 0.0, 0.0};
+  EXPECT_TRUE(reader->IsSuperseded(1, inside, nullptr));   // old frame
+  EXPECT_FALSE(reader->IsSuperseded(3, inside, nullptr));  // the rescan's own
+}
+
+TEST_F(SessionChainTest, ARescanCannotInvalidateWorkDoneAfterIt) {
+  // s1 original, s2 rescans Room 3, s3 captures more of Room 3 later. s2's
+  // volume must not reach forwards and exclude s3.
+  WriteSession("s1", 1, 2);
+  {
+    const std::string dir = (fs::path(root_) / "s2").string();
+    SessionWriter writer;
+    SessionInfo info = MakeInfo("s2", "s1");
+    info.supersedes.push_back(Box(-1, -1, -1, 1, 1, 1, "Room 3"));
+    ASSERT_TRUE(SessionWriter::Create(dir, info, MakeCalibration(), writer));
+    ASSERT_TRUE(writer.WriteFrame(MakeMeta(3), {0xFF}, MakeDepth(3)));
+  }
+  const std::string third = WriteSession("s3", 4, 2, "s2");
+
+  auto reader = SessionReader::Open(third);
+  ASSERT_TRUE(reader.has_value());
+  const double inside[3] = {0.0, 0.0, 0.0};
+  EXPECT_TRUE(reader->IsSuperseded(1, inside, nullptr));   // before the rescan
+  EXPECT_FALSE(reader->IsSuperseded(4, inside, nullptr));  // after it
+}
+
+TEST_F(SessionChainTest, DegenerateVolumesAreDropped) {
+  // An inverted box excludes nothing or everything depending on how the
+  // comparison falls; refusing to load it beats guessing the intent.
+  WriteSession("s1", 1, 2);
+  const std::string dir = (fs::path(root_) / "s2").string();
+  SessionWriter writer;
+  SessionInfo info = MakeInfo("s2", "s1");
+  info.supersedes.push_back(Box(1, 1, 1, -1, -1, -1, "inverted"));
+  ASSERT_TRUE(SessionWriter::Create(dir, info, MakeCalibration(), writer));
+  ASSERT_TRUE(writer.WriteFrame(MakeMeta(3), {0xFF}, MakeDepth(3)));
+
+  auto reader = SessionReader::Open(dir);
+  ASSERT_TRUE(reader.has_value());
+  EXPECT_TRUE(reader->supersessions().empty());
+}
+
+TEST_F(SessionChainTest, SupersedesRoundTripsThroughJson) {
+  SessionInfo info = MakeInfo("s1");
+  info.project_id = "proj_ab12cd";
+  info.project_name = "Warehouse";
+  info.supersedes.push_back(Box(-2, 0, -3, 4, 2.5, 5, "Room 3"));
+  const auto back = SessionInfo::FromJson(info.ToJson());
+  ASSERT_TRUE(back.has_value());
+  EXPECT_EQ(back->project_id, "proj_ab12cd");
+  EXPECT_EQ(back->project_name, "Warehouse");
+  ASSERT_EQ(back->supersedes.size(), 1u);
+  EXPECT_EQ(back->supersedes[0].label, "Room 3");
+  EXPECT_DOUBLE_EQ(back->supersedes[0].min[2], -3.0);
+  EXPECT_DOUBLE_EQ(back->supersedes[0].max[1], 2.5);
+}
+
 }  // namespace
 }  // namespace bs

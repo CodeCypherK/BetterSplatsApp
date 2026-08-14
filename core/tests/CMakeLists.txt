@@ -7,6 +7,7 @@ add_executable(bs_tests
   test_component_align.cpp
   test_model_split.cpp
   test_guide_vector.cpp
+  test_image_report.cpp
   test_level.cpp
   test_plane_fit.cpp
   test_config.cpp

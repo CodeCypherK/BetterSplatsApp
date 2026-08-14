@@ -22,6 +22,7 @@
 #include "calib/lut_fit.h"
 #include "common/log.h"
 #include "final/colmap_export.h"
+#include "final/image_report.h"
 #include "final/level.h"
 #include "final/model_split.h"
 #include "final/component_align.h"
@@ -54,6 +55,10 @@ struct FrameData {
   std::shared_ptr<DepthLookup> lookup;
   std::string jpeg_path;
   std::string export_name;
+  // Carried from meta.json purely so the report can name the frames that
+  // hurt the model. Capture-time measurements, never inputs to the solve.
+  float lap_var = 0;
+  float overexp_frac = 0;
 };
 
 struct TrackObs {
@@ -431,6 +436,8 @@ FinalOutcome RunFinalSolve(const EngineConfig& config,
       char name[32];
       std::snprintf(name, sizeof(name), "%06u.jpg", frame_id);
       frame.export_name = name;
+      frame.lap_var = static_cast<float>(meta->quality.lap_var);
+      frame.overexp_frac = static_cast<float>(meta->quality.overexp_frac);
 
       char cache_name[32];
       std::snprintf(cache_name, sizeof(cache_name), "feat_%06u.bin", frame_id);
@@ -1620,6 +1627,57 @@ FinalOutcome RunFinalSolve(const EngineConfig& config,
             ? 0.0f
             : static_cast<float>(track_len_sum / model.points.size());
 
+    // Per-image accounting. Aggregate metrics can say a reconstruction is
+    // healthy while a handful of smeared or blown-out frames put a soft
+    // patch on one wall, and until now nothing told the user which frames
+    // those were. Residuals use the solver's own convention — undistorted
+    // coordinates, surviving tracks only — so the number reported is the one
+    // the optimizer actually saw.
+    std::vector<ImageQuality> image_stats;
+    image_stats.reserve(frames.size());
+    {
+      std::unordered_map<uint32_t, std::pair<double, uint32_t>> err_by_frame;
+      for (const auto& track : tracks) {
+        if (track.dead || !track.has_point) continue;
+        for (const auto& obs : track.observations) {
+          const FrameData& f = frames[obs.frame_index];
+          if (!f.posed) continue;
+          const Eigen::Vector3d xc = f.pose.Apply(track.X);
+          if (xc.z() <= 0.01) continue;
+          const Eigen::Vector2d proj = f.K.Project(xc);
+          const cv::Point2f& px = f.undistorted[obs.feature];
+          const double dx = proj.x() - px.x, dy = proj.y() - px.y;
+          auto& acc = err_by_frame[f.frame_id];
+          acc.first += dx * dx + dy * dy;
+          acc.second += 1;
+        }
+      }
+      for (const auto& frame : frames) {
+        ImageQuality q;
+        q.frame_id = frame.frame_id;
+        q.name = frame.export_name;
+        q.registered = frame.posed;
+        q.lap_var = frame.lap_var;
+        q.overexp_frac = frame.overexp_frac;
+        const auto it = err_by_frame.find(frame.frame_id);
+        if (it != err_by_frame.end() && it->second.second > 0) {
+          q.observations = it->second.second;
+          q.reproj_rmse_px =
+              std::sqrt(it->second.first / static_cast<double>(it->second.second));
+        }
+        image_stats.push_back(std::move(q));
+      }
+    }
+    const ImageReport image_report = FlagImages(std::move(image_stats));
+    if (image_report.blurry > 0 || image_report.overexposed > 0 ||
+        image_report.weakly_observed > 0) {
+      BS_LOGI("final",
+              "image quality: %u blurry, %u overexposed, %u weakly observed "
+              "of %zu",
+              image_report.blurry, image_report.overexposed,
+              image_report.weakly_observed, image_report.images.size());
+    }
+
     // report.json
     std::ofstream report_out(fs::path(session_dir) / "final" / "report.json",
                              std::ios::trunc);
@@ -1646,6 +1704,7 @@ FinalOutcome RunFinalSolve(const EngineConfig& config,
                << leveling.camera_height_spread_m << ",\n"
                << "  \"walls_squared\": "
                << (leveling.walls_squared ? "true" : "false") << ",\n"
+               << ImageReportJson(image_report)
                << "  \"preset\": \"" << (fast ? "fast" : "quality") << "\"\n"
                << "}\n";
     report(BS_STAGE_EXPORT, 1.0f);

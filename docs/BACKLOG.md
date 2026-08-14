@@ -143,6 +143,18 @@ non-expert to that data on the first try.
 
 These cannot be settled on synthetic data. Each names what to look for.
 
+- [ ] **Are the per-image quality thresholds any good?** `report.json` now
+      carries a per-image table and flags (blurry / overexposed /
+      weakly_observed / unregistered). Two of the four **cannot fire on
+      synthetic data at all**: `lap_var` spans 1.38x across the whole hard
+      scene (119..164, so nothing reaches the 0.5x-of-median floor) and
+      `overexp_frac` is exactly 0 on every synthetic frame. The logic is
+      unit-tested; the numbers are a documented guess. On a device session,
+      plot the lap_var distribution and check the flagged frames are the ones
+      that actually look bad. Low risk to be wrong — it labels a report, it
+      does not touch the reconstruction — but a list that cries wolf gets
+      ignored on the session where it matters.
+
 - [ ] **Does frame-selection-by-sharpness help?** `bs_replay --live` prints
       `storage: kept N of M frames, sharpness X vs Y sequence mean`. On a
       real handheld walk that number should be clearly positive; on synth it
@@ -165,14 +177,24 @@ These cannot be settled on synthetic data. Each names what to look for.
 
 - Exposure/white-balance normalization across frames before the final solve.
 - Per-session depth-vs-triangulation affine correction (risk 6 in the plan).
-- Report per-image blur/exposure outliers in `report.json` so a user can see
-  which frames hurt the model.
+- Surface the flagged images in the app, not just in `report.json` — a
+  "these 12 frames are hurting your model" list on the Processing or Export
+  screen, with the option to exclude and re-solve.
 
 ---
 
 ## Log
 
 Newest first. One line per session: what changed, what it measured.
+
+- **`report.json` now names the frames that hurt the model.** Per-image
+  table (registered, observations, reproj rmse, lap_var, overexp_frac) plus
+  four flags, with thresholds relative to the session's own distribution —
+  lap_var is not comparable between scenes, so an absolute cutoff would
+  condemn every frame in a plain room and none in a busy one. Residuals use
+  the solver's own convention so the number reported is the one the
+  optimizer saw. Verified end-to-end on the hard scene: valid JSON, 60
+  images, median lap_var 150, median 675 observations, zero false positives.
 
 - **TRACKING LOST now says which way the map is.** `guide_dir`,
   `guide_dist_m` and `guide_region_id` had existed in `bs_api.h` since M4

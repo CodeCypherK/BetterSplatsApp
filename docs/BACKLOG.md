@@ -24,19 +24,17 @@ non-expert to that data on the first try.
 
 ## Now
 
-- [ ] **Scout scaffold is appearance-incompatible with the capture pass.**
-      A capture pass localizes into a 224-keyframe scaffold on only 12% of
-      frames. The scout looks *inward at room centres*; the capture walk
-      looks *along travel*; ORB is not viewpoint-invariant, so the two
-      passes almost never see a surface from a similar direction. Widening
-      the relocalization sweep 8 → 64 candidates moved it 11.8% → 12.2%, so
-      candidate coverage is *not* the constraint (already measured, do not
-      retry). Two candidate fixes, in order of expected value:
-      1. Make the scout circuit sweep the phone while walking, so each
-         location is captured from several directions. This is also a
-         product decision — it changes the on-screen instruction.
-      2. Viewpoint-tolerant relocalization: BoW retrieval over the scaffold
-         instead of raw descriptor matching against associated features.
+- [ ] **Capture-pass tracking: 62% and worth pushing further.** The
+      relocalization anchor bug (below) took this from 12% to 62% with ATE
+      0.218 -> 0.075 m. What is left is genuine: the pass still loses
+      tracking at the doorway transits, where the turn outruns mapping (see
+      ARCHITECTURE.md). Next thing to try: keyframe cadence that scales with
+      rotation rate instead of a flat `kf_min_interval_s`, so a turn gets
+      the keyframe pairs it needs to triangulate the leading edge.
+      NOTE: the old "scaffold is appearance-incompatible / ORB is
+      viewpoint-sensitive" theory here was **wrong** and is disproved — the
+      same scaffold now carries 62% of the pass. Do not rebuild the scout
+      trajectory on that basis without a fresh measurement.
 
 ## Next
 
@@ -66,6 +64,14 @@ non-expert to that data on the first try.
 ## Log
 
 Newest first. One line per session: what changed, what it measured.
+
+- **Relocalization never moved the local-map anchor.** `Relocalize` set the
+  pose but not `last_kf_id_`, so each recovery handed the next frame a local
+  map for the place the camera had just left — reloc-lose-reloc-lose.
+  Capture pass **12.2% -> 61.9%** tracked, ATE **0.218 -> 0.075 m**, reloc
+  thrash 24 -> 7 events; scout 86.0% -> 89.5% and now ends TRACKING rather
+  than LOST. Corrects the earlier "ORB viewpoint sensitivity" diagnosis,
+  which was wrong.
 
 - Verified the CI gate against the reshaped trajectories (they changed
   `bs_synth` output, and the previous push had not run it): live 95% tracked

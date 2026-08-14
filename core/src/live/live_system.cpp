@@ -858,6 +858,13 @@ bool LiveSystem::Relocalize(const LiveFrameInput& input,
     state_ = BS_LIVE_TRACKING;
     guidance_ = BS_GUIDE_GOOD;
     consecutive_lost_ = 0;
+    // Move the local-map anchor to where we actually are. TrackFrame builds
+    // its candidate set from this keyframe and its covisibles, so leaving it
+    // on the pre-loss keyframe hands the next frame a local map for a place
+    // the camera is no longer in — and it goes straight back to LOST. That
+    // is the reloc-lose-reloc-lose sawtooth: relocalization kept succeeding
+    // with 30-70 inliers and every recovery died on the following frame.
+    last_kf_id_ = kf.kf_id;
     EmitDirective(input.frame_id, BS_STORE_BURST, false);
     BS_LOGI("live", "relocalized frame %u against kf %u (%zu inliers)",
             input.frame_id, kf.kf_id, inliers.size());

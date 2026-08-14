@@ -230,18 +230,6 @@ below the plausibility gate, so it is not a bad pose to reject. The engine
 now raises `SLOW DOWN` above `track_warn_rot_dps` (60 deg/s) while there is
 still support to hold onto.
 
-**A capture pass localizes into a scout scaffold poorly (12% of frames).**
-The mechanism is a consequence of the scout design: the circuit looks
-*inward at room centres* while the capture walk looks *along travel*, so
-the two passes rarely view the same surface from a similar direction — and
-ORB is not viewpoint-invariant. The scaffold is geometrically excellent and
-appearance-wise nearly unusable to the pass that needs it. Widening the
-relocalization sweep from 8 to up to 64 candidates while lost moved this
-only 11.8% → 12.2%, confirming that candidate *coverage* is not the binding
-constraint. The fix has to change what the scout captures (sweeping the
-view during the lap) or how relocalization matches (viewpoint-tolerant
-retrieval), not how many keyframes it tries.
-
 Each of the following was measured and **ruled out**, so they are not worth
 re-trying:
 
@@ -256,6 +244,32 @@ re-trying:
 | search radius too small | widening it with predicted motion made things worse |
 | local BA diverging | converges normally; the validation guard never fires |
 | relocalization candidate coverage | 8 → 64 candidates per attempt moved tracking 11.8% → 12.2% |
+| scaffold unusable because ORB is viewpoint-sensitive | wrong — see below; the same scaffold now carries 62% of the capture pass |
+
+**Where recovery was actually failing.** For a long time a capture pass
+localized into its scout scaffold on only 12% of frames, and it was tempting
+to blame appearance: the scout looks *inward at room centres* while the
+capture walk looks *along travel*, and ORB is not viewpoint-invariant. That
+was wrong. Relocalization was succeeding — repeatedly, with 30–70 PnP
+inliers — and then dying on the very next frame, over and over.
+
+`Relocalize` set the pose but never moved `last_kf_id_`. `TrackFrame` builds
+its candidate set from that keyframe and its covisibles, so every recovery
+handed the following frame a local map for the place the camera had just
+left. One line, and it was worth more than every parameter that had been
+swept around it:
+
+| | before | after |
+|---|---|---|
+| capture-pass frames tracked | 12.2% | **61.9%** |
+| capture-pass ATE | 0.218 m | **0.075 m** |
+| relocalization events (thrash) | 24 | **7** |
+| scout frames tracked | 86.0% | **89.5%** |
+| scout ends | LOST | **TRACKING** |
+
+The lesson worth keeping: a recovery path that reports success is not
+necessarily recovering. `relocalized frame N against kf K` was printed 24
+times and looked like the system working.
 
 The final solve is unaffected by any of this: it needs no live poses at all
 and reconstructs a two-room walkthrough from images alone.

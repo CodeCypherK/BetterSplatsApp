@@ -366,6 +366,56 @@ final class CaptureViewModel {
 
     var isScouting: Bool { state == .scouting }
 
+    /// How the capture went, frozen at stop.
+    ///
+    /// Shown while the user is STILL IN THE ROOM, which is the entire point:
+    /// a thin or badly-tracked capture is cheap to redo now and expensive to
+    /// redo after driving home. The old end screen said "Saved:
+    /// session_20260814-142230_a3f2c1" and offered a Done button, which
+    /// tells someone nothing they can act on.
+    struct CaptureSummary: Equatable {
+        let frames: UInt32
+        let keyframes: UInt32
+        let readiness: Float
+        let hitCap: Bool
+        let wasRescan: Bool
+
+        enum Verdict { case good, thin, full }
+
+        var verdict: Verdict {
+            if hitCap { return .full }
+            return frames >= UInt32(FrameFeedContext.storedFrameTarget)
+                ? .good : .thin
+        }
+
+        var headline: String {
+            switch verdict {
+            case .good: return wasRescan ? "Room redone" : "Room captured"
+            case .thin: return "Thin capture"
+            case .full: return "Capture full"
+            }
+        }
+
+        var detail: String {
+            switch verdict {
+            case .good:
+                return "\(frames) frames. Enough to reconstruct this room."
+            case .thin:
+                // The one case worth interrupting for: it looks fine and is
+                // not, and the fix costs a minute now versus a return trip.
+                return "\(frames) frames — under the \(FrameFeedContext.storedFrameTarget) "
+                     + "a room usually needs. Walking it again now is much "
+                     + "cheaper than coming back."
+            case .full:
+                return "\(frames) frames, the per-capture limit. If the room "
+                     + "is not finished, capture the rest as another room in "
+                     + "this project."
+            }
+        }
+    }
+
+    private(set) var summary: CaptureSummary?
+
     private let floorCalibrator = FloorCalibrator()
 
     private let manager = CaptureManager()
@@ -721,6 +771,33 @@ final class CaptureViewModel {
         endFloorStep()
     }
 
+    /// Go round the room again after a thin capture.
+    ///
+    /// This starts a NEW capture rather than reopening the finished one: RAW
+    /// is write-once, and a session that has been finalized is a closed
+    /// record. The new capture joins the same project, so it inherits the
+    /// world frame and simply adds the coverage the first pass missed —
+    /// which is exactly what "walk it again" should mean. It is not a
+    /// rescan: nothing is being replaced, the first pass was just short.
+    func restartForMoreCoverage() {
+        guard case .finished = state else { return }
+        continuingProject = ProjectStore.load().first {
+            $0.captures.contains { $0.directory == lastSessionDirectory }
+        } ?? continuingProject
+        rescanLabel = nil
+        summary = nil
+        context = nil
+        // Straight back into capture rather than via .idle, which would
+        // re-show the one-room/several-rooms chooser — a question the user
+        // has already answered and cannot usefully answer differently for
+        // the same room.
+        start(plan: .captureOnly)
+    }
+
+    /// Directory of the capture just finished, so a follow-up can find the
+    /// project it belongs to.
+    private(set) var lastSessionDirectory: URL?
+
     func stop() {
         guard state == .capturing || state == .scouting else { return }
         state = .stopping
@@ -752,9 +829,16 @@ final class CaptureViewModel {
                 try? await context.store.finalize(
                     locks: (focus: locks.focus, exposure: locks.exposure,
                             whiteBalance: locks.whiteBalance))
+                let stored = await context.store.storedFrames
+                summary = CaptureSummary(
+                    frames: stored,
+                    keyframes: CoreEngine.shared.livePollStatus().keyframes,
+                    readiness: readinessOverall,
+                    hitCap: stored >= UInt32(FrameFeedContext.storedFrameCap),
+                    wasRescan: rescanLabel != nil)
+                lastSessionDirectory = context.store.directory
                 let name = context.store.directory.lastPathComponent
                 state = .finished(sessionName: name)
-                guidance = "Saved \(name)"
             } else {
                 state = .idle
             }

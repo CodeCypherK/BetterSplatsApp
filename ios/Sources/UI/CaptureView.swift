@@ -275,6 +275,71 @@ struct CaptureView: View {
         .allowsHitTesting(false)
     }
 
+    /// What just happened, and what to do next — shown while the user is
+    /// still standing in the room they captured.
+    ///
+    /// That timing is the whole value. A thin capture looks completely fine
+    /// at the time and only shows up as holes in the trained splat hours
+    /// later, by which point fixing it means a return trip. One extra minute
+    /// here costs almost nothing.
+    @ViewBuilder
+    private var finishedCard: some View {
+        let summary = model.summary
+        VStack(spacing: 12) {
+            if let summary {
+                Image(systemName: summaryIcon(summary.verdict))
+                    .font(.system(size: 30, weight: .semibold))
+                    .foregroundStyle(summaryColor(summary.verdict))
+                Text(summary.headline).font(.headline)
+                Text(summary.detail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                Text("Capture saved").font(.headline)
+            }
+
+            // A thin room is the one case where the primary action should be
+            // "fix it", not "move on".
+            if summary?.verdict == .thin {
+                Button {
+                    model.restartForMoreCoverage()
+                } label: {
+                    Label("Walk it again", systemImage: "arrow.clockwise")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+                Button("Keep it anyway") { dismiss() }
+                    .font(.subheadline)
+            } else {
+                Button("Done") { dismiss() }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.large)
+            }
+        }
+        .padding(20)
+        .frame(maxWidth: 360)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+    }
+
+    private func summaryIcon(_ v: CaptureViewModel.CaptureSummary.Verdict) -> String {
+        switch v {
+        case .good: return "checkmark.circle.fill"
+        case .thin: return "exclamationmark.triangle.fill"
+        case .full: return "tray.full.fill"
+        }
+    }
+
+    private func summaryColor(_ v: CaptureViewModel.CaptureSummary.Verdict) -> Color {
+        switch v {
+        case .good: return .green
+        case .thin: return .orange
+        case .full: return .blue
+        }
+    }
+
     private var statusPill: some View {
         VStack(spacing: 6) {
             Text(model.guidance)
@@ -395,16 +460,8 @@ struct CaptureView: View {
         HStack {
             if model.isScouting {
                 scoutBar.frame(maxWidth: .infinity)
-            } else if case .finished(let name) = model.state {
-                VStack(spacing: 8) {
-                    Text("Saved: \(name)")
-                        .font(.footnote)
-                        .padding(8)
-                        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 8))
-                    Button("Done") { dismiss() }
-                        .buttonStyle(.borderedProminent)
-                }
-                .frame(maxWidth: .infinity)
+            } else if case .finished = model.state {
+                finishedCard.frame(maxWidth: .infinity)
             } else {
                 Button {
                     if model.isCapturing { model.stop() } else { model.start() }

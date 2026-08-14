@@ -217,6 +217,17 @@ These cannot be settled on synthetic data. Each names what to look for.
 
 Newest first. One line per session: what changed, what it measured.
 
+- **End of capture is no longer a dead end.** It said "Saved:
+  session_20260814-142230_a3f2c1" with a Done button — a filename and an
+  exit, at the one moment the user is still standing in the room and could
+  fix it. Now: frames against the 200-500 band, a verdict, and for a THIN
+  capture the primary action is "Walk it again" rather than "Done". That
+  timing is the whole value — a thin capture looks fine at the time and only
+  shows as holes hours later, when fixing it means a return trip. Walking it
+  again starts a NEW capture in the same project (RAW is write-once, a
+  finalized session is closed) so it inherits the world frame and adds the
+  coverage the first pass missed; it is not a rescan, nothing is replaced.
+
 - **Two fields in session.json that lied.** `keyframe_ids` was empty in
   every device session ever captured — the app polls `bs_live_status`, which
   DRAINS the engine's storage directives, and threw them away. Now drained

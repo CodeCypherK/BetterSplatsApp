@@ -182,27 +182,98 @@ struct ProjectDetailView: View {
         .navigationBarTitleDisplayMode(.inline)
         .onAppear {
             reloaded = ProjectStore.load().first { $0.id == project.id }
-        }
-        .alert("Which room?", isPresented: $namingRescan) {
-            TextField("Room name (e.g. Kitchen)", text: $rescanName)
-            Button("Cancel", role: .cancel) {}
-            Button("Start") {
-                startingRescan = Rescan(
-                    label: rescanName.isEmpty ? "this room" : rescanName)
+            // Readiness lives in the newest capture's report, since that is
+            // the solve that covered the whole chain.
+            if let latest = current.latestDirectory {
+                report = SolveReport.read(sessionURL: latest)
             }
-        } message: {
-            Text("Naming it just labels the change in the report — walk "
-               + "wherever the room actually is.")
         }
+        .sheet(isPresented: $namingRescan) { roomPicker }
         .navigationDestination(item: $startingRescan) { rescan in
             CaptureView(project: current, newProjectName: nil,
                         rescanLabel: rescan.label)
         }
     }
 
+    /// Rooms from the last solve, worst first — the whole point is to pick
+    /// the one that came out badly, so ranking by score is the answer to the
+    /// question rather than an alphabetical list to read through.
+    ///
+    /// Falls back to naming it by hand when there is no report yet: a
+    /// project that has never been reconstructed still has rooms, they just
+    /// have no scores, and refusing to rescan until you have solved once
+    /// would be a strange thing to insist on.
+    private var roomPicker: some View {
+        NavigationStack {
+            List {
+                let rooms = (report?.readiness?.regions ?? [])
+                    .sorted { $0.score < $1.score }
+                if rooms.isEmpty {
+                    Section {
+                        TextField("Room name (e.g. Kitchen)", text: $rescanName)
+                        Button("Start") {
+                            namingRescan = false
+                            startingRescan = Rescan(
+                                label: rescanName.isEmpty ? "this room"
+                                                          : rescanName)
+                        }
+                    } footer: {
+                        Text("No reconstruction yet, so there are no room "
+                           + "scores to choose from. Name it and walk it.")
+                    }
+                } else {
+                    Section {
+                        ForEach(rooms) { room in
+                            Button {
+                                namingRescan = false
+                                startingRescan = Rescan(label: room.name)
+                            } label: {
+                                roomRow(room)
+                            }
+                        }
+                    } footer: {
+                        Text("Scores are from the last reconstruction. Pick a "
+                           + "room and walk it again — the new frames take "
+                           + "over wherever you go.")
+                    }
+                }
+            }
+            .navigationTitle("Redo which room?")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                Button("Cancel") { namingRescan = false }
+            }
+        }
+        .presentationDetents([.medium, .large])
+    }
+
+    private func roomRow(_ room: SolveReport.Readiness.Region) -> some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(room.name).font(.headline)
+                if let worst = room.worstAxisName {
+                    Text("weakest: \(worst)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Text(String(format: "%.1f m² · %d weak spot%@", room.areaM2,
+                            Int(room.weakAreas), room.weakAreas == 1 ? "" : "s"))
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+            Text("\(Int(room.score))%")
+                .font(.title3.weight(.semibold).monospacedDigit())
+                .foregroundStyle(room.score >= 85 ? .green
+                                 : (room.score >= 60 ? .orange : .red))
+        }
+        .padding(.vertical, 2)
+    }
+
     @State private var namingRescan = false
     @State private var rescanName = ""
     @State private var startingRescan: Rescan?
+    @State private var report: SolveReport?
 
     struct Rescan: Identifiable, Hashable {
         let label: String

@@ -196,11 +196,6 @@ These cannot be settled on synthetic data. Each names what to look for.
 
 ## Ideas (unranked, unvalidated)
 
-- **`report.json` carries no readiness regions**, though the plan specifies
-  per-region scores and weak clusters recomputed from FINAL data. The final
-  solve never builds a PatchGrid — readiness only exists live. Would need a
-  LiveMap assembled from the solve's frames+tracks. Wanted for: room bounds
-  the user could pick from, and a post-solve room-by-room quality view.
 
 - Exposure/white-balance normalization across frames before the final solve.
 - Per-session depth-vs-triangulation affine correction (risk 6 in the plan).
@@ -213,6 +208,20 @@ These cannot be settled on synthetic data. Each names what to look for.
 ## Log
 
 Newest first. One line per session: what changed, what it measured.
+
+- **Readiness recomputed from the FINAL solve** — the last named gap.
+  PatchGrid scores a LiveMap, so the solve assembles one from its own
+  frames and tracks rather than growing a second scoring implementation to
+  drift from the first. Clean scene: **61% overall, 189 patches, 1 region**,
+  sub-scores [73.6 geom, 96.4 pose, 32.7 texture, 84.5 lidar, 72.9 view].
+  The two readiness numbers answer different questions and both earn their
+  place: live asks "is this room worth more time now", the report asks "is
+  this worth GPU hours".
+
+  It also improved the rescan flow, which had been free-text because no room
+  bounds existed after a solve. "Redo a room" now lists real rooms **worst
+  score first** with their weakest axis — the stored bounds inform the
+  CHOICE, the walked volume still determines the EFFECT.
 
 - **Gap-closing pass.** `docs/FORMATS.md` calls itself normative and was
   missing five keys that already ship — `floor_calibration`, `project_id`,

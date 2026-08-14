@@ -14,6 +14,7 @@ add_library(bscore STATIC
   src/engine/selftest.cpp
   src/final/colmap_export.cpp
   src/final/model_split.cpp
+  src/final/final_readiness.cpp
   src/final/image_report.cpp
   src/final/level.cpp
   src/lidar/plane_fit.cpp

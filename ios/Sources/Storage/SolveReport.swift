@@ -63,6 +63,53 @@ struct SolveReport: Decodable {
     var levelCameraHeightSpreadM: Double?
     var imageFlags: ImageFlags?
     var images: [Image]?
+    var readiness: Readiness?
+
+    /// Splat readiness recomputed from the FINAL reconstruction — the same
+    /// five axes shown live, but from globally adjusted geometry with the
+    /// outliers pruned. This is the version worth acting on: it answers "is
+    /// the data I am about to train on any good", where the live scores
+    /// answer "is this room worth more of my time right now".
+    struct Readiness: Decodable {
+        var present: Bool
+        var overall: Double?
+        var overallSub: [Double]?
+        var regions: [Region]?
+
+        enum CodingKeys: String, CodingKey {
+            case present, overall, regions
+            case overallSub = "overall_sub"
+        }
+
+        struct Region: Decodable, Identifiable {
+            var id: UInt32
+            var name: String
+            var score: Double
+            var sub: [Double]
+            var areaM2: Double
+            var weakAreas: UInt32
+            var worstDeficiency: Int
+            /// World bounds of the room. The only place this exists after a
+            /// solve, and what a rescan of it would have to cover.
+            var min: [Double]
+            var max: [Double]
+
+            enum CodingKeys: String, CodingKey {
+                case id, name, score, sub, min, max
+                case areaM2 = "area_m2"
+                case weakAreas = "weak_areas"
+                case worstDeficiency = "worst_deficiency"
+            }
+
+            /// Which axis is dragging this room down, named.
+            var worstAxisName: String? {
+                guard worstDeficiency >= 0,
+                      worstDeficiency < WeakAreaGuidance.axisNames.count
+                else { return nil }
+                return WeakAreaGuidance.axisNames[worstDeficiency]
+            }
+        }
+    }
 
     enum CodingKeys: String, CodingKey {
         case imagesTotal = "images_total"
@@ -77,6 +124,7 @@ struct SolveReport: Decodable {
         case levelCameraHeightSpreadM = "level_camera_height_spread_m"
         case imageFlags = "image_flags"
         case images
+        case readiness
     }
 
     static func read(sessionURL: URL) -> SolveReport? {

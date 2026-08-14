@@ -22,6 +22,7 @@
 #include "calib/lut_fit.h"
 #include "common/log.h"
 #include "final/colmap_export.h"
+#include "final/final_readiness.h"
 #include "final/image_report.h"
 #include "final/level.h"
 #include "final/model_split.h"
@@ -1670,6 +1671,109 @@ FinalOutcome RunFinalSolve(const EngineConfig& config,
             ? 0.0f
             : static_cast<float>(track_len_sum / model.points.size());
 
+    // Splat readiness, recomputed from the FINAL reconstruction.
+    //
+    // PatchGrid scores a LiveMap, so this assembles one from the solve's own
+    // frames and tracks rather than growing a second scoring implementation
+    // that would drift from the live one. What the user sees while walking
+    // comes from the approximate live map and answers "is this room worth
+    // more of your time"; this answers "is the data you are about to spend
+    // GPU hours on any good", from globally adjusted geometry with the
+    // outliers already pruned.
+    ReadinessReport readiness;
+    {
+      LiveMap scored;
+      std::unordered_map<int, uint32_t> kf_of_frame;
+      for (size_t i = 0; i < frames.size(); ++i) {
+        const FrameData& f = frames[i];
+        if (!f.posed) continue;
+        Keyframe kf;
+        kf.frame_id = f.frame_id;
+        kf.pose = f.pose;
+        kf.K = f.K;
+        kf.features = f.features;      // descriptors already released
+        kf.undistorted = f.undistorted;
+        kf.depth = f.depth;            // drives the LiDAR-coverage axis
+        kf.depth_lookup = f.lookup;
+        kf.point_ids.assign(f.features.keypoints.size(), -1);
+        kf_of_frame[static_cast<int>(i)] = scored.AddKeyframe(std::move(kf)).kf_id;
+      }
+      for (const auto& track : tracks) {
+        if (track.dead || !track.has_point) continue;
+        MapPoint mp;
+        mp.X = track.X;
+        mp.mean_gradient = track.mean_gradient;
+        mp.max_tri_angle_deg = static_cast<float>(track.max_angle_deg);
+        mp.last_reproj_err_px = static_cast<float>(track.mean_err_px);
+        int rgb_sum[3] = {0, 0, 0};
+        int rgb_n = 0;
+        for (const auto& obs : track.observations) {
+          const auto at = kf_of_frame.find(obs.frame_index);
+          if (at == kf_of_frame.end()) continue;   // frame never registered
+          mp.observations.emplace_back(at->second, obs.feature);
+          const FrameData& f = frames[obs.frame_index];
+          for (int c = 0; c < 3; ++c) rgb_sum[c] += f.colors[obs.feature][c];
+          ++rgb_n;
+        }
+        if (mp.observations.size() < 2) continue;
+        for (int c = 0; c < 3; ++c) {
+          mp.rgb[c] = static_cast<uint8_t>(rgb_sum[c] / std::max(1, rgb_n));
+        }
+        const int32_t id = scored.AddPoint(std::move(mp)).id;
+        // Back-link so covisibility (and therefore the room split) sees the
+        // same associations the solve ended with.
+        for (const auto& obs : track.observations) {
+          const auto at = kf_of_frame.find(obs.frame_index);
+          if (at == kf_of_frame.end()) continue;
+          if (Keyframe* kf = scored.FindKeyframe(at->second)) {
+            if (obs.feature >= 0 &&
+                obs.feature < static_cast<int>(kf->point_ids.size())) {
+              kf->point_ids[obs.feature] = id;
+            }
+          }
+        }
+      }
+
+      if (!scored.points().empty()) {
+        PatchGrid grid;
+        grid.Build(scored);
+        readiness.present = true;
+        readiness.overall = grid.OverallScore();
+        for (int a = 0; a < 5; ++a) readiness.overall_sub[a] = grid.SubScore(a);
+
+        // Region bounds come from the patches, which is the only place they
+        // exist after a solve — and what a rescan of a room would need.
+        std::map<uint32_t, RegionReport> by_region;
+        for (const auto& [key, patch] : grid.patches()) {
+          RegionReport& r = by_region[patch.region_id];
+          if (r.id == 0) {
+            r.id = patch.region_id;
+            for (int c = 0; c < 3; ++c) {
+              r.min[c] = r.max[c] = patch.centroid[c];
+            }
+          }
+          for (int c = 0; c < 3; ++c) {
+            r.min[c] = std::min(r.min[c], patch.centroid[c]);
+            r.max[c] = std::max(r.max[c], patch.centroid[c]);
+          }
+        }
+        for (const auto& aggregate : grid.regions()) {
+          RegionReport& r = by_region[aggregate.id];
+          r.id = aggregate.id;
+          r.name = "Room " + std::to_string(aggregate.id);
+          r.score = aggregate.score;
+          for (int a = 0; a < 5; ++a) r.sub[a] = aggregate.sub[a];
+          r.area_m2 = aggregate.area_m2;
+          r.patch_count = aggregate.patch_count;
+          r.weak_area_count = aggregate.weak_area_count;
+          r.worst_deficiency = aggregate.worst_deficiency;
+        }
+        for (auto& [id, r] : by_region) readiness.regions.push_back(r);
+        BS_LOGI("final", "readiness: %.0f%% overall across %zu regions",
+                readiness.overall, readiness.regions.size());
+      }
+    }
+
     // Per-image accounting. Aggregate metrics can say a reconstruction is
     // healthy while a handful of smeared or blown-out frames put a soft
     // patch on one wall, and until now nothing told the user which frames
@@ -1749,6 +1853,7 @@ FinalOutcome RunFinalSolve(const EngineConfig& config,
                << leveling.camera_height_spread_m << ",\n"
                << "  \"walls_squared\": "
                << (leveling.walls_squared ? "true" : "false") << ",\n"
+               << ReadinessReportJson(readiness)
                << ImageReportJson(image_report)
                << "  \"preset\": \"" << (fast ? "fast" : "quality") << "\"\n"
                << "}\n";

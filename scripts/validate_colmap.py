@@ -203,6 +203,40 @@ def main() -> int:
                 print(f"ERROR: {entry['name']} unplaced but not flagged",
                       file=sys.stderr)
                 return 1
+        # Readiness is recomputed from the FINAL model, so it must at least
+        # describe the same reconstruction: regions covering real patches,
+        # scores in range, and bounds that are not inverted.
+        readiness = report.get("readiness")
+        if not isinstance(readiness, dict):
+            print("ERROR: report.json missing readiness", file=sys.stderr)
+            return 1
+        if not readiness.get("present"):
+            print("ERROR: readiness absent on a 60/60 solve", file=sys.stderr)
+            return 1
+        if not 0 <= readiness.get("overall", -1) <= 100:
+            print(f"ERROR: readiness overall out of range: "
+                  f"{readiness.get('overall')}", file=sys.stderr)
+            return 1
+        regions = readiness.get("regions") or []
+        if not regions:
+            print("ERROR: readiness has no regions", file=sys.stderr)
+            return 1
+        for reg in regions:
+            if not 0 <= reg.get("score", -1) <= 100:
+                print(f"ERROR: region score out of range: {reg}",
+                      file=sys.stderr)
+                return 1
+            if reg.get("patches", 0) <= 0:
+                print(f"ERROR: region with no patches: {reg}", file=sys.stderr)
+                return 1
+            lo, hi = reg.get("min"), reg.get("max")
+            if not lo or not hi or any(h < l for l, h in zip(lo, hi)):
+                print(f"ERROR: region bounds inverted: {reg}", file=sys.stderr)
+                return 1
+        print(f"readiness: {readiness['overall']:.0f}% overall, "
+              f"{len(regions)} region(s), "
+              f"weakest axis {min(range(5), key=lambda i: readiness['overall_sub'][i])}")
+
         print(f"report.json: {len(images)} images, "
               f"{flags.get('blurry')} blurry, {flags.get('overexposed')} "
               f"overexposed, {flags.get('unregistered')} unplaced")

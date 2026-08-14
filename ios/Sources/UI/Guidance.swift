@@ -59,6 +59,54 @@ enum MoveBearing: String {
     }
 }
 
+/// Where to go to get tracking back.
+///
+/// "Tracking lost — return to a mapped area" is close to useless on its own:
+/// the one thing the person does not know is where the mapped area is. The
+/// engine does, and puts it in `guide_dir` in camera coordinates, so it can
+/// be drawn as an arrow with no pose needed — which matters because when
+/// tracking is lost there is no valid pose to resolve a world vector against.
+struct RecoveryHint: Equatable {
+    /// Screen-space rotation for an arrow, radians clockwise from "up".
+    let arrowAngle: Double
+    let distanceM: Double
+    let bearing: MoveBearing
+    /// Set when the target sits behind the user, where an on-screen arrow is
+    /// a poor way to say "turn round".
+    let isBehind: Bool
+
+    init?(status: bs_live_status) {
+        guard status.guidance == Int32(BS_GUIDE_TRACKING_LOST.rawValue),
+              status.guide_dist_m > 0 else { return nil }
+        let x = Double(status.guide_dir.0)
+        let y = Double(status.guide_dir.1)
+        let z = Double(status.guide_dir.2)
+
+        distanceM = Double(status.guide_dist_m)
+        // Camera frame: +x right, +y down, +z forward. On screen the arrow
+        // lies in the x/y plane; atan2(x, -y) puts 0 at straight up and
+        // increases clockwise, which is how a rotation modifier reads it.
+        arrowAngle = atan2(x, -y)
+        isBehind = z < 0
+        if abs(x) >= abs(z) {
+            bearing = x >= 0 ? .right : .left
+        } else {
+            bearing = z >= 0 ? .forward : .back
+        }
+    }
+
+    /// One line, phrased for someone who is stuck and wants to be unstuck.
+    var text: String {
+        let feet = max(1, Int((distanceM * 3.28).rounded()))
+        if isBehind {
+            return "Lost track — turn around. The scanned area is about "
+                 + "\(feet) ft behind you."
+        }
+        return "Lost track — head \(bearing.rawValue), about \(feet) ft, to "
+             + "where you have already scanned."
+    }
+}
+
 /// What to tell the user about one weak area.
 ///
 /// Every string here is an instruction for a body, not a description of a

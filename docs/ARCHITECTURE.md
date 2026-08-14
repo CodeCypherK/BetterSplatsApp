@@ -106,9 +106,33 @@ keyframes, local-BA residuals, tracking health), **Texture** (gradient
 energy, pixels-per-cm), **LiDAR coverage** (sample density × confidence),
 **View overlap** (angular sector coverage, baseline/distance ratio).
 Patches cluster into regions ("Room 1…") via the keyframe covisibility
-graph; weak clusters generate ranked, directional guidance ("Back wall —
-insufficient visual geometry. Move 1–2 ft left and capture again."). The
+graph; weak clusters generate ranked, directional guidance. The
 final report (`final/report.json`) recomputes everything from FINAL data.
+
+Guidance is generated as a code plus numbers and worded in Swift, never as
+engine-side prose. Two rules keep it usable rather than merely correct:
+
+**Every distance and direction is relative to the user.** The grid works in
+the session's world frame, whose origin is wherever the first keyframe
+landed, so a raw centroid length printed as "3.2 m away" means 3.2 m from
+where the session *started* — which is not how anyone reads it. Spatial
+wording goes through the live pose (`ViewerPose`), and when there is no pose
+the distance is omitted rather than guessed: a number from the wrong origin
+is worse than no number.
+
+**TRACKING LOST carries a vector.** The one thing a lost user does not know
+is where the map is, and it is the one thing the engine knows exactly.
+`guide_dir` is the direction to the nearest keyframe in **camera**
+coordinates — camera, not world, precisely because `pose_valid` is 0 when
+lost, so a world vector would have nothing to resolve against. Nearest
+rather than most recent: someone who walked into an unmapped corner should
+be sent to the closest mapped place, which may be behind them rather than
+back along the path they took. Standing on top of a keyframe and still lost
+means the camera is pointed wrong, not the feet, so no arrow is emitted at
+all below 0.35 m. `GuideToNearestKeyframe` is a free function so the sign
+and frame conventions are unit-tested against hand-placed keyframes — an
+arrow that confidently points the wrong way walks the user *away* from the
+map while telling them they are going back to it.
 
 ## Multi-component recovery (S7b)
 

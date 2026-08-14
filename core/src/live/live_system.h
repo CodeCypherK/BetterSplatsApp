@@ -41,6 +41,25 @@ struct PoseLogEntry {
 // mapping with LiDAR-regularized local BA. Single-threaded internally —
 // the engine wraps it in a worker thread with a drop-oldest mailbox (live
 // processing is lossy by design; RAW storage never routes through here).
+// Direction from a pose toward the nearest mapped keyframe, in that pose's
+// own CAMERA coordinates (+x right, +y down, +z forward).
+//
+// Free function rather than a LiveSystem method so the geometry can be
+// tested against hand-placed keyframes. Sign and frame conventions here are
+// exactly the kind that come out backwards and still look plausible on a
+// device, and an arrow that confidently points the wrong way is worse than
+// no arrow at all.
+struct GuideVector {
+  bool valid = false;
+  Eigen::Vector3d dir_camera = Eigen::Vector3d::Zero();
+  double distance_m = 0;
+  uint32_t kf_id = 0;
+};
+
+GuideVector GuideToNearestKeyframe(const SE3& from_pose,
+                                   const std::deque<Keyframe>& keyframes,
+                                   double min_distance_m = 0.35);
+
 class LiveSystem {
  public:
   explicit LiveSystem(const EngineConfig& config);
@@ -63,6 +82,7 @@ class LiveSystem {
   bs_live_state Feed(const LiveFrameInput& input);
 
   void FillStatus(bs_live_status& out) const;
+  void FillGuideVector(bs_live_status& out) const;
   void FillSnapshot(std::vector<bs_snap_point>& points,
                     std::vector<bs_snap_camera>& cameras) const;
 

@@ -94,6 +94,7 @@ void PatchGrid::Build(const LiveMap& map) {
   if (map.points().empty()) return;
 
   const std::map<uint32_t, uint32_t> region_of_kf = ClusterRegions(map);
+  region_of_kf_ = region_of_kf;
 
   has_lidar_ = false;
   for (const auto& kf : map.keyframes()) {

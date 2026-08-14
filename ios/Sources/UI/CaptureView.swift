@@ -19,6 +19,10 @@ struct CaptureView: View {
             }
             .padding()
 
+            if let recovery = model.recovery {
+                recoveryArrow(recovery)
+            }
+
             if let phase = model.floorPhase {
                 floorCalibrationPrompt(phase)
             }
@@ -181,6 +185,40 @@ struct CaptureView: View {
         }
         .transition(.opacity)
         .animation(.easeInOut(duration: 0.2), value: model.floorPhase)
+    }
+
+    /// A big arrow pointing at the nearest mapped place, centred over the
+    /// preview.
+    ///
+    /// This is deliberately the loudest thing on the screen. Lost tracking is
+    /// the one state where the user cannot make progress by carrying on, and
+    /// every second spent lost is frames that do not reach the
+    /// reconstruction — so it is worth interrupting for, unlike the advisory
+    /// guidance in the pill.
+    @ViewBuilder
+    private func recoveryArrow(_ recovery: RecoveryHint) -> some View {
+        VStack(spacing: 14) {
+            // Behind the user, an on-screen arrow is the wrong instrument —
+            // pointing at the bottom edge of the phone does not read as "turn
+            // round". Say it instead.
+            if recovery.isBehind {
+                Image(systemName: "arrow.uturn.backward")
+                    .font(.system(size: 64, weight: .bold))
+            } else {
+                Image(systemName: "arrow.up")
+                    .font(.system(size: 72, weight: .bold))
+                    .rotationEffect(.radians(recovery.arrowAngle))
+            }
+            Text(String(format: "%.1f m", recovery.distanceM))
+                .font(.title3.weight(.semibold).monospacedDigit())
+        }
+        .foregroundStyle(.orange)
+        .shadow(radius: 6)
+        .padding(28)
+        .background(.ultraThinMaterial, in: Circle())
+        .transition(.scale.combined(with: .opacity))
+        .animation(.easeInOut(duration: 0.2), value: recovery)
+        .allowsHitTesting(false)
     }
 
     private var statusPill: some View {

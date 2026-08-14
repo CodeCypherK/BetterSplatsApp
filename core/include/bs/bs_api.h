@@ -162,8 +162,21 @@ typedef struct bs_live_status {
   double t[3];
   int32_t pose_valid;
 
-  /* Guidance for the status pill. params depend on the code:
-   * MOVE_SIDEWAYS: dir = suggested world-space move direction, dist meters.*/
+  /* Guidance for the status pill.
+   *
+   * guide_dir is a unit vector in CAMERA coordinates (+x right, +y down,
+   * +z forward), not world coordinates. That is deliberate: the code that
+   * needs a direction most is TRACKING_LOST, and when tracking is lost
+   * pose_valid is 0, so a world-space vector would have nothing to resolve
+   * against. Camera-relative is renderable as an arrow with no extra
+   * information, and it is what "go left" means to the person holding the
+   * phone.
+   *
+   * When lost, the frame is the LAST TRACKED pose rather than the current
+   * one, which is the best estimate available and is close to right as long
+   * as the user has not walked far since. guide_dist_m and guide_region_id
+   * describe the place being pointed at. All three are zero when the code
+   * carries no direction. */
   int32_t guidance;           /* bs_guidance                               */
   float   guide_dir[3];
   float   guide_dist_m;

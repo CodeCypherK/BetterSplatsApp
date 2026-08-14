@@ -266,6 +266,10 @@ final class CaptureViewModel {
     /// distance from the user while being nothing of the kind.
     private(set) var viewer: ViewerPose?
 
+    /// Set only while tracking is lost and the engine knows which way the
+    /// map is. Drives the recovery arrow.
+    private(set) var recovery: RecoveryHint?
+
     var isScouting: Bool { state == .scouting }
 
     private let floorCalibrator = FloorCalibrator()
@@ -458,10 +462,15 @@ final class CaptureViewModel {
                 else { continue }
                 let status = CoreEngine.shared.livePollStatus()
                 self.viewer = ViewerPose(status: status)
+                self.recovery = RecoveryHint(status: status)
                 self.framesSeen = status.frames_fed
-                self.guidance = self.isScouting
-                    ? Self.scoutGuidanceText(for: status)
-                    : Self.guidanceText(for: status)
+                // The recovery hint is a better version of the same message,
+                // so it replaces the generic pill rather than sitting beside
+                // it repeating itself.
+                self.guidance = self.recovery?.text
+                    ?? (self.isScouting
+                        ? Self.scoutGuidanceText(for: status)
+                        : Self.guidanceText(for: status))
                 if self.isScouting { self.scaffoldKeyframes = status.keyframes }
                 self.readinessOverall = status.readiness_overall
                 self.framesStored = await context.store.storedFrames

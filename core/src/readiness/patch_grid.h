@@ -126,6 +126,15 @@ class PatchGrid {
   float SubScore(int axis) const { return overall_sub_[axis]; }
   double PatchArea() const;
 
+  // Which room a keyframe belongs to, or 0 when it has not been clustered
+  // (no Build yet, or a keyframe added since the last one). Lets guidance
+  // name the place it is pointing at — "back toward Room 1" rather than an
+  // unlabelled arrow.
+  uint32_t RegionOfKeyframe(uint32_t kf_id) const {
+    const auto it = region_of_kf_.find(kf_id);
+    return it == region_of_kf_.end() ? 0 : it->second;
+  }
+
   // `names`: user renames per region id; unmatched ids get "Room N".
   void FillSnapshot(std::vector<bs_snap_patch>& patches,
                     std::vector<bs_snap_region>& regions,
@@ -154,6 +163,7 @@ class PatchGrid {
   std::vector<WeakArea> weak_areas_;
   std::vector<RegionAggregate> regions_;
   std::map<uint32_t, RegionFrame> region_frames_;
+  std::map<uint32_t, uint32_t> region_of_kf_;
   float overall_ = 0;
   float overall_sub_[5] = {0, 0, 0, 0, 0};
   // False when no keyframe carries depth (LiDAR-less map): the lidar axis

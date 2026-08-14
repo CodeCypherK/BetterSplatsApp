@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 
 #include <opencv2/calib3d.hpp>
 #include <opencv2/imgproc.hpp>
@@ -979,6 +980,70 @@ void LiveSystem::FillStatus(bs_live_status& out) const {
     out.t[1] = last_pose_.t.y();
     out.t[2] = last_pose_.t.z();
   }
+  FillGuideVector(out);
+}
+
+GuideVector GuideToNearestKeyframe(const SE3& from_pose,
+                                   const std::deque<Keyframe>& keyframes,
+                                   double min_distance_m) {
+  GuideVector out;
+  // Aim at the NEAREST keyframe, not the most recent. Someone who walked
+  // into an unmapped corner should be sent to whichever mapped place is
+  // closest, which may well be behind them rather than back along the path
+  // they took to get there.
+  const Eigen::Vector3d here = from_pose.CameraCenter();
+  const Keyframe* nearest = nullptr;
+  double best_sq = std::numeric_limits<double>::max();
+  for (const auto& kf : keyframes) {
+    const double d_sq = (kf.pose.CameraCenter() - here).squaredNorm();
+    if (d_sq < best_sq) {
+      best_sq = d_sq;
+      nearest = &kf;
+    }
+  }
+  if (nearest == nullptr) return out;
+
+  const Eigen::Vector3d to_target = nearest->pose.CameraCenter() - here;
+  const double distance = to_target.norm();
+  // Standing essentially on top of a keyframe and still lost means the
+  // problem is which way the camera is POINTING, not where the user is
+  // standing. An arrow would send them away from the very place they need to
+  // be looking at, so say nothing and let the wording carry it.
+  if (distance < min_distance_m) return out;
+
+  out.valid = true;
+  // World -> camera is a rotation by q, so this lands in camera coordinates:
+  // +x the user's right, +y down, +z where the camera is pointed.
+  out.dir_camera = from_pose.q * to_target.normalized();
+  out.distance_m = distance;
+  out.kf_id = nearest->kf_id;
+  return out;
+}
+
+// Where to send the user, as a direction they can act on.
+//
+// "Tracking lost — return to a mapped area" is close to useless on its own:
+// the one thing the person does not know is where the mapped area IS, and it
+// is the one thing the engine knows exactly. Every recovered frame is a
+// frame that stays in the reconstruction, so this is a data-quality fix as
+// much as a wording one.
+void LiveSystem::FillGuideVector(bs_live_status& out) const {
+  out.guide_dir[0] = out.guide_dir[1] = out.guide_dir[2] = 0.0f;
+  out.guide_dist_m = 0.0f;
+  out.guide_region_id = 0;
+  if (guidance_ != BS_GUIDE_TRACKING_LOST) return;
+
+  // The last tracked pose is the best estimate of where the user is: they
+  // lost tracking a moment ago and have not usually gone far since.
+  const GuideVector guide =
+      GuideToNearestKeyframe(last_pose_, map_.keyframes());
+  if (!guide.valid) return;
+
+  out.guide_dir[0] = static_cast<float>(guide.dir_camera.x());
+  out.guide_dir[1] = static_cast<float>(guide.dir_camera.y());
+  out.guide_dir[2] = static_cast<float>(guide.dir_camera.z());
+  out.guide_dist_m = static_cast<float>(guide.distance_m);
+  out.guide_region_id = readiness_.RegionOfKeyframe(guide.kf_id);
 }
 
 void LiveSystem::FillSnapshot(std::vector<bs_snap_point>& points,

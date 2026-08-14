@@ -174,6 +174,17 @@ These cannot be settled on synthetic data. Each names what to look for.
 
 Newest first. One line per session: what changed, what it measured.
 
+- **TRACKING LOST now says which way the map is.** `guide_dir`,
+  `guide_dist_m` and `guide_region_id` had existed in `bs_api.h` since M4
+  and nothing had ever written or read them, so the pill said "return to a
+  mapped area" — the one fact the user is missing — while the engine held
+  the answer. Direction to the nearest keyframe, in camera coordinates so it
+  needs no valid pose, drawn as an arrow. Nearest rather than most recent,
+  and suppressed under 0.35 m where the problem is aim rather than
+  position. Seven sign-and-frame tests; the first version of one of them had
+  the rotation backwards, which is the whole reason the geometry is a free
+  function instead of a method.
+
 - **`bs_replay --live` cannot validate live tracking on a real device
   session, and now we know by how much.** `--decimate N` feeds every Nth
   frame; at the ~3 fps a device stores, the live pipeline tracks 34.5% of

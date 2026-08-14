@@ -126,13 +126,22 @@ non-expert to that data on the first try.
       the scout gate; wants one more look at whether anything else reads
       scout frames first.
 
-- [ ] **Why does 1/2 decimation track BETTER than full rate?** 30 fps ->
-      15 fps took scout 85.9% -> 99.4% and capture 75.4% -> 83.0%, which is
-      the opposite of the trend either side of it (6 fps and 3 fps both
-      collapse). Possibly 3.4 cm between frames is too little baseline to be
-      worth the work; possibly specific to this trajectory. **Do not halve
-      the device feed rate on the strength of this** — find the mechanism
-      first. If it is real it is free accuracy and battery.
+- [x] ~~**Why does 1/2 decimation track BETTER than full rate?**~~
+      **It does not, reliably. Closed — do not halve the device feed rate.**
+      Seed 7 showed scout 85.9% -> 99.4% and capture 75.4% -> 83.0% at half
+      rate. Seed 11 does not reproduce it:
+
+      | | seed 7 | seed 11 |
+      |---|---|---|
+      | scout tracked, 1/1 -> 1/2 | 85.9% -> 99.4% | 85.9% -> **94.4%** |
+      | capture tracked, 1/1 -> 1/2 | 75.4% -> 83.0% | 74.8% -> **74.5%** |
+      | scout rigid ATE, 1/1 -> 1/2 | 0.024 -> 0.018 | 0.022 -> **0.045** |
+      | capture rigid ATE, 1/1 -> 1/2 | 0.035 -> 0.064 | 0.044 -> **0.024** |
+
+      The capture-pass gain was seed-specific and vanishes; the scout gain
+      reproduces in direction but half the size, and seed 11's scout ATE gets
+      **worse**. Every column disagrees with its neighbour. This was one
+      trajectory's luck, and refusing to act on a single seed was correct.
 - [ ] **Two-room walkthrough as a CI gate.** Blocked on render cost
       (~2377 frames at walking pace ≈ 13 min to generate, ~7 min to replay).
       Consider a shorter realistic path, or a cached fixture committed to

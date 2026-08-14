@@ -17,15 +17,22 @@ session_<yyyyMMdd-HHmmss>_<6hex>/
 │   │   └── meta.json     RAW   per-frame metadata, schema below
 │   └── ...
 ├── live/                 LIVE  engine-owned, disposable
-│   └── poses.jsonl       one JSON object per processed frame (live pose);
-│                         the final solve's only live input (init hint)
+│   ├── poses.jsonl       one JSON object per processed frame (live pose);
+│   │                     the final solve's only live input (init hint)
+│   ├── poses_scout.jsonl same, for the scout circuit — separate so the
+│   │                     capture pass does not erase the scout's evidence
+│   ├── map.bin           scout scaffold: the circuit's keyframes + points,
+│   │                     loaded by this session's capture pass
+│   ├── map_end.bin       map at the end of the capture pass, loaded by the
+│   │                     NEXT capture in the project (see Project chains)
+│   └── ate_*.csv         per-frame error vs ground truth (synth only)
 └── final/                FINAL engine-owned, rebuilt from RAW at will
     ├── cache/            resume cache — safe to delete, keyed by manifest
     │   ├── manifest.txt  config+frame-list hash; mismatch wipes the cache
     │   ├── feat_NNNNNN.bin   per-frame features (keypoints, descriptors,
     │   │                     undistorted coords, colors, gradients)
     │   └── matches.bin   verified pair matches for the whole session
-    ├── report.json       readiness + solve quality report
+    ├── report.json       solve quality + per-image table and flags
     ├── transforms.json   nerfstudio/instant-ngp poses+intrinsics (gsplat-ready)
     ├── dense.ply         fused LiDAR cloud (final poses only)
     └── colmap/
@@ -143,9 +150,64 @@ to discard captured data.
   "frame_count": 412,                          // stored frames
   "keyframe_ids": [1, 9, 15, ...],
   "regions": [ { "id": 1, "name": "Room 1", "renamed": false } ],
+
+  // The floor as the depth sensor measured it while the user aimed at it,
+  // in that FRAME'S CAMERA coordinates — never world. The solve derives the
+  // world plane from that frame's final pose; a world plane written here
+  // would bake in whatever the live tracker believed at capture time.
+  // Absent when the user skipped the step or the fit never converged.
+  "floor_calibration": {
+    "frame_id": 7, "normal": [0.01, -0.999, 0.02], "offset_m": 1.496,
+    "rmse_m": 0.011, "incidence_deg": 12.4, "inliers": 17204
+  },
+
+  // --- project (a space captured over several sittings) ---
+  // Stable across the whole chain; groups captures into one reopenable
+  // thing. Absent in captures written before projects existed, which read
+  // as standalone.
+  "project_id": "proj_9f2a41c7",
+  "project_name": "Oak Street house",
+  // The sibling capture this one continues, by DIRECTORY NAME, not path —
+  // a path would not survive the project being zipped here and unzipped
+  // somewhere else. Empty for the first capture in a project.
+  // Frame ids continue across the chain rather than restarting, so ids are
+  // unique project-wide; a duplicate makes the reader refuse the chain.
+  "parent_session": "session_20260809-141002_77bd0e",
+  // World volumes this capture RE-COVERED, superseding what earlier
+  // captures in the project recorded there. Axis-aligned, in the project's
+  // shared world frame. Only ever applies to captures EARLIER in the chain.
+  // The superseded frames are NOT deleted or modified — the final solve
+  // declines to reconstruct from them, so removing a volume restores them.
+  "supersedes": [
+    { "min": [-2.1, -0.5, -3.0], "max": [4.4, 2.6, 5.2], "label": "Kitchen" }
+  ],
   "app_version": "0.1.0"
 }
 ```
+
+### Project chains
+
+A space bigger than one capture is a **chain**: sessions sharing a
+`project_id`, linked oldest-to-newest by `parent_session`, all in one world
+frame. The reader resolves a chain transparently — `frame_ids()` spans it and
+every accessor resolves an id to whichever session holds it — so the final
+solve reconstructs across a chain without knowing chains exist.
+
+Rules the reader enforces, each guarding a silent corruption rather than a
+crash:
+
+| condition | behaviour |
+|---|---|
+| duplicate frame id across two sessions | chain refused to open |
+| `parent_session` cycles or self-references | walk terminates, bounded |
+| `parent_session` names a missing session | reconstructs what is present, warns |
+| inverted/degenerate `supersedes` box | dropped at parse |
+
+A capture pass also writes `live/map_end.bin`, which the NEXT capture in the
+chain loads to inherit the world frame. It is deliberately not `map.bin`
+(the scout scaffold): overwriting that would make a re-run of a capture pass
+start from the previous run's result, so the same session would replay
+differently every time.
 
 `bs_synth` writes the same schema with `device.model = "synthetic"` plus an
 extra RAW-adjacent `ground_truth/` directory (poses + points) that only tests

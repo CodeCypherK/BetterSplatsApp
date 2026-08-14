@@ -214,6 +214,16 @@ These cannot be settled on synthetic data. Each names what to look for.
 
 Newest first. One line per session: what changed, what it measured.
 
+- **Gap-closing pass.** `docs/FORMATS.md` calls itself normative and was
+  missing five keys that already ship — `floor_calibration`, `project_id`,
+  `project_name`, `parent_session`, `supersedes` — plus everything in
+  `live/` beyond `poses.jsonl`. Documented, with the chain rules and what
+  each malformed case does. Also fixed the Swift 6 isolation violations in
+  `SessionStore` (they are warnings today, errors under Swift 6): `UIDevice`
+  is MainActor-isolated and an actor's init is not, so the OS version is now
+  passed in; and the isolated `writeSessionJson()` was being called from
+  that init, so the write path is static.
+
 - **Project board, and the rescan loop closed.** Create a project, reopen it,
   capture another room, re-export, redo a room. The chaining and supersession
   built earlier were unreachable until now: every capture numbered frames

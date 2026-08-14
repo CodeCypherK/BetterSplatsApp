@@ -1,7 +1,6 @@
 import AVFoundation
 import CoreImage
 import Foundation
-import UIKit
 
 /// RAW-layer writer: owns a session directory under Documents and writes the
 /// immutable per-frame files (image.jpg, lidar.depth, meta.json) plus
@@ -54,7 +53,11 @@ actor SessionStore {
     /// `continuing` links this capture to an existing project: it inherits
     /// the project's identity and names its predecessor, so the engine loads
     /// that capture's map and both share one world frame.
+    /// `osVersion` is passed in rather than read here: UIDevice is
+    /// MainActor-isolated and an actor's init is not, which is a warning
+    /// today and an error under Swift 6.
     init(videoW: Int, videoH: Int, depthW: Int, depthH: Int, fps: Int,
+         osVersion: String,
          continuing: ProjectStore.Project? = nil,
          newProjectName: String? = nil) throws {
         let id = Self.makeSessionId()
@@ -78,7 +81,7 @@ actor SessionStore {
             endUtc: nil,
             device: .init(
                 model: Self.deviceModelIdentifier(),
-                ios: UIDevice.current.systemVersion),
+                ios: osVersion),
             video: .init(w: videoW, h: videoH, fps: fps, pixelFormat: "420f"),
             depth: .init(w: depthW, h: depthH, format: "hdep", filtering: false),
             // Lock flags are provisional here — the real state is recorded at
@@ -100,7 +103,8 @@ actor SessionStore {
         // from COLMAP image ids to the exported filenames, would otherwise
         // describe the wrong picture.
         firstFrameId = (continuing?.lastFrameId ?? 0) + 1
-        try writeSessionJson()
+        try Self.writeSessionDoc(sessionDoc, encoder: encoder,
+                                 to: directory)
     }
 
     /// Records the session camera model from the first frame's calibration:
@@ -133,7 +137,7 @@ actor SessionStore {
                     Double(calibration.lensDistortionCenter.y),
                 ]))
         let data = try encoder.encode(doc)
-        try write(data, to: directory.appendingPathComponent("calibration.json"))
+        try Self.write(data, to: directory.appendingPathComponent("calibration.json"))
     }
 
     /// Appends one immutable frame. Fails rather than overwrites.
@@ -147,7 +151,7 @@ actor SessionStore {
         }
         try fm.createDirectory(at: frameDir, withIntermediateDirectories: true)
 
-        try write(payload.jpeg, to: frameDir.appendingPathComponent("image.jpg"))
+        try Self.write(payload.jpeg, to: frameDir.appendingPathComponent("image.jpg"))
 
         var encodedLen = 0
         let encoded = payload.depthF16.withUnsafeBufferPointer { buf in
@@ -157,12 +161,12 @@ actor SessionStore {
         }
         guard let encoded else { throw StoreError.depthEncodeFailed }
         defer { bs_buffer_release(encoded) }
-        try write(
+        try Self.write(
             Data(bytes: encoded, count: encodedLen),
             to: frameDir.appendingPathComponent("lidar.depth"))
 
         let metaData = try encoder.encode(payload.meta)
-        try write(metaData, to: frameDir.appendingPathComponent("meta.json"))
+        try Self.write(metaData, to: frameDir.appendingPathComponent("meta.json"))
 
         frameCount += 1
         bytesWritten += Int64(payload.jpeg.count + encodedLen + metaData.count)
@@ -228,11 +232,20 @@ actor SessionStore {
     var storedBytes: Int64 { bytesWritten }
 
     private func writeSessionJson() throws {
-        let data = try encoder.encode(sessionDoc)
-        try write(data, to: directory.appendingPathComponent("session.json"))
+        try Self.writeSessionDoc(sessionDoc, encoder: encoder, to: directory)
     }
 
-    private func write(_ data: Data, to url: URL) throws {
+    /// Static so the actor's (nonisolated) init can call it. Calling the
+    /// isolated instance method from init is a warning today and an error
+    /// under Swift 6.
+    private static func writeSessionDoc(_ doc: SessionJSON,
+                                        encoder: JSONEncoder,
+                                        to directory: URL) throws {
+        let data = try encoder.encode(doc)
+        try Self.write(data, to: directory.appendingPathComponent("session.json"))
+    }
+
+    private static func write(_ data: Data, to url: URL) throws {
         do {
             try data.write(to: url, options: .atomic)
         } catch {

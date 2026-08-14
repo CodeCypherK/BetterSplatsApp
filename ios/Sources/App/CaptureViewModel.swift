@@ -1,5 +1,6 @@
 import AVFoundation
 import Foundation
+import UIKit
 import Observation
 import simd
 
@@ -413,6 +414,7 @@ final class CaptureViewModel {
                 depthW: manager.depthDimensions.width,
                 depthH: manager.depthDimensions.height,
                 fps: 30,
+                osVersion: UIDevice.current.systemVersion,
                 continuing: continuingProject,
                 newProjectName: newProjectName)
         } catch {

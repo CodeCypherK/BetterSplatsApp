@@ -28,7 +28,7 @@ struct ProjectsView: View {
 
             ForEach(projects) { project in
                 NavigationLink {
-                    ProjectDetailView(project: project, onChange: reload)
+                    ProjectDetailView(project: project)
                 } label: {
                     projectRow(project)
                 }
@@ -123,7 +123,6 @@ struct ProjectsView: View {
 /// capture more, re-export, or redo a room.
 struct ProjectDetailView: View {
     let project: ProjectStore.Project
-    var onChange: () -> Void
 
     @State private var reloaded: ProjectStore.Project?
 

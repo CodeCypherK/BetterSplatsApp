@@ -196,6 +196,14 @@ These cannot be settled on synthetic data. Each names what to look for.
 
 ## Ideas (unranked, unvalidated)
 
+- **Restore user region names when a project is reopened.** Renames are now
+  PERSISTED to session.json (they used to die with the session), but nothing
+  reads them back into the engine. Naive restore-by-id is wrong: region ids
+  are derived fresh from the covisibility graph each session, so region 1 in
+  one capture is not region 1 in the next. Needs region identity that is
+  stable across captures — probably spatial (the readiness bounds now in
+  report.json would do it) rather than ordinal.
+
 
 - Exposure/white-balance normalization across frames before the final solve.
 - Per-session depth-vs-triangulation affine correction (risk 6 in the plan).
@@ -208,6 +216,17 @@ These cannot be settled on synthetic data. Each names what to look for.
 ## Log
 
 Newest first. One line per session: what changed, what it measured.
+
+- **Two fields in session.json that lied.** `keyframe_ids` was empty in
+  every device session ever captured — the app polls `bs_live_status`, which
+  DRAINS the engine's storage directives, and threw them away. Now drained
+  and recorded at finalize (the keyframe decision comes after the frame is
+  written, so meta.json cannot carry it). And `regions` was a hardcoded
+  `[{id: 1, name: "Room 1"}]` claiming a region existed before anything was
+  mapped, while actual user renames went only to the engine's in-memory map
+  and died with the session — though FORMATS.md documents them as
+  persisted. Renames now reach session.json; reading them BACK is a separate
+  problem, recorded in Ideas.
 
 - **Readiness recomputed from the FINAL solve** — the last named gap.
   PatchGrid scores a LiveMap, so the solve assembles one from its own

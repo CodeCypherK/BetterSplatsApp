@@ -90,7 +90,12 @@ actor SessionStore {
                            gdcDisabled: true, stabilization: "off"),
             frameCount: 0,
             keyframeIds: [],
-            regions: [RegionJSON(id: 1, name: "Room 1", renamed: false)],
+            // Empty, not a seeded "Room 1". Regions are discovered by the
+            // engine from the covisibility graph; this list records the names
+            // the USER gave them, and claiming one exists before anything has
+            // been mapped is a small lie in a file that is meant to be the
+            // record of what happened.
+            regions: [],
             projectId: continuing?.id ?? Self.makeProjectId(),
             projectName: continuing?.name ?? (newProjectName ?? "Untitled"),
             parentSession: continuing?.latestSessionName ?? "",
@@ -205,6 +210,36 @@ actor SessionStore {
     }
 
     var hasFloorCalibration: Bool { sessionDoc.floorCalibration != nil }
+
+    /// Records that the engine keyframed these frames.
+    ///
+    /// The decision arrives AFTER the frame is written — the tracker has to
+    /// see the frame before it can judge it — so meta.json's `is_keyframe`
+    /// cannot carry it and session.json's `keyframe_ids` is filled at
+    /// finalize instead. Before this, every frame said `is_keyframe: false`
+    /// and `keyframe_ids` was always empty: a documented field that always
+    /// lied, on every device session ever captured.
+    /// Persists a user's name for a region.
+    ///
+    /// docs/FORMATS.md documents `regions` as the user's renames, and until
+    /// now renaming a room only reached the engine's in-memory map — so the
+    /// name was lost the moment the session ended, on a screen that gives no
+    /// hint the edit is temporary.
+    func setRegionName(id: UInt32, name: String) {
+        if let at = sessionDoc.regions.firstIndex(where: { $0.id == id }) {
+            sessionDoc.regions[at].name = name
+            sessionDoc.regions[at].renamed = true
+        } else {
+            sessionDoc.regions.append(
+                RegionJSON(id: id, name: name, renamed: true))
+        }
+    }
+
+    func addKeyframeIds(_ ids: [UInt32]) {
+        for id in ids where !sessionDoc.keyframeIds.contains(id) {
+            sessionDoc.keyframeIds.append(id)
+        }
+    }
 
     /// Records that this capture re-covered a volume, superseding whatever
     /// earlier captures in the project recorded there.

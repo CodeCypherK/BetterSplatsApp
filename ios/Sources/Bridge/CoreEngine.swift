@@ -92,6 +92,22 @@ final class CoreEngine: @unchecked Sendable {
         return status
     }
 
+    /// The storage directives this poll drained, as a Swift array.
+    ///
+    /// The C side is a fixed 32-element array, which imports as a tuple; this
+    /// reads it as a buffer rather than unrolling 32 cases. Polling DRAINS
+    /// the queue, so a caller that ignores these loses them — which is
+    /// exactly what happened to the keyframe flags until now.
+    static func directives(in status: bs_live_status) -> [bs_store_directive] {
+        let count = Int(status.directive_count)
+        guard count > 0 else { return [] }
+        var status = status
+        return withUnsafeBytes(of: &status.directives) { raw in
+            let base = raw.bindMemory(to: bs_store_directive.self)
+            return Array(base.prefix(min(count, Int(BS_MAX_DIRECTIVES))))
+        }
+    }
+
     @discardableResult
     func liveEnd() -> bs_result {
         bs_live_end(handle)

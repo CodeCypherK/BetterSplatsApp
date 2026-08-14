@@ -567,6 +567,20 @@ final class CaptureViewModel {
                 // The storage gate needs this on the capture queue.
                 context.publishPose(self.viewer)
                 if let centre = self.viewer?.center { self.extendWalked(centre) }
+
+                // Drain the engine's storage directives. Polling consumes
+                // them, so ignoring them loses them — which is how
+                // keyframe_ids came to be empty in every session ever
+                // captured on a device. The keyframe decision is made after
+                // the frame is written (the tracker has to see it first), so
+                // it lands in session.json at finalize rather than in
+                // meta.json.
+                let keyframed = CoreEngine.directives(in: status)
+                    .filter { $0.is_keyframe != 0 }
+                    .map(\.frame_id)
+                if !keyframed.isEmpty {
+                    await context.store.addKeyframeIds(keyframed)
+                }
                 self.recovery = RecoveryHint(status: status)
                 self.framesSeen = status.frames_fed
                 // The recovery hint is a better version of the same message,
@@ -659,6 +673,12 @@ final class CaptureViewModel {
 
     func renameRegion(id: UInt32, name: String) {
         _ = CoreEngine.shared.renameRegion(id: id, name: name)
+        // The engine's copy is live-layer and disposable; session.json is
+        // what survives the session, and is where FORMATS.md says the user's
+        // names live.
+        if let store = context?.store {
+            Task { await store.setRegionName(id: id, name: name) }
+        }
         refreshSnapshot()
     }
 

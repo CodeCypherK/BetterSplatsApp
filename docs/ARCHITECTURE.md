@@ -245,6 +245,7 @@ re-trying:
 | local BA diverging | converges normally; the validation guard never fires |
 | relocalization candidate coverage | 8 → 64 candidates per attempt moved tracking 11.8% → 12.2% |
 | scaffold unusable because ORB is viewpoint-sensitive | wrong — see below; the same scaffold now carries 62% of the capture pass |
+| denser keyframes while turning | **worse**: capping the interval at 5 deg of turn took the capture pass 61.9% → 38.9% and ATE 0.075 → 0.223 m. Closer keyframes mean shorter baselines, and triangulation pairs with the *most covisible* neighbours, which are the most recent ones |
 
 **Where recovery was actually failing.** For a long time a capture pass
 localized into its scout scaffold on only 12% of frames, and it was tempting

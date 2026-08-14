@@ -28,9 +28,13 @@ non-expert to that data on the first try.
       relocalization anchor bug (below) took this from 12% to 62% with ATE
       0.218 -> 0.075 m. What is left is genuine: the pass still loses
       tracking at the doorway transits, where the turn outruns mapping (see
-      ARCHITECTURE.md). Next thing to try: keyframe cadence that scales with
-      rotation rate instead of a flat `kf_min_interval_s`, so a turn gets
-      the keyframe pairs it needs to triangulate the leading edge.
+      ARCHITECTURE.md). Rotation-scaled keyframe cadence was tried and is
+      **worse** (61.9% → 38.9%) — do not retry it alone. The reason points
+      at the next thing to try instead: `TriangulateNewPoints` picks its
+      neighbours by covisibility, which during a turn means the most recent
+      and therefore shortest-baseline keyframes. Select neighbours for
+      adequate *baseline* as well as overlap, and the cadence experiment may
+      become viable as a follow-on.
       NOTE: the old "scaffold is appearance-incompatible / ORB is
       viewpoint-sensitive" theory here was **wrong** and is disproved — the
       same scaffold now carries 62% of the pass. Do not rebuild the scout
@@ -38,10 +42,11 @@ non-expert to that data on the first try.
 
 ## Next
 
-- [ ] **Turning outruns mapping** (see ARCHITECTURE.md). `SLOW DOWN` now
-      fires above 60 deg/s, but the underlying limit stands: a point needs
-      two keyframes to exist. Worth trying: keyframe cadence that scales
-      with rotation rate rather than a flat `kf_min_interval_s`.
+- [ ] **Baseline-aware triangulation neighbours.** `TriangulateNewPoints`
+      takes the top-3 *covisible* keyframes, which are the most recent ones
+      and so the shortest-baseline ones. Prefer neighbours that combine
+      overlap with enough parallax to triangulate. This is the blocker under
+      the failed cadence experiment above.
 - [ ] **Capture UX for the scout pass.** There is no UI for "walk the
       perimeter first" — the pass exists in the engine and the format but a
       user cannot invoke it. Design the flow, then build it.
@@ -64,6 +69,13 @@ non-expert to that data on the first try.
 ## Log
 
 Newest first. One line per session: what changed, what it measured.
+
+- Tried rotation-scaled keyframe cadence (interval capped so consecutive
+  keyframes stay within 5 deg of turn). **Negative result, reverted**:
+  capture pass 61.9% → 38.9%, ATE 0.075 → 0.223 m; scout roughly flat
+  (89.5% → 89.4%) though its ATE improved 0.038 → 0.030 m. Denser keyframes
+  shorten baselines, and triangulation pairs with the most covisible (=most
+  recent) neighbours. Recorded in the ruled-out table.
 
 - **Relocalization never moved the local-map anchor.** `Relocalize` set the
   pose but not `last_kf_id_`, so each recovery handed the next frame a local

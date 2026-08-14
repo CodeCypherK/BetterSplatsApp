@@ -19,7 +19,9 @@ bool LiveSystem::ShouldInsertKeyframe(const LiveFrameInput& input,
   const Keyframe* last_kf = map_.FindKeyframe(last_kf_id_);
   if (last_kf == nullptr) return false;
 
-  // Rate limits.
+  // Rate limit. Deliberately a flat floor: making it tighter while turning
+  // (so a turn gets more keyframe pairs to triangulate its leading edge)
+  // was measured and is WORSE — see docs/ARCHITECTURE.md.
   const double since_last = input.t_capture - last_kf_time_;
   if (since_last < config_.kf_min_interval_s) return false;
 

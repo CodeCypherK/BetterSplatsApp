@@ -23,15 +23,83 @@ struct CaptureView: View {
                 floorCalibrationPrompt(phase)
             }
 
+            if model.state == .idle {
+                planChooser
+            }
+
             if case .failed(let message) = model.state {
                 errorOverlay(message)
             }
         }
-        .navigationBarBackButtonHidden(model.isCapturing)
+        .navigationBarBackButtonHidden(model.isRunning)
         .toolbar(.hidden, for: .tabBar)
-        .onAppear { model.start() }
-        .onDisappear { if model.isCapturing { model.stop() } }
+        .onDisappear { if model.isRunning { model.stop() } }
         .statusBarHidden()
+    }
+
+    /// Asked once, before the camera starts, because the answer changes what
+    /// the first minute is for and cannot be changed later without throwing
+    /// the session away.
+    ///
+    /// The question is about the space, not about the algorithm. "Do you want
+    /// a localization scaffold" is unanswerable by the person holding the
+    /// phone; "how many rooms" is the same decision in terms they can see.
+    private var planChooser: some View {
+        VStack(spacing: 18) {
+            Image(systemName: "map")
+                .font(.system(size: 34, weight: .semibold))
+                .foregroundStyle(.tint)
+            Text("What are you scanning?")
+                .font(.title3.weight(.semibold))
+
+            VStack(spacing: 12) {
+                Button {
+                    model.start(plan: .captureOnly)
+                } label: {
+                    planOption(
+                        title: "One room",
+                        detail: "Start scanning straight away.",
+                        icon: "square.dashed")
+                }
+                Button {
+                    model.start(plan: .scoutThenCapture)
+                } label: {
+                    planOption(
+                        title: "Several rooms",
+                        detail: "Walk the whole space once first — a lap of "
+                              + "every room, back to the walls, camera facing "
+                              + "in. It takes a minute and gives the detailed "
+                              + "scan something to hold position against.",
+                        icon: "figure.walk.motion")
+                }
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(24)
+        .frame(maxWidth: 380)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 20))
+        .padding(24)
+    }
+
+    private func planOption(title: String, detail: String,
+                            icon: String) -> some View {
+        HStack(alignment: .top, spacing: 14) {
+            Image(systemName: icon)
+                .font(.system(size: 22))
+                .foregroundStyle(.tint)
+                .frame(width: 30)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title).font(.headline)
+                Text(detail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
     }
 
     /// The opening step: measure the floor so the finished scan comes out
@@ -144,12 +212,68 @@ struct CaptureView: View {
             }
             .font(.caption)
             .buttonStyle(.bordered)
+
+            // Said plainly during the circuit, because the frame counter is
+            // climbing and someone watching it would otherwise reasonably
+            // believe the scan has begun.
+            if model.isScouting {
+                Text("These frames map the route — the scan itself comes next")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 4)
+                    .background(.ultraThinMaterial, in: Capsule())
+            } else if model.scoutFramesStored > 0 {
+                Text("\(model.scoutFramesStored) route frames + "
+                     + "\(max(0, Int(model.framesStored) - Int(model.scoutFramesStored))) scan frames")
+                    .font(.caption2.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 4)
+                    .background(.ultraThinMaterial, in: Capsule())
+            }
         }
+    }
+
+    /// During the circuit the primary action is not "stop" — it is "I have
+    /// walked the whole space, now let me scan it". Presenting a shutter
+    /// button here would make the natural next tap end the session.
+    private var scoutBar: some View {
+        VStack(spacing: 10) {
+            Text("Walking the space")
+                .font(.subheadline.weight(.semibold))
+            Text(model.scaffoldKeyframes == 0
+                 ? "Mapping…"
+                 : "\(model.scaffoldKeyframes) waypoints mapped")
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.secondary)
+            Text("Finish where you started, then scan in detail.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+            Button {
+                model.finishScout()
+            } label: {
+                Label("Start detailed scan", systemImage: "camera.viewfinder")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.large)
+            Button("Cancel session") { model.stop() }
+                .font(.caption)
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+        }
+        .padding(16)
+        .frame(maxWidth: 340)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
     }
 
     private var bottomBar: some View {
         HStack {
-            if case .finished(let name) = model.state {
+            if model.isScouting {
+                scoutBar.frame(maxWidth: .infinity)
+            } else if case .finished(let name) = model.state {
                 VStack(spacing: 8) {
                     Text("Saved: \(name)")
                         .font(.footnote)
@@ -161,7 +285,7 @@ struct CaptureView: View {
                 .frame(maxWidth: .infinity)
             } else {
                 Button {
-                    model.isCapturing ? model.stop() : model.start()
+                    if model.isCapturing { model.stop() } else { model.start() }
                 } label: {
                     ZStack {
                         Circle()

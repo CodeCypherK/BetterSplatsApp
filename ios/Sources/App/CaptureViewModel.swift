@@ -21,6 +21,19 @@ final class FrameFeedContext: @unchecked Sendable {
     var lastStoreTime: Double = -1
     var encodesInFlight = 0
     var storeCommits = 0
+    /// Frames stored so far by the scout circuit. Split out from
+    /// `storeCommits` only so the UI can say which half of the budget the
+    /// user has spent — both halves share one session and one disk cap.
+    var scoutCommits = 0
+
+    /// "capture" or "scout", stamped into each frame's meta as it is written.
+    /// Read and written under `lock` because the pass flips on the main
+    /// actor while the capture queue is mid-frame.
+    private var passName = "capture"
+    var pass: String {
+        get { lock.lock(); defer { lock.unlock() }; return passName }
+        set { lock.lock(); passName = newValue; lock.unlock() }
+    }
 
     init(store: SessionStore, previewRenderer: VideoPreviewRenderer,
          videoDims: (width: Int, height: Int)) {
@@ -53,10 +66,12 @@ final class FrameFeedContext: @unchecked Sendable {
         let capped = storeCommits >= Self.storedFrameCap
         let shouldStore = !busy && !capped && elapsed >= 0.30
             && stats.overexposedFraction < 0.10
+        let framePass = passName
         if shouldStore {
             lastStoreTime = frame.tCapture
             encodesInFlight += 1
             storeCommits += 1
+            if framePass == "scout" { scoutCommits += 1 }
         }
         lock.unlock()
         guard shouldStore else { return }
@@ -76,7 +91,8 @@ final class FrameFeedContext: @unchecked Sendable {
                 lapVar: stats.laplacianVariance,
                 overexpFrac: stats.overexposedFraction),
             isKeyframe: false,
-            storeReason: "gate")
+            storeReason: "gate",
+            pass: framePass)
 
         // The calibrator needs a frame that is genuinely going to disk: it
         // records the floor against a frame id, and the solve resolves that
@@ -204,13 +220,29 @@ final class CaptureViewModel {
     enum State: Equatable {
         case idle
         case starting
+        /// Walking the opening circuit. Frames are stored and tagged
+        /// `pass="scout"`; the engine is building the localization scaffold.
+        case scouting
         case capturing
         case stopping
         case finished(sessionName: String)
         case failed(String)
     }
 
+    /// Whether the session opens with a scout circuit. Offered before the
+    /// camera starts, because it changes what the first minute is for.
+    enum Plan: Equatable {
+        /// Walk the space once first, then scan. The circuit builds a
+        /// scaffold so the detailed pass always has something to hold
+        /// position against — worth its minute in anything bigger than a
+        /// single room.
+        case scoutThenCapture
+        /// Straight into detailed capture.
+        case captureOnly
+    }
+
     private(set) var state: State = .idle
+    private(set) var plan: Plan = .captureOnly
     private(set) var guidance = "Preparing…"
     private(set) var framesSeen: UInt32 = 0
     private(set) var framesStored: UInt32 = 0
@@ -220,6 +252,14 @@ final class CaptureViewModel {
     private(set) var snapshot = CoreEngine.Snapshot()
     /// Nil once the floor step is done or skipped; drives the prompt.
     private(set) var floorPhase: FloorCalibrator.Phase?
+    /// Frames the scout circuit stored, frozen when the circuit ends.
+    private(set) var scoutFramesStored: UInt32 = 0
+    /// Keyframes in the scaffold the scout circuit left behind. This is the
+    /// number that says whether the circuit was worth walking — a lap that
+    /// produced almost no keyframes did not map anything to localize into.
+    private(set) var scaffoldKeyframes: UInt32 = 0
+
+    var isScouting: Bool { state == .scouting }
 
     private let floorCalibrator = FloorCalibrator()
 
@@ -232,10 +272,14 @@ final class CaptureViewModel {
     let mapRenderer = MapRenderer()
 
     var isCapturing: Bool { state == .capturing }
+    /// Both passes feed the engine and write frames; several call sites care
+    /// only about "is the camera running".
+    var isRunning: Bool { state == .capturing || state == .scouting }
 
-    func start() {
+    func start(plan: Plan = .captureOnly) {
         switch state {
         case .idle, .finished, .failed:
+            self.plan = plan
             state = .starting
             Task { await startInner() }
         default:
@@ -271,7 +315,10 @@ final class CaptureViewModel {
         }
 
         let engine = CoreEngine.shared
-        guard engine.liveBegin(sessionDir: store.directory.path) == BS_OK else {
+        let firstPass: bs_pass_kind =
+            plan == .scoutThenCapture ? BS_PASS_SCOUT : BS_PASS_CAPTURE
+        guard engine.liveBegin(sessionDir: store.directory.path,
+                               pass: firstPass) == BS_OK else {
             state = .failed("Engine rejected session: \(engine.lastError)")
             return
         }
@@ -279,15 +326,64 @@ final class CaptureViewModel {
         let context = FrameFeedContext(
             store: store, previewRenderer: previewRenderer,
             videoDims: manager.videoDimensions)
+        context.pass = plan == .scoutThenCapture ? "scout" : "capture"
         self.context = context
         manager.onFrame = { frame in
             context.handle(frame)  // capture queue
         }
 
-        // Floor calibration runs over the first stored frames. It is part of
-        // the ordinary capture stream on purpose — a calibration frame has
-        // to be one the final solve registers like any other, and a separate
-        // mode would be free to produce frames that never do.
+        if plan == .captureOnly { beginFloorCalibration(context) }
+
+        manager.start()
+        state = plan == .scoutThenCapture ? .scouting : .capturing
+        guidance = plan == .scoutThenCapture
+            ? "Walk the space — back to the walls, camera facing in"
+            : "Move slowly and keep the scene in view"
+        startPolling()
+    }
+
+    /// Ends the scout circuit and starts detailed capture in the same
+    /// session. The engine writes `live/map.bin` on the scout `liveEnd`, and
+    /// the capture `liveBegin` loads it, so both passes share one world
+    /// frame — which is the whole point of walking the circuit.
+    func finishScout() {
+        guard state == .scouting, let context else { return }
+        state = .starting
+        Task {
+            // Let in-flight encodes drain so the scaffold's frames are all on
+            // disk before the pass boundary.
+            try? await Task.sleep(for: .milliseconds(400))
+            scoutFramesStored = await context.store.storedFrames
+
+            let engine = CoreEngine.shared
+            engine.liveEnd()
+            scaffoldKeyframes = engine.livePollStatus().keyframes
+
+            guard engine.liveBegin(sessionDir: context.store.directory.path,
+                                   pass: BS_PASS_CAPTURE) == BS_OK else {
+                state = .failed("Engine rejected capture pass: \(engine.lastError)")
+                return
+            }
+            context.pass = "capture"
+
+            // Only now. The floor calibration names a frame id and the solve
+            // resolves it through that frame's final pose — but the solve
+            // excludes scout frames outright, so a floor measured during the
+            // circuit would point at a frame that never gets a pose, and be
+            // silently dropped.
+            beginFloorCalibration(context)
+
+            state = .capturing
+            guidance = "Move slowly and keep the scene in view"
+        }
+    }
+
+    /// Floor calibration runs over the first stored frames of the CAPTURE
+    /// pass. It is part of the ordinary capture stream on purpose — a
+    /// calibration frame has to be one the final solve registers like any
+    /// other, and a separate mode would be free to produce frames that never
+    /// do.
+    private func beginFloorCalibration(_ context: FrameFeedContext) {
         floorPhase = .aiming(advice: "Point at the floor and take a step",
                              heightM: nil)
         context.wantsFloorFrames = true
@@ -316,11 +412,6 @@ final class CaptureViewModel {
                 }
             }
         }
-
-        manager.start()
-        state = .capturing
-        guidance = "Move slowly and keep the scene in view"
-        startPolling()
     }
 
     private func startPolling() {
@@ -328,11 +419,14 @@ final class CaptureViewModel {
         pollTask = Task { [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(for: .milliseconds(100))
-                guard let self, self.isCapturing, let context = self.context
+                guard let self, self.isRunning, let context = self.context
                 else { continue }
                 let status = CoreEngine.shared.livePollStatus()
                 self.framesSeen = status.frames_fed
-                self.guidance = Self.guidanceText(for: status)
+                self.guidance = self.isScouting
+                    ? Self.scoutGuidanceText(for: status)
+                    : Self.guidanceText(for: status)
+                if self.isScouting { self.scaffoldKeyframes = status.keyframes }
                 self.readinessOverall = status.readiness_overall
                 self.framesStored = await context.store.storedFrames
                 self.megabytesWritten =
@@ -378,6 +472,22 @@ final class CaptureViewModel {
         }
     }
 
+    /// The circuit is a different job from detailed capture, so most of the
+    /// detail-capture advice is wrong here. "Move closer" and "more coverage
+    /// needed" would send someone to do the scan they have not started yet;
+    /// the circuit wants distance and speed, not proximity and dwell. Only
+    /// the two failures that actually break a scaffold are surfaced.
+    private static func scoutGuidanceText(for status: bs_live_status) -> String {
+        switch bs_guidance(rawValue: bs_guidance.RawValue(max(0, status.guidance))) {
+        case BS_GUIDE_SLOW_DOWN:
+            return "Turn more slowly"
+        case BS_GUIDE_TRACKING_LOST:
+            return "Lost the map — go back the way you came"
+        default:
+            return "Keep walking — back to the walls, camera facing in"
+        }
+    }
+
     /// The user chose to start scanning without measuring the floor.
     /// Levelling then infers it from the reconstruction, which works — it is
     /// simply less certain, and can decline on an ambiguous scan.
@@ -388,7 +498,7 @@ final class CaptureViewModel {
     }
 
     func stop() {
-        guard state == .capturing else { return }
+        guard state == .capturing || state == .scouting else { return }
         state = .stopping
         pollTask?.cancel()
         manager.onFrame = nil

@@ -54,6 +54,12 @@ struct FrameMetaJSON: Codable {
     var quality: QualityJSON
     var isKeyframe: Bool
     var storeReason: String
+    /// "capture" or "scout". Scout frames come from the opening circuit and
+    /// exist to localize against, not to reconstruct from — the final solve
+    /// drops them. They are still written to RAW like every other
+    /// measurement: "not reconstructed from" is a solve-time decision, never
+    /// a licence to discard what the sensor saw.
+    var pass = "capture"
 
     enum CodingKeys: String, CodingKey {
         case schemaVersion = "schema_version"
@@ -66,6 +72,7 @@ struct FrameMetaJSON: Codable {
         case exposure, quality
         case isKeyframe = "is_keyframe"
         case storeReason = "store_reason"
+        case pass
     }
 }
 

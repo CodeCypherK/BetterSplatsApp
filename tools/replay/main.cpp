@@ -22,6 +22,7 @@
 #include "bs/bs_api.h"
 #include "common/geometry.h"
 #include "geometry/triangulation.h"
+#include "final/component_align.h"
 #include "geometry/two_view.h"
 #include "io/session_reader.h"
 #include "vision/features.h"
@@ -484,6 +485,11 @@ struct PassAccuracy {
   double tracked_frac = 0;
   double ate_rmse = 0;
   double mean_rot = 0;
+  // Same poses, aligned rigidly over the whole trajectory instead of pinned
+  // at the first tracked frame. See the note in EvaluatePass: the two numbers
+  // answer different questions and diverge in an informative way.
+  double ate_rigid = 0;
+  double rot_rigid = 0;
 };
 
 PassAccuracy EvaluatePass(const bs::SessionReader& session,
@@ -582,6 +588,10 @@ PassAccuracy EvaluatePass(const bs::SessionReader& session,
   const bs::SE3 align = live_poses.front().pose.Inverse() * (*gt_ref);
 
   double ate_sq_sum = 0, rot_err_sum = 0;
+  std::vector<uint32_t> ids;
+  std::vector<Eigen::Vector3d> live_centers, gt_centers;
+  std::vector<Eigen::Quaterniond> live_q, gt_q;
+  std::vector<double> anchored_err;
   for (const auto& lp : live_poses) {
     const auto gt_pose = find_gt(lp.frame_id);
     if (!gt_pose) continue;
@@ -591,6 +601,13 @@ PassAccuracy EvaluatePass(const bs::SessionReader& session,
     ate_sq_sum += center_err * center_err;
     rot_err_sum += bs::RadToDeg(bs::AngularDistance(lp.pose.q, gt_in_live.q));
     ++out.compared;
+
+    ids.push_back(lp.frame_id);
+    live_centers.push_back(lp.pose.CameraCenter());
+    gt_centers.push_back(gt_pose->CameraCenter());
+    live_q.push_back(lp.pose.q);
+    gt_q.push_back(gt_pose->q);
+    anchored_err.push_back(center_err);
   }
   if (out.compared == 0) return out;
   out.ate_rmse = std::sqrt(ate_sq_sum / out.compared);
@@ -599,6 +616,60 @@ PassAccuracy EvaluatePass(const bs::SessionReader& session,
       "%s ATE: %.1f%% tracked, RMSE %.3f m, mean rot err %.2f deg (%d poses)\n",
       label, 100.0 * out.tracked_frac, out.ate_rmse, out.mean_rot,
       out.compared);
+
+  // The number above pins the trajectory at its FIRST tracked frame, which is
+  // the honest question for a live tracker — that frame defines the map's
+  // world origin, and everything the user is shown is expressed in it. But it
+  // makes the metric sensitive to something that has nothing to do with
+  // tracking quality: a small rotation error at the anchor becomes a large
+  // position error far from it (1 deg is 17 cm at 10 m), so a run that tracks
+  // a LONGER stretch of the same path scores worse on identical per-frame
+  // accuracy. That is a trap for exactly the changes we keep making, which
+  // improve coverage.
+  //
+  // So also fit the whole trajectory rigidly. Scale is held at 1 — LiDAR sets
+  // it and a scale error must stay visible as trajectory error. The gap
+  // between the two numbers IS the anchor's leverage; when it is large, the
+  // anchored figure is measuring where the run happened to start.
+  {
+    bs::Similarity sim;
+    if (bs::SimilarityFromCorrespondences(live_centers, gt_centers, sim,
+                                          /*allow_scale=*/false)) {
+      // sim maps live -> gt, so compare in the ground-truth frame.
+      const Eigen::Quaterniond sim_q(sim.R);
+      double sq = 0, rot = 0;
+      for (int i = 0; i < out.compared; ++i) {
+        sq += (sim.Apply(live_centers[i]) - gt_centers[i]).squaredNorm();
+        // A world-to-camera rotation composes with the alignment's inverse.
+        rot += bs::RadToDeg(
+            bs::AngularDistance(live_q[i] * sim_q.conjugate(), gt_q[i]));
+      }
+      out.ate_rigid = std::sqrt(sq / out.compared);
+      out.rot_rigid = rot / out.compared;
+      std::printf("%s ATE (rigid fit): RMSE %.3f m, mean rot err %.2f deg\n",
+                  label, out.ate_rigid, out.rot_rigid);
+
+      // Per-frame dump so error can be read against WHERE the camera was,
+      // not just averaged. Doorway transits and long blind stretches look
+      // completely different in this file and identical in the RMSE.
+      const std::string csv =
+          session.dir() + "/live/ate_" + std::string(label) + ".csv";
+      std::ofstream out_csv(csv);
+      if (out_csv) {
+        out_csv << "frame_id,gt_x,gt_y,gt_z,err_anchored_m,err_rigid_m,"
+                   "rot_err_rigid_deg\n";
+        for (int i = 0; i < out.compared; ++i) {
+          const double e =
+              (sim.Apply(live_centers[i]) - gt_centers[i]).norm();
+          const double r = bs::RadToDeg(
+              bs::AngularDistance(live_q[i] * sim_q.conjugate(), gt_q[i]));
+          out_csv << ids[i] << ',' << gt_centers[i].x() << ','
+                  << gt_centers[i].y() << ',' << gt_centers[i].z() << ','
+                  << anchored_err[i] << ',' << e << ',' << r << '\n';
+        }
+      }
+    }
+  }
   return out;
 }
 

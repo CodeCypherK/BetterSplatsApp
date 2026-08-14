@@ -231,5 +231,60 @@ TEST_F(SessionIoTest, ReaderEnumeratesFromDiskNotJson) {
   EXPECT_EQ(reader->frame_ids(), (std::vector<uint32_t>{3, 10}));
 }
 
+// The `pass` key is a contract between two languages: the Swift capture code
+// writes it into meta.json and this reader decides the final solve on it. A
+// rename on either side would not fail to compile anywhere — it would just
+// quietly stop excluding the scout circuit, and the first symptom would be a
+// splat trained on fast blurry walk-through frames. So the key name and both
+// of its values are pinned literally rather than through the struct.
+TEST_F(SessionIoTest, PassKeyIsWrittenLiterallyAndRoundTrips) {
+  SessionWriter writer;
+  ASSERT_TRUE(SessionWriter::Create(dir_, MakeInfo(), MakeCalibration(), writer));
+
+  FrameMeta scout = MakeMeta(1);
+  scout.pass = "scout";
+  ASSERT_TRUE(writer.WriteFrame(scout, {0xFF}, MakeDepth(1)));
+  FrameMeta capture = MakeMeta(2);  // default
+  ASSERT_TRUE(writer.WriteFrame(capture, {0xFF}, MakeDepth(2)));
+
+  const std::string raw =
+      ReadTextFile((fs::path(dir_) / "frames" / "000001" / "meta.json").string());
+  EXPECT_NE(raw.find("\"pass\""), std::string::npos) << raw;
+  EXPECT_NE(raw.find("\"scout\""), std::string::npos) << raw;
+
+  auto reader = SessionReader::Open(dir_);
+  ASSERT_TRUE(reader.has_value());
+  const auto read_scout = reader->ReadMeta(1);
+  const auto read_capture = reader->ReadMeta(2);
+  ASSERT_TRUE(read_scout.has_value());
+  ASSERT_TRUE(read_capture.has_value());
+  EXPECT_TRUE(read_scout->is_scout());
+  EXPECT_FALSE(read_capture->is_scout());
+  EXPECT_EQ(read_capture->pass, "capture");
+}
+
+// A meta.json with no `pass` at all — every session written before the scout
+// pass existed — has to read as capture. Defaulting the other way would
+// exclude an entire old session from its own reconstruction.
+TEST_F(SessionIoTest, MissingPassDefaultsToCapture) {
+  SessionWriter writer;
+  ASSERT_TRUE(SessionWriter::Create(dir_, MakeInfo(), MakeCalibration(), writer));
+  ASSERT_TRUE(writer.WriteFrame(MakeMeta(1), {0xFF}, MakeDepth(1)));
+
+  const auto path =
+      (fs::path(dir_) / "frames" / "000001" / "meta.json").string();
+  std::string raw = ReadTextFile(path);
+  const auto at = raw.find("\"pass\"");
+  ASSERT_NE(at, std::string::npos);
+  const auto end = raw.find(',', at);
+  raw.erase(at, (end == std::string::npos ? raw.size() : end + 1) - at);
+  WriteTextFile(path, raw);
+
+  const auto meta = FrameMeta::FromJson(ReadTextFile(path));
+  ASSERT_TRUE(meta.has_value());
+  EXPECT_FALSE(meta->is_scout());
+  EXPECT_EQ(meta->pass, "capture");
+}
+
 }  // namespace
 }  // namespace bs

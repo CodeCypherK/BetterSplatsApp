@@ -436,12 +436,53 @@ Measured on the two-room walking session, cumulatively:
 
 The scout circuit now holds tracking for essentially the whole lap.
 
-Capture-pass pose error moved the other way over the same changes (ATE 0.10
-→ 0.21 → 0.32 m, rotation 1.4° → 2.7° → 4.7°). Part of that is a selection
-effect rather than a regression — ATE averages over tracked frames only, so
-surviving the doorway means the hardest poses now count where before they
-were simply absent — but the size of it is no longer comfortably explained
-that way, and it is an open item rather than a settled caveat.
+### How ATE is measured, and why the number tripled without anything breaking
+
+Capture-pass pose error appeared to move the wrong way over the same three
+changes (0.10 → 0.21 → 0.32 m, rotation 1.4° → 2.7° → 4.7°), each of which
+improved coverage. It was the metric.
+
+ATE was computed after pinning the trajectory at its **first tracked pose** —
+`T_align = T_live_ref⁻¹ ∘ T_gt_ref`. That is the honest question to ask of a
+live tracker, because that frame defines the map's world origin and
+everything the user is shown is expressed in it. But it makes the number
+sensitive to something that has nothing to do with tracking quality: a small
+rotation error at the anchor becomes a large position error far from it
+(1° is 17 cm at 10 m). A run that tracks a **longer** stretch of the same
+path therefore scores worse on identical per-frame accuracy — which is
+precisely what improving coverage does. Worse still for the capture pass,
+the anchor lands on the frame where it relocalized into the scaffold, the
+least constrained pose in the whole run.
+
+`bs_replay` now reports both. The second fit is rigid over the whole
+trajectory (Umeyama with **scale held at 1** — LiDAR sets scale, and a scale
+error must stay visible as trajectory error rather than being absorbed by
+the alignment):
+
+| two-room walk | anchored | rigid fit |
+|---|---|---|
+| capture ATE | 0.158 m | **0.035 m** |
+| capture rotation | 2.11° | **0.44°** |
+| scout ATE | 0.048 m | **0.024 m** |
+| scout rotation | 0.37° | **0.25°** |
+
+The capture pass is accurate to 3.5 cm RMSE, 2.8 cm median, 6.1 cm p95. The
+gap between the columns *is* the anchor's leverage; on the 60-frame CI sweep,
+where there is no lever arm, the two agree to a millimetre and the anchored
+rotation is the better of the two.
+
+`EvaluatePass` also writes `live/ate_<pass>.csv` — per-frame error against
+ground-truth position — and `scripts/ate_profile.py` reads it. That says
+where the error is, which an RMSE cannot: on the capture pass the worst 10%
+of frames hold 41% of the squared error (spread, not localized), and the one
+hot spot of 0.18 m is at the start of the pass, in the frames after
+relocalization before local BA settles. **The doorways are not where the
+error is.**
+
+`--check` enforces the rigid bound (0.06 m / 1.0°) alongside the anchored
+ones, because a real accuracy regression can hide inside the anchored slack
+and cannot hide inside this. Clean scene sits at 0.002 m / 0.22°, hard scene
+at 0.010 m / 0.47°.
 
 ## What reaches RAW
 
@@ -528,6 +569,10 @@ swept around it:
 The lesson worth keeping: a recovery path that reports success is not
 necessarily recovering. `relocalized frame N against kf K` was printed 24
 times and looked like the system working.
+
+(Every ATE in this section and the ones above it is the **anchored** figure,
+which is what was being measured at the time. Do not compare them against the
+rigid-fit numbers — see "How ATE is measured" above.)
 
 **Overlap beats parallax in the live map.** Two attempts to buy the turning
 case more triangulation baseline both made things worse, from opposite

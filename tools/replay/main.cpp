@@ -734,6 +734,22 @@ int RunLive(const bs::SessionReader& session, const std::string& config,
                    live.mean_rot);
       return 1;
     }
+    // The rigid bound is the sensitive one. The anchored figures above are
+    // dominated by rotation error at the FIRST tracked pose — measured on
+    // the two-room walk, 0.158 m anchored against 0.035 m rigid, because the
+    // anchor lands on the relocalization frame, which is the least
+    // constrained pose in the whole run. A real accuracy regression can hide
+    // inside that slack; it cannot hide inside this.
+    if (live.ate_rigid > 0.06) {
+      std::fprintf(stderr, "CHECK FAILED: rigid ATE %.3f m > 0.06 m\n",
+                   live.ate_rigid);
+      return 1;
+    }
+    if (live.rot_rigid > 1.0) {
+      std::fprintf(stderr, "CHECK FAILED: rigid rot err %.2f deg > 1 deg\n",
+                   live.rot_rigid);
+      return 1;
+    }
   }
   return 0;
 }

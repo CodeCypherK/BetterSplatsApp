@@ -24,12 +24,24 @@ non-expert to that data on the first try.
 
 ## Now
 
-- [ ] **Field-test the floor calibration on a device.** Built but unrun:
-      the prompt, the eight-frame confirmation, and the session.json write.
-      What to check — does the verdict wording actually guide someone to a
-      usable floor, does the accepted frame survive into the final solve
-      (`report.json` -> `floor_measured: true`), and is one step forward
-      enough movement for it to register.
+- [ ] **Field-test the whole opening minute on a device.** Four things are
+      built and none has met a real room. In order of what breaks the session
+      worst if wrong:
+      1. **Does the photometric lock land on the scene?** Start a capture,
+         let the floor step finish, then look at something 5 m away — is it
+         sharp? This is the change most likely to be subtly wrong, because
+         the one-shot auto modes' revert-to-locked behaviour is documented
+         but unverified here, and a failure is invisible until the splat
+         comes out soft.
+      2. **Floor calibration**: does the verdict wording guide someone to a
+         usable floor, does the accepted frame survive into the final solve
+         (`report.json` -> `floor_measured: true`), and is one step forward
+         enough movement for it to register.
+      3. **The scout circuit**: is "back to the walls, camera facing in"
+         followable, and does the capture pass actually relocalize into what
+         it left behind.
+      4. **Weak-area guidance**: with the live pose wired in, do the
+         distances and left/right calls match where the user is standing.
 
 - [x] ~~**Floor-calibration capture UI.**~~ The engine side is done and tested:
       `FitDepthPlane` measures the plane from one depth frame, session.json
@@ -42,43 +54,79 @@ non-expert to that data on the first try.
       to be MOVING while they sweep the phone up, or those frames have no
       parallax and the solve drops them.
 
-- [ ] **Capture-pass tracking: 62% and worth pushing further.** The
-      relocalization anchor bug (below) took this from 12% to 62% with ATE
-      0.218 -> 0.075 m. What is left is genuine: the pass still loses
-      tracking at the doorway transits, where the turn outruns mapping (see
-      ARCHITECTURE.md). Two geometry-side attempts both measured **worse**
-      and are reverted — denser keyframes while turning (61.9% → 38.9%) and
-      baseline-aware triangulation partners (ATE 0.075 → 0.101 m). Together
-      they say the constraint is not geometry: it is MATCHES. A turn shows
-      the camera surfaces at viewpoints ORB cannot match, and no keyframe
-      arrangement fixes that. Next thing worth trying is therefore on the
-      matching side, e.g. re-detecting at a lower FAST threshold while
-      turning, or matching the leading edge against the frame before it
+- [x] ~~**Capture-pass ATE keeps rising as coverage rises.**~~ **Answered:
+      it was the metric, not the tracker.** The ATE was anchored at the
+      first tracked pose, so any rotation error there scales with distance
+      travelled — 1 deg is 17 cm at 10 m — and a run that tracks a LONGER
+      stretch scores worse on identical per-frame accuracy. That is exactly
+      what three consecutive coverage improvements did. Worse, the anchor
+      lands on the capture pass's *relocalization* frame, which is the least
+      constrained pose in the whole run.
+
+      Measured on the two-room walk (`bs_replay` now prints both):
+
+      | | anchored | rigid fit |
+      |---|---|---|
+      | capture ATE | 0.158 m | **0.035 m** |
+      | capture rot | 2.11 deg | **0.44 deg** |
+      | scout ATE | 0.048 m | **0.024 m** |
+
+      So the capture pass is accurate to **3.5 cm RMSE, 2.8 cm median, 6.1 cm
+      p95** — not 16 cm and never 32 cm. `scripts/ate_profile.py` reads the
+      per-frame dump: error is **spread, not localized** (worst 10% of frames
+      hold 41% of the squared error), with one hot spot of 0.18 m at the
+      start of the pass, i.e. the frames right after relocalization before
+      local BA settles. The doorways are not the problem.
+
+      **Use the rigid number for any comparison.** `--check` now enforces it
+      (0.06 m / 1.0 deg) alongside the anchored bounds; clean sits at
+      0.002 m / 0.22 deg, hard at 0.010 m / 0.47 deg.
+
+- [ ] **Capture-pass coverage: 75.4% tracked, and that is the real target
+      now that accuracy is understood.** The relocalization anchor bug took
+      it from 12% to 62%; trajectory reshaping to 75%. What is left is
+      genuine: the pass still loses tracking at the doorway transits, where
+      the turn outruns mapping (see ARCHITECTURE.md). Two geometry-side
+      attempts both measured **worse** and are reverted — denser keyframes
+      while turning (61.9% → 38.9%) and baseline-aware triangulation
+      partners. Together they say the constraint is not geometry: it is
+      MATCHES. A turn shows the camera surfaces at viewpoints ORB cannot
+      match, and no keyframe arrangement fixes that. Next thing worth trying
+      is on the matching side, e.g. re-detecting at a lower FAST threshold
+      while turning, or matching the leading edge against the frame before it
       rather than only against keyframes.
-- [ ] **Capture-pass ATE now 0.32 m (rot 4.7 deg) while coverage rose to
-      73.2%.** It has moved the wrong way across three consecutive changes
-      that each improved coverage. The selection-effect story (ATE averages
-      over tracked frames, so surviving harder stretches raises it) no longer
-      comfortably covers a 3x move. Measure it properly: compare ATE over the
-      frame set tracked by ALL runs, and plot per-frame error against
-      position to see whether the error is concentrated at the doorways or
-      spread. Do not tune anything else on this metric until that is known.
       NOTE: the old "scaffold is appearance-incompatible / ORB is
       viewpoint-sensitive" theory here was **wrong** and is disproved — the
-      same scaffold now carries 62% of the pass. Do not rebuild the scout
+      same scaffold now carries 75% of the pass. Do not rebuild the scout
       trajectory on that basis without a fresh measurement.
 
 ## Next
 
-- [ ] **Capture UX for the scout pass.** There is no UI for "walk the
-      perimeter first" — the pass exists in the engine and the format but a
-      user cannot invoke it. Design the flow, then build it.
-- [ ] **Readiness guidance wording pass.** Messages are generated from
-      sub-score argmin; check they read as instructions a stranger can
-      follow, not as diagnostics.
+- [ ] **Should the scout circuit store frames as densely as capture does?**
+      It currently shares the 0.30 s gate, so a one-minute lap spends ~200 of
+      the 900-frame budget and ~260 MB on frames the final solve throws away.
+      Thinning them frees that for the scan. Against: replay only ever sees
+      STORED frames, so a sparser scout makes replay's scout pass much harder
+      than the device's ever was, and that gap is already the weakest part of
+      the dev loop. Do not guess an interval — measure scout tracking against
+      stored-frame cadence first.
 - [ ] **Two-room walkthrough as a CI gate.** Blocked on render cost
-      (~2300 frames at walking pace ≈ 13 min). Consider a shorter realistic
-      path, or a cached fixture committed to `core/testdata/`.
+      (~2377 frames at walking pace ≈ 13 min to generate, ~7 min to replay).
+      Consider a shorter realistic path, or a cached fixture committed to
+      `core/testdata/`.
+- [x] ~~**Capture UX for the scout pass.**~~ Built: a plan chooser asks "one
+      room / several rooms" before the camera starts, the circuit runs as
+      `pass="scout"`, and "Start detailed scan" ends it and begins the
+      capture pass in the same session. Found while building it that
+      `FrameMetaJSON` had no `pass` field at all — every frame the app wrote
+      said "capture", so a scout circuit captured through the app would have
+      been reconstructed from.
+- [x] ~~**Readiness guidance wording pass.**~~ Done, and it turned up a real
+      bug: the dashboard printed `|centroid|` as "N m away", which is the
+      distance from the session origin, not from the user. Distances now go
+      through the live pose, the engine's long-computed move direction
+      finally resolves to left/right/forward/back, and the five messages lead
+      with the action instead of the diagnosis.
 
 ## Needs a real device session
 
@@ -92,11 +140,15 @@ These cannot be settled on synthetic data. Each names what to look for.
       across a device session. The synthetic model assumes smooth-with-speed;
       if real captures spike at footfalls, the harness should model that —
       with an amplitude measured from the session, not guessed.
-- [ ] **Does AF/AE/AWB lock on the right thing?** Capture currently locks all
-      three on a fixed 1.5 s timer after start, regardless of whether they
-      have converged and regardless of what the phone is pointed at. Start
-      while pointing at the floor and the whole session is focused at 40 cm
-      with no recovery, since the locks deliberately never re-adjust.
+- [x] ~~**Does AF/AE/AWB lock on the right thing?**~~ It did not, and the
+      floor calibration made it certain rather than merely likely: the lock
+      fired on a 1.5 s timer from `start()` while the prompt was telling the
+      user to point at the floor. Now it fires when the floor step ends
+      (accepted, skipped, or given up on), converges via the one-shot
+      `.autoFocus`/`.autoExpose`/`.autoWhiteBalance` modes with a 4 s
+      backstop, and reads the resulting mode back off the device instead of
+      assuming the assignment stuck. **Still needs a device session** to
+      confirm the modes behave as documented and 4 s is enough.
 
 ## Ideas (unranked, unvalidated)
 
@@ -110,6 +162,34 @@ These cannot be settled on synthetic data. Each names what to look for.
 ## Log
 
 Newest first. One line per session: what changed, what it measured.
+
+- **The capture-pass ATE regression was never real.** Anchoring the
+  trajectory at its first tracked pose multiplies that pose's rotation error
+  by distance travelled, and the anchor lands on the relocalization frame —
+  the least constrained pose in the run. Rigidly aligned (Umeyama, scale
+  held at 1, because LiDAR sets scale and a scale error must stay visible):
+  capture **0.035 m / 0.44 deg** against 0.158 / 2.11 anchored; scout 0.024
+  against 0.048. Per-frame dump says the error is spread, not at the
+  doorways. `--check` now enforces the rigid bound too, which is the
+  sensitive one.
+
+- **Two-pass capture UX + the pass tag that made it real.** `FrameMetaJSON`
+  had no `pass` field, so every frame the app wrote said "capture" — a scout
+  circuit captured through the app would have been reconstructed from. The
+  floor calibration had to move to the capture pass for the same reason: the
+  solve excludes scout frames, so a floor filed against one names a frame
+  that never gets a pose.
+
+- **AF/AE/AWB locked on a 1.5 s timer from camera start**, while the floor
+  prompt was actively telling the user to point at the floor — a whole
+  session focused at ~1 m and exposed for a patch of floor, with no
+  recovery by design. Now locks when the floor step ends, on convergence
+  rather than a clock.
+
+- **The dashboard was quoting distances from the session origin.** It took
+  the length of a weak area's world-space centroid and printed "3.2 m away",
+  which is 3.2 m from where the session started. Everything spatial now goes
+  through the live pose.
 
 - **Floor calibration**: measure the floor from one LiDAR frame at capture
   time instead of inferring it afterwards. 17k inliers at 11 mm rmse vs a

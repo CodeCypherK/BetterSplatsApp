@@ -170,7 +170,7 @@ actor SessionStore {
     func setFloorCalibration(frameId: UInt32, normal: (Double, Double, Double),
                              offsetM: Double, rmseM: Double,
                              incidenceDeg: Double, inliers: Int32) {
-        sessionDoc.floorCalibration = SessionInfoJSON.FloorCalibrationJSON(
+        sessionDoc.floorCalibration = SessionJSON.FloorCalibrationJSON(
             frameId: frameId,
             normal: [normal.0, normal.1, normal.2],
             offsetM: offsetM,

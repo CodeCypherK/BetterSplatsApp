@@ -166,6 +166,12 @@ struct CaptureView: View {
     /// flat card facing the way you happened to walk. Doorways get an orbit
     /// of their own because an opening is where two rooms have to agree about
     /// the same surface, and it is where a scan of a house shows its seam.
+    ///
+    /// "Not straight at it" on the lap is load-bearing, not a stylistic note:
+    /// you walk a lap about half a metre off the wall, and a phone pointed
+    /// square out from there sees a 70 cm patch of flat surface sliding past
+    /// at walking speed. Measured in the harness, laps walked that way
+    /// tracked at zero while every orbit in the same capture tracked fine.
     private var routeCard: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 10) {
@@ -183,7 +189,8 @@ struct CaptureView: View {
             .padding(.bottom, 12)
 
             routeStep(1, "Circle the room",
-                      "One lap, camera facing out at the walls.")
+                      "One lap. Aim along the wall ahead of you, not "
+                    + "straight at it.")
             routeStep(2, "Orbit each big thing",
                       "Go right round it, keeping it in the middle of frame.")
             routeStep(3, "Orbit every doorway",

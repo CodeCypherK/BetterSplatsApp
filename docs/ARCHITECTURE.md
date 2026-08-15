@@ -295,7 +295,26 @@ The lap now looks about 45 deg forward of the wall normal. The same wall is
 then seen obliquely and several metres deep, which is what a person filming
 a wall does, what gives a tracker features that persist across frames, and
 what gives the reconstruction a usable view of the surface instead of a
-close-up of part of it.
+close-up of part of it. Same scene, same path, same seed, 4809 frames at
+1.0 m/s:
+
+| capture pass | square at the wall | **45 deg along it** |
+|---|---|---|
+| frames tracked | 54.6% | **62.4%** |
+| ATE, rigid fit | 0.118 m / 0.27 deg | **0.029 m** / 0.41 deg |
+| ATE, anchored | 5.290 m / 42.2 deg | **0.067 m** / 0.72 deg |
+| median / p95 error | 0.013 / 0.029 m | 0.018 / **0.036 m** |
+| keyframes, points | 626, 29.1k | **675, 32.5k** |
+| ends the pass | LOST | **TRACKING** |
+
+The scout circuit, unchanged in shape, tracks 99.4% at 0.021 m rigid — up
+from 85.9% before the yaw/pitch rate limiter replaced the great-circle slew.
+
+What is left is 37.6% of the capture pass untracked, in three stretches: the
+first 12 m before the capture relocalizes into the scaffold at all, room B's
+lap from its back-left corner, and the room A doorway orbit. Per-frame error
+where it does track is 1.8 cm median. That is a matching problem, not a
+geometry one — see docs/BACKLOG.md.
 
 ## Floor calibration: measuring the floor instead of guessing it
 

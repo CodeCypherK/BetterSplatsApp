@@ -82,8 +82,26 @@ non-expert to that data on the first try.
       (0.06 m / 1.0 deg) alongside the anchored bounds; clean sits at
       0.002 m / 0.22 deg, hard at 0.010 m / 0.47 deg.
 
+- [ ] **Capture-pass coverage on the circle-and-orbit walk: 62.4% tracked,
+      1.8 cm median error where it tracks.** Re-measured on the new flow
+      (seed 7, 118 m, 1.0 m/s): rigid ATE **0.029 m / 0.41 deg**, and the
+      pass now ends TRACKING. The 37.6% that is lost is three stretches, not
+      a drizzle, and each wants a different answer:
+      1. **The first 12 m** — the capture pass starts LOST and takes 340
+         frames to relocalize into the scout scaffold, even though it starts
+         within half a metre of where the scout finished. Cheapest thing to
+         try: seed relocalization with the scaffold keyframes nearest the
+         scout's LAST pose rather than searching the whole map.
+      2. **Room B's lap from the back-left corner** (532 frames).
+      3. **The room A doorway orbit** (297 frames) — also where the residual
+         error lives (0.76 m max, in x 3.0-4.1).
+      The note below about MATCHES still stands and (2)/(3) are its
+      territory. (1) is not — it is a search-order problem with a known
+      answer, and it is the one the user sees first.
+
 - [ ] **Capture-pass coverage: 75.4% tracked, and that is the real target
-      now that accuracy is understood.** The relocalization anchor bug took
+      now that accuracy is understood.** (Measured on the OLD 33 m
+      walkthrough; superseded by the entry above, kept for its analysis.) The relocalization anchor bug took
       it from 12% to 62%; trajectory reshaping to 75%. What is left is
       genuine: the pass still loses tracking at the doorway transits, where
       the turn outruns mapping (see ARCHITECTURE.md). Two geometry-side
@@ -294,6 +312,20 @@ Newest first. One line per session: what changed, what it measured.
   capture could relocalize into the scaffold at all. Where it did track,
   median error was 1.3 cm. A camera 50 cm from a flat wall is not a tracking
   problem to be solved, it is a picture nobody wants.
+
+  | capture pass, seed 7, 118 m | square at the wall | 45 deg along it |
+  |---|---|---|
+  | tracked | 54.6% | **62.4%** |
+  | rigid ATE | 0.118 m / 0.27 deg | **0.029 m** / 0.41 deg |
+  | anchored ATE | 5.290 m / 42.2 deg | **0.067 m** / 0.72 deg |
+  | keyframes / points | 626 / 29.1k | **675 / 32.5k** |
+  | ends | LOST | **TRACKING** |
+
+  The scout circuit, unchanged in shape, went 85.9% -> **99.4%** tracked at
+  0.021 m rigid, purely from the yaw/pitch rate limiter replacing the
+  great-circle slew. The split fixture went 99 -> **199 of 340** registered
+  and 26.7k -> **54.9k** points from the same one-line change to where the
+  lap looks.
 
   **CI split fixture re-sampled, 110 -> 340 frames**, because --two-room is
   now 118 m rather than 33 m and a frame count over a fixed path is a

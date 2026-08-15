@@ -53,14 +53,30 @@ std::optional<LutFitResult> FitOpencvModelFromLut(
   for (int i = 1; i <= kSamples; ++i) {
     const double rf = static_cast<double>(i) / kSamples;
     double ru_px, rd_px;
+    // Apple's tables hold RELATIVE radial magnification, applied as
+    // (1 + value) — not as a multiplier. This multiplied by the raw value,
+    // which on a real device means every radius collapses to about 1.5% of
+    // its true length, and the fit then contorts k1/k2 into nonsense trying
+    // to model that. Measured on an iPhone18,1 capture: k1 = -5.04,
+    // k2 = +5.54, worst-case residual 252 px, with r_u = 900 px mapping to a
+    // NEGATIVE radius. Every undistorted point in the pipeline was wrong,
+    // which takes two-view geometry, PnP and triangulation with it.
+    //
+    // The table's own values prove the convention: entry 0 is exactly 0.0,
+    // and as a direct multiplier that would send every point to the optical
+    // centre. As (1 + 0.0) it correctly leaves the centre alone.
+    //
+    // It survived because synthetic sessions carry no LUT at all and return
+    // early above as an exact pinhole, so this arithmetic had never once run
+    // on real calibration data.
     if (have_inverse) {
       // inverse table: undistorted -> distorted, indexed by undistorted rf.
       ru_px = rf * r_max_px;
-      rd_px = ru_px * SampleLut(lut.inverse, rf);
+      rd_px = ru_px * (1.0 + SampleLut(lut.inverse, rf));
     } else {
       // forward table: distorted -> undistorted, indexed by distorted rf.
       rd_px = rf * r_max_px;
-      ru_px = rd_px * SampleLut(lut.magnification, rf);
+      ru_px = rd_px * (1.0 + SampleLut(lut.magnification, rf));
     }
     ru_norm.push_back(ru_px / f);
     rd_norm.push_back(rd_px / f);
@@ -91,6 +107,43 @@ std::optional<LutFitResult> FitOpencvModelFromLut(
     sq_sum += err_px * err_px;
   }
   result.rms_residual_px = std::sqrt(sq_sum / kSamples);
+
+  // The fitted model must be PHYSICALLY plausible, or it is not used.
+  //
+  // Not "better than doing nothing": k1 = k2 = 0 lives inside the model
+  // space, so least squares can essentially never come out worse in the
+  // mean, and a check against it passes happily on nonsense. What actually
+  // characterises a broken fit is that the forward model stops behaving
+  // like a lens — radii that shrink toward zero, reverse order, or go
+  // negative. The real failure sent a 900 px radius to -112 px.
+  //
+  // This is the gate that was specified ("accept < 0.3 px, fall back over
+  // 0.5 px") and never built, which is how a fit with a 252 px worst-case
+  // error came to be used on a capture without anything objecting.
+  bool physical = true;
+  double previous_rd = 0;
+  for (int i = 1; i <= kSamples; ++i) {
+    const double ru = (static_cast<double>(i) / kSamples) * r_max_px / f;
+    const double rd = ru * (1.0 + result.k1 * ru * ru +
+                            result.k2 * ru * ru * ru * ru);
+    // Monotonic, positive, and never displacing a point by more than a
+    // quarter of the frame. Real phone lenses move corners by a few percent.
+    if (!(rd > previous_rd) || rd <= 0.0 ||
+        std::abs(rd - ru) * f > 0.25 * r_max_px) {
+      physical = false;
+      break;
+    }
+    previous_rd = rd;
+  }
+  if (!physical) {
+    BS_LOGW("calib",
+            "lens fit rejected as non-physical: k1=%.4f k2=%.4f "
+            "(worst residual %.1f px) — using pinhole instead",
+            result.k1, result.k2, result.max_residual_px);
+    result.k1 = 0;
+    result.k2 = 0;
+    result.rejected = true;
+  }
   return result;
 }
 

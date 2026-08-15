@@ -28,6 +28,10 @@ struct LutFitResult {
   // evaluated across the full radius range at reference resolution.
   double max_residual_px = 0;
   double rms_residual_px = 0;
+  // Set when the fitted model was worse than no correction at all and k1/k2
+  // were forced to zero. The geometry is then uncorrected rather than
+  // wrongly corrected, which is the safe direction.
+  bool rejected = false;
 };
 
 // `intrinsics` must be in the same reference pixel space as the LUT

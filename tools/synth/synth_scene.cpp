@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <functional>
 #include <random>
 
 #include <opencv2/imgproc.hpp>
@@ -945,9 +946,14 @@ CapturePlan BuildCapturePlan(double eye_height) {
 
   // One object, orbited: sweep every walkable arc of its ring in one
   // rotational direction, stepping around the blocked stretches without ever
-  // taking your eyes off it.
+  // taking your eyes off it. `aim` is a function of where the camera is
+  // standing, not a fixed point, because a doorway's aim has to slide: an
+  // opening centred in frame is a hole, and the ray goes clean through it
+  // into the next room.
   double orbit_radius = 0;
-  auto orbit = [&](const Eigen::Vector3d& centre, const Eigen::Vector3d& target,
+  auto orbit = [&](const Eigen::Vector3d& centre,
+                   const std::function<Eigen::Vector3d(const Eigen::Vector3d&)>&
+                       aim,
                    double want_radius, int side) {
     const OrbitPlan op =
         ChooseOrbit(plan, {centre.x(), plan_y, centre.z()}, want_radius,
@@ -975,10 +981,10 @@ CapturePlan BuildCapturePlan(double eye_height) {
       const Eigen::Vector3d entry = ring_point(hub, op.radius, run.a0);
       if (pos.empty()) {
         pos.push_back(entry);
-        look.push_back(target);
+        look.push_back(aim(entry));
       } else {
         const double gap_a = run.a0 - 0.5 * run.span();
-        route_to(entry, target,
+        route_to(entry, aim(entry),
                  {ring_point(hub, op.radius * 0.6, gap_a),
                   ring_point(hub, op.radius * 1.45, gap_a)});
       }
@@ -986,8 +992,9 @@ CapturePlan BuildCapturePlan(double eye_height) {
           2, static_cast<int>(run.span() * op.radius / kPathStep + 0.5));
       for (int i = 1; i <= steps; ++i) {
         const double a = run.a0 + run.span() * i / steps;
-        pos.push_back(ring_point(hub, op.radius, a));
-        look.push_back(target);
+        const Eigen::Vector3d at = ring_point(hub, op.radius, a);
+        pos.push_back(at);
+        look.push_back(aim(at));
       }
     }
   };
@@ -1123,7 +1130,8 @@ CapturePlan BuildCapturePlan(double eye_height) {
       todo.erase(next);
       current = CapturePhase::kApproach;
       const size_t before = pos.size();
-      orbit(c, {c.x(), std::max(look_y * 0.8, c.y()), c.z()}, want, 0);
+      const Eigen::Vector3d at{c.x(), std::max(look_y * 0.8, c.y()), c.z()};
+      orbit(c, [at](const Eigen::Vector3d&) { return at; }, want, 0);
       // Everything the orbit emitted past its entry route is the orbit
       // itself; the route in front of it is approach.
       tag();
@@ -1143,7 +1151,27 @@ CapturePlan BuildCapturePlan(double eye_height) {
     current = CapturePhase::kApproach;
     {
       const size_t before = pos.size();
-      orbit(L.door_centre(), L.door_centre(), want, room == 0 ? -1 : 1);
+      // Aim at the REVEAL, not through the hole. The target sits on the
+      // divider face the camera is on, and slides across the opening with
+      // the camera's own z, so the near jamb stays in the middle of frame
+      // right through the arc. Aimed at the opening's centre instead, the
+      // ray passed through the doorway and landed on the far room's back
+      // wall: 7.4 m median subject distance for an orbit whose entire
+      // purpose is the 16 cm of surface inside the opening.
+      // OUTSIDE the opening by a hand's width, not inside it: aimed at
+      // 0.85 x door_half the target is still in the hole and the ray goes
+      // straight through. A quarter metre past the jamb puts the reveal,
+      // the jamb and the wall around it in the middle of frame, which is
+      // what someone photographing a door frame actually points at.
+      const double edge = L.door_half + 0.25;
+      const double face_a = L.face_a(), face_b = L.face_b();
+      const double eye = L.door_height * 0.5;
+      orbit(L.door_centre(),
+            [edge, face_a, face_b, eye, &L](const Eigen::Vector3d& cam) {
+              return Eigen::Vector3d(cam.x() < L.door_x ? face_a : face_b, eye,
+                                     std::clamp(cam.z(), -edge, edge));
+            },
+            want, room == 0 ? -1 : 1);
       tag();
       const Eigen::Vector3d hub(L.door_x, plan_y, 0.0);
       for (size_t i = before; i < phase.size(); ++i) {

@@ -87,6 +87,16 @@ def main() -> int:
     for b in doc["furniture"]:
         rect(b[0], b[1], b[2], b[3], fill="#222a35", stroke="#4b5563",
              stroke_width=2, rx=3)
+        cx, cz = px(0.5 * (b[0] + b[1]), 0.5 * (b[2] + b[3]))
+        out.append(f'<circle cx="{cx:.1f}" cy="{cz:.1f}" r="2.5" '
+                   f'fill="#6b7280"/>')
+
+    for i, r in enumerate(rooms):
+        lx, lz = px(0.5 * (r[0] + r[1]), r[3] - 0.28)
+        out.append(f'<text x="{lx:.1f}" y="{lz:.1f}" fill="#4b5563" '
+                   f'font-size="13" text-anchor="middle">'
+                   f'room {"AB"[i]} — {r[1] - r[0]:.0f} × {r[3] - r[2]:.0f} m'
+                   f'</text>')
 
     # The walk, one polyline per run of a single phase so colour changes land
     # exactly where the phase does.
@@ -134,21 +144,41 @@ def main() -> int:
     out.append(f'<text x="{sx + 11:.1f}" y="{sz + 4:.1f}" fill="#ffffff" '
                f'font-size="12">start / end</text>')
 
+    # A one-metre grid, because "is that gap walkable" is the question the
+    # picture gets asked and a pixel is not an answer.
+    for gx in range(math.ceil(x0), math.floor(x1) + 1):
+        ax, az0 = px(gx, z0)
+        _, az1 = px(gx, rooms[0][3] + 0.4)
+        out.append(f'<line x1="{ax:.1f}" y1="{az0:.1f}" x2="{ax:.1f}" '
+                   f'y2="{az1:.1f}" stroke="#ffffff" stroke-width="0.5" '
+                   f'opacity="0.05"/>')
+
     length = sum(math.hypot(b[0] - a[0], b[1] - a[1])
                  for a, b in zip(plan, plan[1:]))
+    subject = sorted(p[5] for p in plan if p[5] > 0)
+    med = subject[len(subject) // 2] if subject else 0
     out.append(f'<text x="14" y="24" fill="#e5e7eb" font-size="15" '
-               f'font-weight="600">Capture walk — {length:.0f} m</text>')
+               f'font-weight="600">Capture walk — {length:.0f} m, '
+               f'subject {med:.1f} m away (median)</text>')
+    out.append(f'<text x="14" y="42" fill="#6b7280" font-size="11">'
+               f'ticks show where the camera is pointed · 1 m grid</text>')
+
     for i, phase in enumerate(
             (LAP, ORBIT_OBJECT, ORBIT_DOORWAY, THROUGH_DOORWAY, APPROACH)):
         colour, label = STYLE[phase]
         walked = sum(math.hypot(b[0] - a[0], b[1] - a[1])
                      for a, b in zip(plan, plan[1:]) if b[4] == phase)
+        # Subject distance per phase: the number that says whether the camera
+        # is looking at something it can reconstruct, or at a wall it is
+        # standing on top of.
+        seen = sorted(p[5] for p in plan if p[4] == phase and p[5] > 0)
+        near = f" · {seen[len(seen) // 2]:.1f} m out" if seen else ""
         y = H - 46 + 17 * (i % 3)
-        x = 16 + 235 * (i // 3)
+        x = 16 + 250 * (i // 3)
         out.append(f'<line x1="{x}" y1="{y - 4}" x2="{x + 22}" y2="{y - 4}" '
                    f'stroke="{colour}" stroke-width="3.4"/>')
         out.append(f'<text x="{x + 30}" y="{y}" fill="#9aa4b2" font-size="12">'
-                   f'{label} — {walked:.0f} m</text>')
+                   f'{label} — {walked:.0f} m{near}</text>')
 
     out.append("</svg>")
     with open(args.out, "w") as f:

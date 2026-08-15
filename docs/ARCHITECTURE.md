@@ -279,6 +279,31 @@ free-standing table reaches 11. That is a property of the room, not a defect
 of the plan, and it is why the readiness score weights view overlap per
 patch rather than per object.
 
+### Subject distance is the number that says whether a plan is any good
+
+`bs_synth --dump-plan` writes the layout and the walk as JSON and
+`scripts/plot_capture_plan.py` draws it top-down with the view direction
+every half metre. The dump carries **subject distance** — how far the first
+surface along the view ray actually is — and that one column has caught two
+defects that no summary of the path's own geometry could state, because in
+both the look TARGET was a perfectly healthy distance away and what the ray
+landed on was not:
+
+| | before | after |
+|---|---|---|
+| lap: camera square at a wall it walks 55 cm from | 0.94 m | **1.99 m** |
+| doorway orbit: aimed through the opening at the next room | 7.39 m | **2.08 m** |
+
+The doorway one is the sharper lesson. That orbit exists to photograph the
+16 cm of reveal inside the opening, and it was centred on the opening —
+which is a hole, so the ray went through it and the frame centre landed on
+room B's back wall 7.4 m away. The aim now slides along the divider face the
+camera is on, a quarter metre PAST the jamb, so the reveal and the wall
+around it sit in the middle of frame for the two thirds of the arc that is
+oblique enough to see them. Head-on it still looks through, and that is
+correct: face-on the jambs are edge-on, which is the whole reason the
+opening gets orbited instead of photographed once.
+
 ### The lap looks along the wall, not at it
 
 Circling a room means walking about half a metre off the wall, and a camera

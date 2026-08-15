@@ -113,185 +113,6 @@ struct PairMatches {
   std::vector<Match> inliers;
 };
 
-// ---------------------------------------------------- track completion (S8)
-//
-// A track observed in three frames is usually visible in a dozen, and the
-// pair graph is why it is not: S3 proposes sequential neighbours plus fixed
-// index strides, so a wall seen on the way into a room and again on the way
-// out has no edge between those two views at all, however alike they look.
-// Matching cannot fix what was never proposed.
-//
-// So completion asks the geometric question instead of the appearance one.
-// Once a track has a point and a frame has a pose, where the track must land
-// in that frame is not a guess — it is arithmetic. Look there, in a few
-// pixels, among features that belong to no track yet, and confirm with the
-// descriptor.
-//
-// Neighbours are chosen by CAMERA PROXIMITY, not by index. That is the part
-// that reaches the revisits: two frames 300 apart in the sequence but two
-// metres apart in the room are neighbours here and nowhere else in the
-// pipeline. It is not a substitute for the appearance retrieval the plan
-// calls for in S2 — that would find pairs before any pose exists, and this
-// needs a pose — but it recovers the same connections one round later.
-//
-// The search radius is deliberately WIDER than the pruning threshold
-// (6 px against 4). A completed observation is accepted on a projection
-// through a pose and a point that are both still being refined, so the slack
-// is what lets it be found at all; surviving is a separate question, and the
-// next round's prune is the one that asks it. Anything BA cannot pull under
-// 4 px goes straight back out.
-int CompleteTracks(std::vector<FrameData>& frames, std::vector<Track>& tracks,
-                   const EngineConfig& config, bool use_sift) {
-  const float radius = config.final_track_complete_px;
-  if (radius <= 0.0f || frames.empty()) return 0;
-
-  // How many nearby cameras a frame borrows candidate tracks from. Enough
-  // that an orbit's opposite side is reachable, few enough that the work
-  // stays linear in frames: each neighbour contributes its whole track list.
-  constexpr int kNeighbors = 12;
-  // A completed observation is a claim that two views see the same surface,
-  // made on a projection rather than on a verified pair. Hold it to the same
-  // descriptor standard the pair matcher uses, plus a ratio test against the
-  // runner-up inside the same search disc.
-  constexpr float kRatio = 0.8f;
-  const int norm = use_sift ? cv::NORM_L2 : cv::NORM_HAMMING;
-  const float max_distance = use_sift ? 0.0f : 64.0f;
-
-  std::vector<int> posed;
-  for (const auto& f : frames) {
-    if (f.posed) posed.push_back(f.index);
-  }
-  if (static_cast<int>(posed.size()) < 2) return 0;
-  std::vector<Eigen::Vector3d> centre(frames.size());
-  for (const int i : posed) centre[i] = frames[i].pose.CameraCenter();
-
-  // Reused across frames: `seen` marks tracks already observed in the frame
-  // being completed (stamped, so it never needs clearing), `claimed` stops
-  // two tracks taking the same feature within one frame.
-  std::vector<int> seen(tracks.size(), -1);
-  std::vector<int> claimed;
-  std::vector<std::pair<int, int>> candidates;  // (track, reference frame)
-  std::vector<std::pair<double, int>> by_distance;
-
-  int added = 0;
-  for (const int fi : posed) {
-    FrameData& f = frames[fi];
-    if (f.K.width <= 0 || f.K.height <= 0) continue;
-
-    // Unclaimed features only. A feature already in a track was placed by a
-    // geometrically verified match; completion never overrides that.
-    std::vector<int> free_features;
-    for (size_t k = 0; k < f.track_of_feature.size(); ++k) {
-      if (f.track_of_feature[k] < 0) free_features.push_back(static_cast<int>(k));
-    }
-    if (free_features.empty()) continue;
-
-    const float cell = std::max(16.0f, radius);
-    const int gw = static_cast<int>(f.K.width / cell) + 2;
-    const int gh = static_cast<int>(f.K.height / cell) + 2;
-    std::vector<std::vector<int>> grid(static_cast<size_t>(gw) * gh);
-    for (const int k : free_features) {
-      const cv::Point2f& p = f.undistorted[k];
-      const int gx = static_cast<int>(p.x / cell);
-      const int gy = static_cast<int>(p.y / cell);
-      if (gx < 0 || gy < 0 || gx >= gw || gy >= gh) continue;
-      grid[static_cast<size_t>(gy) * gw + gx].push_back(k);
-    }
-
-    for (const auto& obs : f.track_of_feature) {
-      if (obs >= 0) seen[obs] = fi;
-    }
-
-    by_distance.clear();
-    for (const int gi : posed) {
-      if (gi == fi) continue;
-      by_distance.emplace_back((centre[gi] - centre[fi]).squaredNorm(), gi);
-    }
-    const size_t take = std::min<size_t>(kNeighbors, by_distance.size());
-    std::partial_sort(by_distance.begin(), by_distance.begin() + take,
-                      by_distance.end());
-
-    candidates.clear();
-    for (size_t n = 0; n < take; ++n) {
-      const int gi = by_distance[n].second;
-      for (const int32_t t : frames[gi].track_of_feature) {
-        if (t < 0 || seen[t] == fi) continue;
-        if (tracks[t].dead || !tracks[t].has_point) continue;
-        seen[t] = fi;  // claim it for this frame's candidate list, once
-        candidates.emplace_back(t, gi);
-      }
-    }
-    if (candidates.empty()) continue;
-
-    claimed.assign(f.track_of_feature.size(), 0);
-    for (const auto& [t, ref] : candidates) {
-      const Eigen::Vector3d xc = f.pose.Apply(tracks[t].X);
-      if (xc.z() <= 0.05) continue;
-      const Eigen::Vector2d proj = f.K.Project(xc);
-      // A margin inside the border: a point projecting onto the very edge
-      // has half its search disc outside the image, so the runner-up the
-      // ratio test needs may simply not exist.
-      if (proj.x() < radius || proj.y() < radius ||
-          proj.x() > f.K.width - radius || proj.y() > f.K.height - radius) {
-        continue;
-      }
-
-      // The descriptor to match against comes from the track's observation
-      // in the neighbour that offered it — the nearest camera that sees it,
-      // so the closest viewpoint available.
-      int ref_feature = -1;
-      for (const auto& to : tracks[t].observations) {
-        if (to.frame_index == ref) {
-          ref_feature = to.feature;
-          break;
-        }
-      }
-      if (ref_feature < 0) continue;
-      const cv::Mat ref_desc = frames[ref].features.descriptors.row(ref_feature);
-
-      const int gx = static_cast<int>(proj.x() / cell);
-      const int gy = static_cast<int>(proj.y() / cell);
-      int best = -1;
-      double best_dist = std::numeric_limits<double>::max();
-      double second_dist = std::numeric_limits<double>::max();
-      for (int dy = -1; dy <= 1; ++dy) {
-        for (int dx = -1; dx <= 1; ++dx) {
-          const int cx = gx + dx;
-          const int cy = gy + dy;
-          if (cx < 0 || cy < 0 || cx >= gw || cy >= gh) continue;
-          for (const int k : grid[static_cast<size_t>(cy) * gw + cx]) {
-            if (claimed[k] != 0 || f.track_of_feature[k] >= 0) continue;
-            const cv::Point2f& p = f.undistorted[k];
-            const double dpx = std::hypot(p.x - proj.x(), p.y - proj.y());
-            if (dpx > radius) continue;
-            const double dist =
-                cv::norm(ref_desc, f.features.descriptors.row(k), norm);
-            if (dist < best_dist) {
-              second_dist = best_dist;
-              best_dist = dist;
-              best = k;
-            } else if (dist < second_dist) {
-              second_dist = dist;
-            }
-          }
-        }
-      }
-      if (best < 0) continue;
-      if (max_distance > 0 && best_dist > max_distance) continue;
-      if (second_dist < std::numeric_limits<double>::max() &&
-          best_dist >= kRatio * second_dist) {
-        continue;
-      }
-
-      f.track_of_feature[best] = t;
-      tracks[t].observations.push_back({fi, best});
-      claimed[best] = 1;
-      ++added;
-    }
-  }
-  return added;
-}
-
 // ------------------------------------------------------- resume caching
 // Features and verified matches persist to final/cache/ as they are
 // computed, keyed by a hash of the solve-relevant configuration and the
@@ -626,10 +447,6 @@ FinalOutcome RunFinalSolve(const EngineConfig& config,
             session_frames, sift_mb, config.final_sift_budget_mb);
   }
 
-  // Set at track building: whether the descriptors were kept resident for
-  // the track-completion stage rather than released.
-  bool complete_tracks = false;
-
   // Resume cache setup.
   const fs::path cache_dir = fs::path(session_dir) / "final" / "cache";
   {
@@ -926,32 +743,10 @@ FinalOutcome RunFinalSolve(const EngineConfig& config,
     }
     // Descriptors are no longer needed past track building — releasing
     // them bounds peak memory (matters for the SIFT quality path on-device;
-    // the resume cache keeps them on disk).
-    //
-    // Track completion is the one exception: it runs inside the BA rounds
-    // and confirms every projection against a descriptor. Holding them costs
-    // exactly what the SIFT budget already measured, but at a WORSE moment —
-    // during matching nothing else is allocated, during BA the tracks,
-    // points and Ceres blocks are — so this asks for half the budget rather
-    // than all of it, and skips the stage over that. Logged, because a
-    // quality stage that silently does not run on the device it was written
-    // for is the same defect as a config knob nothing reads.
-    const double descriptor_mb =
-        static_cast<double>(frames.size()) *
-        (use_sift ? config.final_sift_features * 128 * sizeof(float)
-                  : config.final_orb_features * 32) /
-        (1024.0 * 1024.0);
-    complete_tracks = config.final_track_complete_px > 0.0f &&
-                      descriptor_mb <= 0.5 * config.final_sift_budget_mb;
-    if (!complete_tracks) {
-      for (auto& frame : frames) frame.features.descriptors.release();
-      if (config.final_track_complete_px > 0.0f) {
-        BS_LOGI("final",
-                "track completion needs %.0f MB of descriptors held through "
-                "BA, against half a %d MB budget — skipping it",
-                descriptor_mb, config.final_sift_budget_mb);
-      }
-    }
+    // the resume cache keeps them on disk). Track completion, which the plan
+    // puts in S8, would have needed them held all the way through BA; it was
+    // built, measured, and removed. See docs/BACKLOG.md.
+    for (auto& frame : frames) frame.features.descriptors.release();
     report(BS_STAGE_TRACKS, 1.0f);
   }
 
@@ -1621,12 +1416,6 @@ FinalOutcome RunFinalSolve(const EngineConfig& config,
       ++newly_registered;
     }
 
-    // Extend tracks into frames that should see them and never matched.
-    // After PnP so frames registered this round are completed too, and
-    // before re-triangulation so the new observations count toward it.
-    const int completed =
-        complete_tracks ? CompleteTracks(frames, tracks, config, use_sift) : 0;
-
     // Re-triangulate tracks that lost their point or gained posed views.
     int retriangulated = 0;
     for (auto& track : tracks) {
@@ -1652,11 +1441,11 @@ FinalOutcome RunFinalSolve(const EngineConfig& config,
     report(BS_STAGE_GLOBAL_BA, static_cast<float>(round) / ba_rounds);
     BS_LOGI("final",
             "round %d: %u/%u registered, %u points, rmse %.2fpx, mean track "
-            "%.2f, pruned %zu obs %zu pts, +%d frames, +%d completed obs, "
-            "+%d retriangulated, %u lidar terms",
+            "%.2f, pruned %zu obs %zu pts, +%d frames, +%d retriangulated, "
+            "%u lidar terms",
             round, registered, metrics.images_total, live_points,
             metrics.reproj_rmse_px, metrics.mean_track_len, pruned_obs,
-            pruned_points, newly_registered, completed, retriangulated,
+            pruned_points, newly_registered, retriangulated,
             metrics.lidar_residuals);
 
     const double change_frac =
@@ -1666,14 +1455,6 @@ FinalOutcome RunFinalSolve(const EngineConfig& config,
         change_frac < config.final_early_stop_frac) {
       break;
     }
-  }
-
-  // Track completion was the last thing that needed them. Everything below —
-  // levelling, the floater sweep, the dense cloud, the export — works on
-  // poses and points, and the dense cloud is where memory peaks.
-  if (complete_tracks) {
-    for (auto& frame : frames) frame.features.descriptors.release();
-    complete_tracks = false;
   }
 
   // ------------------------------------------------ S8b level the world

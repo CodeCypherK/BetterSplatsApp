@@ -203,6 +203,12 @@ typedef struct bs_live_status {
      5 cm, which would have made the change a no-op on device. 0 when the
      engine has no scene depth yet; use the configured floor. */
   float   store_spacing_m;
+  /* And how far it must TURN, same reason. Rotation is an OR against the
+     distance — turning on the spot reveals new scene with no parallax at
+     all — so an app holding its own constant for this half of the rule
+     silently overrides whatever the engine decided, which is what the app
+     did with the distance until it was published here. */
+  float   store_rotation_deg;
   int32_t scale_locked;       /* metric gauge locked from LiDAR agreement  */
 
   /* Pending storage directives (drained by this call). */

@@ -80,8 +80,29 @@ struct EngineConfig {
   // fixed spacing in metres cannot be right for both an orbit at 2 m and a
   // wall at 6 m; overlap between neighbouring images is what matters and it
   // is set by the ratio, not the distance.
-  float store_translation_depth_frac = 0.04f;
-  float store_min_rotation_deg = 5.0f;
+  //
+  // Measured through the engine on the two-room walk (3370 frames, 118 m),
+  // which is the only way this number means anything — a simulation over the
+  // capture plan's true subject distances said 805 frames and the engine
+  // keeps far more, because it measures depth from the tracked points and
+  // those sit on near surfaces:
+  //
+  //   4% / 5 deg   1267 kept   633 per room
+  //   6% / 5 deg   1155        578
+  //   6% / 15 deg  1034        517   <- shipped
+  //
+  // 6% is ~11 cm at the observed 1.9 m median depth, still ~93% overlap
+  // between neighbours where ordinary photogrammetry practice asks for
+  // 60-80%. The band is 200-500 per room.
+  float store_translation_depth_frac = 0.06f;
+  // Rotation alone is enough: turning on the spot reveals new scene with no
+  // parallax at all, and those views still have to be stored. But it is an
+  // OR against the translation term, so on an orbit-heavy walk it becomes a
+  // cadence of its own — at 0.86 deg/frame a 5 deg gate fires every six
+  // frames whatever the camera has done, which is why raising the depth
+  // fraction alone barely moved the count. 15 deg is 24 frames around a full
+  // turn, ~75% overlap at a 60 deg field of view.
+  float store_min_rotation_deg = 15.0f;
   // Sharpness a frame must reach, as a fraction of recent typical sharpness,
   // to be stored when geometry says one is due. RAW is never rewritten, so a
   // smeared frame stored here is what the final solve reconstructs from
@@ -167,9 +188,6 @@ struct EngineConfig {
   // this multiple of the median per-image reprojection error.
   float final_drop_weak_obs_frac = 0.25f;
   float final_drop_err_factor = 2.0f;
-  // Track completion: how close a track's projection must land to an
-  // unclaimed feature for that feature to join it. 0 disables the stage.
-  float final_track_complete_px = 6.0f;
   float final_early_stop_frac = 0.005f;
   int final_threads = 4;
 

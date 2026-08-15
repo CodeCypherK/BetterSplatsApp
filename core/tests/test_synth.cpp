@@ -299,7 +299,17 @@ TEST_F(SynthTest, CaptureWalkStoresARoomsWorthOfFrames) {
   // Two rooms of this size are two captures, and each has to land inside the
   // project budget on its own — which is the point of the gate being scaled
   // by scene depth rather than fixed in metres. At a flat 5 cm this room
-  // stored ~1100 frames; at 4% of subject distance it stores ~400.
+  // stored ~1100 frames.
+  //
+  // Read this as a bound on the PLAN, not on the engine. It counts against
+  // the true distance to the first surface along the optical axis, and the
+  // engine scales by the median depth of its TRACKED points, which sit on
+  // near textured surfaces and are therefore closer. Measured through
+  // `bs_replay --live` the engine keeps about 36% more than this simulation
+  // predicts (805 predicted, 1267 actual, at the 4%/5 deg settings). So this
+  // failing means the walk itself has gone wrong; this passing does not mean
+  // the shipped counts are in band, and the numbers in EngineConfig's
+  // store-gating block are the ones that were measured through the engine.
   EXPECT_GE(stored, 200) << "a room's capture is too thin to reconstruct";
   EXPECT_LE(stored, 500) << "a room's capture will not fit a project";
 }

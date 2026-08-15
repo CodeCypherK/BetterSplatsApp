@@ -1035,6 +1035,7 @@ void LiveSystem::FillStatus(bs_live_status& out) const {
   out.scale_locked = scale_locked_ ? 1 : 0;
   out.blur_metric = static_cast<float>(last_lap_var_);
   out.store_spacing_m = store_spacing_m_;
+  out.store_rotation_deg = config_.store_min_rotation_deg;
   out.readiness_overall = readiness_.OverallScore();
   out.inlier_ratio =
       last_matches_ > 0

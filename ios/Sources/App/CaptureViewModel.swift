@@ -95,17 +95,23 @@ final class FrameFeedContext: @unchecked Sendable {
     /// Required spacing between stored frames, published by the engine each
     /// poll. Guarded by `lock` like the pose it travels with.
     private var storeSpacingM: Double = 0
+    /// And how far it must turn. Published by the engine for the same reason
+    /// as the distance: the app used to hold its own 5 deg constant, so
+    /// changing the engine's would have done nothing on device.
+    private var storeRotationDeg: Double = 0
     /// Pose of the last frame actually written, to measure movement against.
     private var lastStoredCentre: SIMD3<Double>?
     private var lastStoredRotation: simd_quatd?
 
-    func publishPose(_ viewer: ViewerPose?, storeSpacingM spacing: Double = 0) {
+    func publishPose(_ viewer: ViewerPose?, storeSpacingM spacing: Double = 0,
+                     storeRotationDeg rotation: Double = 0) {
         lock.lock()
         latestCentre = viewer?.center
         latestRotation = viewer?.rotation
         // 0 means the engine has no scene depth yet — keep the last spacing
         // rather than snapping back to the floor and storing a burst.
         if spacing > 0 { storeSpacingM = spacing }
+        if rotation > 0 { storeRotationDeg = rotation }
         lock.unlock()
     }
 
@@ -198,7 +204,7 @@ final class FrameFeedContext: @unchecked Sendable {
             let dot = abs(simd_dot(rotation.vector, lastRotation.vector))
             let turn = 2 * acos(min(1.0, dot)) * 180 / .pi
             moved = step >= max(Self.storeMinTranslationM, storeSpacingM)
-                || turn >= Self.storeMinRotationDeg
+                || turn >= max(Self.storeMinRotationDeg, storeRotationDeg)
                 || elapsed >= Self.storeMaxIntervalS
         }
         let shouldStore = !busy && !capped && elapsed >= 0.30 && moved
@@ -742,8 +748,10 @@ final class CaptureViewModel {
                 // where the camera is, and how far it has to move before
                 // another frame is worth keeping — which the engine works out
                 // from how far away the scene is.
-                context.publishPose(self.viewer,
-                                    storeSpacingM: Double(status.store_spacing_m))
+                context.publishPose(
+                    self.viewer,
+                    storeSpacingM: Double(status.store_spacing_m),
+                    storeRotationDeg: Double(status.store_rotation_deg))
                 if let centre = self.viewer?.center { self.extendWalked(centre) }
 
                 // Drain the engine's storage directives. Polling consumes

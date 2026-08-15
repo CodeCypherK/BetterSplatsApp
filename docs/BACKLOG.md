@@ -82,22 +82,37 @@ non-expert to that data on the first try.
       (0.06 m / 1.0 deg) alongside the anchored bounds; clean sits at
       0.002 m / 0.22 deg, hard at 0.010 m / 0.47 deg.
 
-- [ ] **Capture-pass coverage on the circle-and-orbit walk: 62.4% tracked,
-      1.8 cm median error where it tracks.** Re-measured on the new flow
-      (seed 7, 118 m, 1.0 m/s): rigid ATE **0.029 m / 0.41 deg**, and the
-      pass now ends TRACKING. The 37.6% that is lost is three stretches, not
-      a drizzle, and each wants a different answer:
-      1. **The first 12 m** — the capture pass starts LOST and takes 340
-         frames to relocalize into the scout scaffold, even though it starts
-         within half a metre of where the scout finished. Cheapest thing to
-         try: seed relocalization with the scaffold keyframes nearest the
-         scout's LAST pose rather than searching the whole map.
-      2. **Room B's lap from the back-left corner** (532 frames).
-      3. **The room A doorway orbit** (297 frames) — also where the residual
-         error lives (0.76 m max, in x 3.0-4.1).
-      The note below about MATCHES still stands and (2)/(3) are its
-      territory. (1) is not — it is a search-order problem with a known
-      answer, and it is the one the user sees first.
+- [x] ~~**Capture-pass coverage on the circle-and-orbit walk: 62.4%
+      tracked.**~~ **Gone. Re-measured at 100.0%, and nothing was built to
+      fix it.** The plan was to seed relocalization with the scaffold
+      keyframes nearest the scout's last pose instead of sweeping the map —
+      "a search-order problem with a known answer". Measuring first was the
+      right call: there is no longer anything to fix. Seed 7, scout +
+      capture, 3370 frames:
+
+      | | recorded (62.4%) | now |
+      |---|---|---|
+      | scout tracked / rigid ATE | 85.9% / 0.024 m | **99.4%** / 0.021 m |
+      | capture tracked | 62.4% | **100.0%** |
+      | capture rigid ATE | 0.029 m / 0.41 deg | **0.019 m** / 0.24 deg |
+      | capture anchored ATE | 0.067 m | **0.023 m** |
+      | keyframes / points | 675 / 32.5k | **921 / 42.9k** |
+
+      The credit belongs to the two trajectory changes the user asked for,
+      not to anything in the tracker: hugging the perimeter and looking
+      ACROSS the room means the capture pass now starts 0.4 m from where the
+      scout finished and pointed within a couple of degrees of the same
+      bearing, so the five newest scaffold keyframes match on frame one.
+      The old lap looked 45 deg along the wall from further out, which is a
+      different picture of a different surface, and 340 frames of sweeping
+      the map was the price. **Anchored and rigid ATE have converged**
+      (0.023 vs 0.019), which is the signature of a first pose that is
+      actually well constrained — the whole anchoring artefact was an
+      artefact of relocalizing badly.
+
+      Also note the capture pass alone, with no scout at all, tracks 99.8%
+      at 0.019 m rigid. The scaffold is no longer carrying the run; it is
+      insurance.
 
 - [ ] **Capture-pass coverage: 75.4% tracked, and that is the real target
       now that accuracy is understood.** (Measured on the OLD 33 m
@@ -172,7 +187,47 @@ non-expert to that data on the first try.
         gap, not a misfiled knob.
 
       Done since:
-      - ~~**`final_track_complete_px = 6.0`**~~ — built. See the log entry.
+      - ~~**`final_track_complete_px = 6.0`**~~ — **built, measured, and
+        removed. It makes the reconstruction worse.** The plan puts track
+        completion in S8 and the reasoning is appealing: once a track has a
+        point and a frame has a pose, where it lands in that frame is
+        arithmetic, so look there among unclaimed features. Implemented with
+        candidates drawn from the twelve nearest cameras BY POSITION, which
+        also reaches revisits the index-strided pair graph never proposes.
+        Two attempts, on the 400-frame SIFT fixture:
+
+        | | baseline | geometry only | descriptor-gated |
+        |---|---|---|---|
+        | registered | 377/400 | 378/400 | 377/400 |
+        | points | **80,352** | 74,608 | 79,518 |
+        | rmse | **0.32 px** | 0.89 px | 0.37 px |
+        | mean track | 4.8 | 5.9 | 4.9 |
+        | ATE | **0.057 m** | 0.298 m | 0.104 m |
+
+        The first attempt had no working appearance check at all — for SIFT
+        the absolute cap is disabled and a ratio test inside a six-pixel disc
+        passes on anything, because a disc almost always holds one candidate.
+        The second derives an absolute threshold from the session's own
+        verified inliers (90th percentile, 0.3 in RootSIFT L2), which cut
+        completions 9x, from 70k to 8k in round one — and it is STILL worse
+        than not doing it: ATE 1.8x, rmse up, marginally fewer points, and
+        mean track length barely moved.
+
+        Best explanation: candidates come from the nearest cameras, so every
+        completed observation is a SHORT-baseline one. They add weight to BA
+        without adding constraint and pull points toward the local cluster,
+        diluting the long-baseline observations the strided pair graph exists
+        to create. That sits beside the earlier finding that requiring LONG
+        baselines for triangulation partners also hurt — this pipeline is
+        sensitive to the baseline MIX, and both ends of it.
+
+        It also cost ~600 MB of descriptors held resident through BA, which
+        is real money on the device. Removed rather than left default-off: a
+        knob nothing reads is the defect this whole audit is about.
+        **If anyone tries again, take candidates from FAR cameras that see
+        the track, not near ones, and measure ATE — not track length.** Mean
+        track length went up in both attempts while the model got worse, so
+        it is not the metric to optimize.
       - ~~**`boot_h_over_e_max = 0.45`**~~ — **this entry was wrong.** The
         behaviour ships and always did: `EstimateRelativePose` computes the
         homography inlier count beside the essential one and sets

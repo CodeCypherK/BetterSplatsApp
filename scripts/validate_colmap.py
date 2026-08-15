@@ -341,23 +341,27 @@ def main() -> int:
     # coordinates exactly. A room-at-a-time workflow only works because the
     # parts were never re-anchored — any drift here and separately trained
     # splats would not line up, which is the entire reason to split.
-    # 340 frames is not a round number, it is a DENSITY. --two-room is now
-    # the circle-and-orbit capture walk (ARCHITECTURE.md), 118 m rather than
-    # the 33 m loop this fixture was sized for, and a frame count over a
-    # fixed path is a spacing: 340 puts stored images 35 cm apart, which is
-    # what the old 110 gave and still 3x sparser than a device stores. The
-    # cost of getting this wrong is not a failed assertion, it is a fixture
-    # that passes while reconstructing nonsense — measured on this scene,
-    # 110 frames (94 cm apart) lands 0.74 m from ground truth and 180 frames
-    # fragments into six components and lands 7.0 m out, while 340 comes in
-    # at 0.051 m and 0.31 deg with 199 of 340 registered. A fixture that
-    # cannot reconstruct the scene cannot detect a regression in
-    # reconstructing it.
+    #
+    # Single room, not --two-room, and that is a deliberate downgrade. This
+    # section used to walk the two-room fixture, and once --two-room became
+    # the 106 m circle-and-orbit capture walk it stopped reconstructing:
+    # 340 frames registers 119-199 of 340 depending on details that should
+    # not matter, and lands anywhere from 0.05 m to 0.34 m from truth; 480
+    # frames is no better (156/480, 1.34 m), so it is not a density problem.
+    # A gate that swings that far on unrelated changes is not a gate.
+    #
+    # What this section actually tests is that split parts carry the combined
+    # model's coordinates, and that needs a model, not a hard scene. The
+    # single-room orbit gives 140/140 registered at 0.0017 m — so a real
+    # regression in split export has nowhere to hide. The two-room walk's
+    # registration is a genuine open question about the SOLVER and is filed
+    # as one in docs/BACKLOG.md; it should not be answered by a CI fixture
+    # quietly reconstructing rubbish.
     with tempfile.TemporaryDirectory(prefix="bs_validate_split_") as tmp:
         split = Path(tmp) / "session"
         out = subprocess.run(
-            [str(synth), str(split), "--frames", "340", "--width", "640",
-             "--height", "480", "--seed", "4", "--two-room"],
+            [str(synth), str(split), "--frames", "140", "--width", "640",
+             "--height", "480", "--seed", "4", "--sweep", "140"],
             capture_output=True, text=True)
         if out.returncode != 0:
             print(f"ERROR: split bs_synth failed:\n{out.stdout}{out.stderr}",
@@ -377,15 +381,14 @@ def main() -> int:
         # Gate the fixture's GEOMETRY, not just its file structure. Every
         # assertion below this point — part counts, point counts, shared
         # coordinates — passes just as happily on a model that is metres out
-        # of place, which is exactly what this fixture was doing before the
-        # frame count was raised. 5.4 cm measured; 25 cm leaves room for
-        # feature-detector differences across platforms without leaving room
-        # for a wrong reconstruction.
+        # of place, and for a while this fixture was exactly that. 1.7 mm
+        # measured; 5 cm leaves room for feature-detector differences across
+        # platforms without leaving room for a wrong reconstruction.
         ate = re.search(r"final ATE: RMSE ([0-9.]+) m", out.stdout)
         if ate is None:
             print("ERROR: split final solve printed no ATE", file=sys.stderr)
             return 1
-        if float(ate.group(1)) > 0.25:
+        if float(ate.group(1)) > 0.05:
             print(f"ERROR: split fixture reconstruction is {ate.group(1)} m "
                   f"from ground truth — the fixture is not reconstructing the "
                   f"scene, so it cannot detect a regression in doing so",

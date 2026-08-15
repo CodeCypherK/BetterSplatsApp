@@ -120,6 +120,35 @@ non-expert to that data on the first try.
 
 ## Next
 
+- [ ] **The final solve fragments on the capture walk, and density does not
+      fix it.** On the two-room circle-and-orbit walk the batch solve
+      registers a third to a half of the images and leaves the rest in
+      components that "share no alignable structure (0 candidate points)":
+
+      | frames | spacing | registered | ATE |
+      |---|---|---|---|
+      | 340 | 0.35 m | 199/340 | 0.051 m |
+      | 340 (lap stood back) | 0.31 m | 119/340 | 0.339 m |
+      | 480 | 0.22 m | 156/480 | 1.340 m |
+
+      Same scene single-room, 140 frames: **140/140 at 0.0017 m**. So it is
+      not the solver being weak in general and it is not sampling density —
+      it is this path. The obvious suspects, in order: the pair graph is
+      sequential ±8 plus BoW top-10, and on this walk ±8 frames spans a
+      whole orbit arc, so the sequential half contributes little that the
+      BoW half did not; and consecutive MOVES (orbit a table, then orbit a
+      cabinet 5 m away) genuinely share little, so the graph's connectivity
+      rests on the approach legs, which are short.
+      Worth knowing before acting: a device stores at 5-10 cm, 3-6x denser
+      than any of these fixtures, so this may be a fixture artefact — but
+      480 frames getting WORSE says it is not simply that. Next step is
+      cheap: dump the pair graph's connected components for the 340-frame
+      case and see whether the missing edges are ones the BoW stage should
+      have found.
+      Until then the split-export fixture uses the single-room scene
+      (scripts/validate_colmap.py says why), because a gate that swings from
+      0.05 m to 1.34 m on unrelated changes is not a gate.
+
 - [ ] **The store gate is too dense for the capture flow: ~900 frames per
       room where the budget is 200-500.** Now that the capture walk is
       circle-then-orbit (ARCHITECTURE.md), a 6×8 m room is 62 m of walking,

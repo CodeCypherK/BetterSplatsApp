@@ -115,6 +115,23 @@ final class FrameFeedContext: @unchecked Sendable {
         lock.lock(); defer { lock.unlock() }; return storeFailures
     }
 
+    /// Releases one storage-pipeline slot, and on failure takes back the cap
+    /// slot the frame had already claimed.
+    ///
+    /// A plain method rather than the lock inline at the call site: the caller
+    /// is an async Task, and `NSLock.lock()` is `noasync` precisely because
+    /// holding one across a suspension point deadlocks. Nothing is awaited in
+    /// here, which is the property that makes it safe.
+    func finishStore(failed: Bool) {
+        lock.lock()
+        encodesInFlight -= 1
+        if failed {
+            storeCommits -= 1
+            storeFailures += 1
+        }
+        lock.unlock()
+    }
+
     /// "capture" or "scout", stamped into each frame's meta as it is written.
     /// Read and written under `lock` because the pass flips on the main
     /// actor while the capture queue is mid-frame.
@@ -236,43 +253,36 @@ final class FrameFeedContext: @unchecked Sendable {
         let calibration = frame.calibration
         encodeQueue.async { [self] in
             guard let jpeg = encoder.encode(pixelBuffer) else {
-                lock.lock()
-                encodesInFlight -= 1
-                storeCommits -= 1  // failed encode gives its cap slot back
-                lock.unlock()
+                // Same outcome as a failed write — the photo is gone — so it
+                // gives back its cap slot and counts the same way.
+                finishStore(failed: true)
                 return
             }
             let payload = SessionStore.FramePayload(
                 frameId: frameId, jpeg: jpeg, depthF16: depth.f16,
                 depthWidth: depth.width, depthHeight: depth.height, meta: meta)
-            Task { [store] in
+            Task { [store, self] in
                 // The in-flight slot is released HERE, after the write, not
                 // when the encode returned. Releasing it early made the
                 // backpressure gate blind to the slow half: encoding is
                 // hardware and quick, writing 1.3 MB to flash is neither, and
-                // every encoded frame span=ned an unstructured Task holding its
+                // every encoded frame spawned an unstructured Task holding its
                 // payload. Nothing bounded those, so a stalled disk grew
                 // memory by a megabyte a frame instead of thinning cadence.
-                defer {
-                    lock.lock()
-                    encodesInFlight -= 1
-                    lock.unlock()
-                }
+                //
+                // A frame that did not land must not be counted as one that
+                // did: `storeCommits` is the cap, and `storedFrames` is what
+                // the end-of-capture verdict judges the session on. Silently
+                // keeping the count would tell the user they had 400 frames
+                // when the disk took 300.
                 do {
                     if let calibration {
                         try await store.writeCalibrationIfNeeded(calibration)
                     }
                     try await store.writeFrame(payload)
+                    self.finishStore(failed: false)
                 } catch {
-                    // A frame that did not land must not be counted as one
-                    // that did: `storeCommits` is the cap, and `storedFrames`
-                    // is what the end-of-capture verdict judges the session
-                    // on. Silently keeping the count would tell the user they
-                    // had 400 frames when the disk took 300.
-                    lock.lock()
-                    storeCommits -= 1
-                    storeFailures += 1
-                    lock.unlock()
+                    self.finishStore(failed: true)
                 }
             }
         }
@@ -302,7 +312,7 @@ final class FrameFeedContext: @unchecked Sendable {
             fx: 0, fy: 0, cx: 0, cy: 0,
             depth: depth.f32, depthWidth: depth.width, depthHeight: depth.height,
             dfx: 0, dfy: 0, dcx: 0, dcy: 0,
-            gyro: frame.gyroDelta.map { SIMD3($0.x, $0.y, $0.z) })
+            gyro: frame.gyroDelta.map { SIMD3<Float>($0.x, $0.y, $0.z) })
 
         if let calibration = frame.calibration {
             let m = calibration.intrinsicMatrix

@@ -105,6 +105,7 @@ EngineConfig EngineConfig::FromJson(const char* text, bool* ok) {
   get_to(j, "final_sift_budget_mb", c.final_sift_budget_mb);
   get_to(j, "final_drop_weak_obs_frac", c.final_drop_weak_obs_frac);
   get_to(j, "final_drop_err_factor", c.final_drop_err_factor);
+  get_to(j, "final_track_complete_px", c.final_track_complete_px);
   get_to(j, "final_seq_window", c.final_seq_window);
   get_to(j, "final_exhaustive_below", c.final_exhaustive_below);
   get_to(j, "final_match_ratio", c.final_match_ratio);

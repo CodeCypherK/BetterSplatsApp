@@ -120,50 +120,72 @@ non-expert to that data on the first try.
 
 ## Next
 
-- [ ] **Seven `bs_live_status` fields the app reads from nothing.** The same
+- [ ] **Five `bs_live_status` fields the app reads from nothing.** The same
       audit as the config knobs, one layer up, and the same failure mode: the
       engine measures something, publishes it across the ABI, and the app
       drops it — which is exactly how `keyframe_ids` came to be empty in
       every session ever captured. Unconsumed today:
-      `frames_processed` (fed minus dropped — a capture where the tracker is
-      falling behind is one the user should be told about, and nothing says
-      so), `inlier_ratio` and `px_error_mean` (the engine's own tracking-health
+      `inlier_ratio` and `px_error_mean` (the engine's own tracking-health
       numbers; the UI shows only the guidance pill), `blur_metric` (the app
       computes its own in FrameAnalysis, so this one is genuinely redundant
       and could be removed from the ABI instead), `last_frame_id`,
       `map_points`, `guide_region_id`.
-      `store_spacing_m` was the eighth until the store gate needed it.
+      `store_spacing_m` left the list when the store gate needed it.
+      **`frames_processed` is gone, and it was worse than unread** — it was
+      documented as "fed minus dropped" and incremented in lockstep with
+      `frames_fed`, inside the same mutex, so it could never report a drop.
+      `bs_live_feed` tracks inline on the caller's thread; the engine cannot
+      drop a frame it was handed. The drop is the app's, and the app now
+      counts it (see the log entry on EngineFeeder).
       Worth a `check_abi_used.py` in the same spirit, though it is harder:
       a Swift field read is not a grep away from a C struct member.
 
-- [ ] **Six pieces of documented behaviour that were never built.** Found by
+- [ ] **Four pieces of documented behaviour that were never built.** Found by
       `scripts/check_config_used.py`, now a CI gate: every `EngineConfig`
-      field must be read somewhere in the engine, and eight were not. Two are
-      now implemented (the floater sweep's radius-outlier pass). The other six
-      are deleted from the config — a knob that does nothing is the same
-      defect as `keyframe_ids` being empty in every session ever captured —
-      and listed here so removing them does not lose the intent:
+      field must be read somewhere in the engine, and eight were not. Two were
+      implemented at the time (the floater sweep's radius-outlier pass); two
+      more have been since; one of the eight turned out to be a **mistake in
+      this list** and is corrected below. What is left:
       - **`live_max_keyframes = 600`** — the live map has NO keyframe cap. A
         two-room capture measured 675 keyframes / 32k points, so one room is
         ~350 and a large open-plan space could run well past it with nothing
         to stop it. This is the one with real on-device consequences.
-      - **`boot_h_over_e_max = 0.45`** — the plan's H/E model selection,
-        rejecting a bootstrap pair whose homography explains it as well as
-        the essential matrix. Without it a rotation-dominant or planar start
-        can seed a degenerate map.
       - **`final_bow_top_k = 10`** — appearance retrieval for the pair graph
         (plan stage S2). The graph is index-only. Not costing anything
         measurable today (SIFT connects the walk on strides alone) but it is
         the reason a revisit hundreds of frames later is never proposed.
+        Partly compensated now: track completion borrows candidates from the
+        nearest cameras in SPACE, so a revisit gets its shared observations
+        one BA round after a pose exists — later than retrieval would, and
+        only for tracks that already have a point, but the same connections.
       - **`final_max_pairs_per_image = 40`** — pair cap. Moot at current
         stride counts (~18/image) but real under `final_exhaustive_below`,
         where a 140-image fixture matches 139 pairs per image and takes 20
         minutes.
-      - **`final_track_complete_px = 6.0`** — track completion (project a
-        point into frames that should see it and match nearby unassigned
-        features). Longer tracks, better conditioned BA.
-      - **`live_queue_depth = 2`** — bounded frame queue. Arguably belongs to
-        the app rather than the engine; the app already applies backpressure.
+      - **`live_queue_depth = 2`** — bounded frame queue. This was filed as
+        "arguably belongs to the app rather than the engine; the app already
+        applies backpressure", and that dismissal was **wrong on both
+        halves**: the app's backpressure covered STORAGE, nothing bounded the
+        engine feed, and feeding happened inline on the capture delegate
+        queue. It belongs to the app, which is where it now is
+        (`EngineFeeder`, one slot, drop-oldest, counted) — but it was a real
+        gap, not a misfiled knob.
+
+      Done since:
+      - ~~**`final_track_complete_px = 6.0`**~~ — built. See the log entry.
+      - ~~**`boot_h_over_e_max = 0.45`**~~ — **this entry was wrong.** The
+        behaviour ships and always did: `EstimateRelativePose` computes the
+        homography inlier count beside the essential one and sets
+        `planar_ambiguous` when `inliers_h > 0.85 * inliers_e`. That is the
+        plan's `inl_H/inl_E >= 0.45` in the other algebraic form — the plan
+        quotes ORB-SLAM's `S_H/(S_H+S_E) > 0.45`, which rearranges to
+        `S_H > 0.818 * S_E`. And the live bootstrap does something better
+        than the plan's blind reject: a planar pair is VALIDATED against
+        LiDAR depth (the wrong branch of the conjugate-plane ambiguity
+        scatters the depth ratios, the right one clusters), so a genuinely
+        planar start is usable rather than refused. The threshold is
+        hardcoded rather than configurable, which is the only real defect
+        here and a much smaller one than "never built".
 
 - [ ] **THE performance problem: the final solve registers under half the
       images at the density a real capture actually has.** The user's figure

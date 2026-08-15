@@ -44,7 +44,7 @@ final class EngineFeeder: @unchecked Sendable {
         var depthWidth: Int
         var depthHeight: Int
         var dfx: Double, dfy: Double, dcx: Double, dcy: Double
-        var gyro: SIMD3<Double>?
+        var gyro: SIMD3<Float>?
     }
 
     /// Width the engine tracks at. It downsamples anything wider than 1280 to

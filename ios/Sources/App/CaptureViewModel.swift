@@ -23,12 +23,23 @@ final class FrameFeedContext: @unchecked Sendable {
     static let storedFrameWarn = 450
     static let storedFrameTarget = 200
 
-    /// Motion gate, matching the engine's own store thresholds
-    /// (`store_min_translation_m`, `store_min_rotation_deg`). Storage exists
-    /// to give the final solve NEW viewpoints; a frame taken from where the
-    /// last one was taken is a duplicate, and with a 500-frame budget a
-    /// duplicate is not free — it is a viewpoint somewhere else that never
-    /// gets captured.
+    /// Motion gate. Storage exists to give the final solve NEW viewpoints; a
+    /// frame taken from where the last one was taken is a duplicate, and with
+    /// a 500-frame budget a duplicate is not free — it is a viewpoint
+    /// somewhere else that never gets captured.
+    ///
+    /// The SPACING comes from the engine, live, through
+    /// `bs_live_status.store_spacing_m`: how far the camera must travel
+    /// before another frame is worth having depends on how far away what it
+    /// is looking at is, and the engine is the only side that knows. These
+    /// constants are the floor for before the engine has a scene to measure.
+    ///
+    /// This used to be the app's own copy of the rule, described as
+    /// "matching the engine's own store thresholds" — and when the engine's
+    /// gate became depth-scaled, it stopped matching. The app would have gone
+    /// on storing at a flat 5 cm and the change would have done nothing on
+    /// device, which is the same shape of defect as `keyframe_ids` being
+    /// empty in every session ever captured.
     static let storeMinTranslationM = 0.05
     static let storeMinRotationDeg = 5.0
     /// Store anyway after this long. Covers the case where there is no pose
@@ -66,14 +77,20 @@ final class FrameFeedContext: @unchecked Sendable {
     /// less).
     private var latestCentre: SIMD3<Double>?
     private var latestRotation: simd_quatd?
+    /// Required spacing between stored frames, published by the engine each
+    /// poll. Guarded by `lock` like the pose it travels with.
+    private var storeSpacingM: Double = 0
     /// Pose of the last frame actually written, to measure movement against.
     private var lastStoredCentre: SIMD3<Double>?
     private var lastStoredRotation: simd_quatd?
 
-    func publishPose(_ viewer: ViewerPose?) {
+    func publishPose(_ viewer: ViewerPose?, storeSpacingM spacing: Double = 0) {
         lock.lock()
         latestCentre = viewer?.center
         latestRotation = viewer?.rotation
+        // 0 means the engine has no scene depth yet — keep the last spacing
+        // rather than snapping back to the floor and storing a burst.
+        if spacing > 0 { storeSpacingM = spacing }
         lock.unlock()
     }
 
@@ -136,7 +153,7 @@ final class FrameFeedContext: @unchecked Sendable {
             // rotation — without it a sign flip reads as a 180 degree turn.
             let dot = abs(simd_dot(rotation.vector, lastRotation.vector))
             let turn = 2 * acos(min(1.0, dot)) * 180 / .pi
-            moved = step >= Self.storeMinTranslationM
+            moved = step >= max(Self.storeMinTranslationM, storeSpacingM)
                 || turn >= Self.storeMinRotationDeg
                 || elapsed >= Self.storeMaxIntervalS
         }
@@ -644,8 +661,12 @@ final class CaptureViewModel {
                 else { continue }
                 let status = CoreEngine.shared.livePollStatus()
                 self.viewer = ViewerPose(status: status)
-                // The storage gate needs this on the capture queue.
-                context.publishPose(self.viewer)
+                // The storage gate needs both of these on the capture queue:
+                // where the camera is, and how far it has to move before
+                // another frame is worth keeping — which the engine works out
+                // from how far away the scene is.
+                context.publishPose(self.viewer,
+                                    storeSpacingM: Double(status.store_spacing_m))
                 if let centre = self.viewer?.center { self.extendWalked(centre) }
 
                 // Drain the engine's storage directives. Polling consumes

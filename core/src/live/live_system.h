@@ -188,6 +188,9 @@ class LiveSystem {
   int last_inliers_ = 0;
   int last_matches_ = 0;
   double last_lap_var_ = 0;
+  // Published through bs_live_status so the app stores on the engine's rule
+  // rather than a second copy of it.
+  float store_spacing_m_ = 0;
   double last_gyro_mag_ = 0;
   bs_guidance guidance_ = BS_GUIDE_NONE;
 

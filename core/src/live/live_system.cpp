@@ -968,6 +968,7 @@ void LiveSystem::UpdateStoreGate(const LiveFrameInput& input,
   const double needed_translation =
       std::max(static_cast<double>(config_.store_min_translation_m),
                config_.store_translation_depth_frac * median_depth);
+  store_spacing_m_ = static_cast<float>(needed_translation);
   const bool moved = translation > needed_translation ||
                      rotation_deg > config_.store_min_rotation_deg;
   if (!moved) return;
@@ -1034,6 +1035,7 @@ void LiveSystem::FillStatus(bs_live_status& out) const {
   out.guidance = guidance_;
   out.scale_locked = scale_locked_ ? 1 : 0;
   out.blur_metric = static_cast<float>(last_lap_var_);
+  out.store_spacing_m = store_spacing_m_;
   out.readiness_overall = readiness_.OverallScore();
   out.inlier_ratio =
       last_matches_ > 0

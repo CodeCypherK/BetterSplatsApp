@@ -189,6 +189,15 @@ typedef struct bs_live_status {
   float   inlier_ratio;       /* PnP inliers / matches, 0..1               */
   float   px_error_mean;      /* mean reprojection error of tracked points */
   float   blur_metric;        /* Laplacian variance of last luma           */
+  /* How far the camera must travel before another frame is worth storing,
+     right now, for this scene. The app satisfies storage from its own ring
+     buffer — the engine's decision arrives after the frame has gone by — so
+     it needs the RULE rather than the verdict. Publishing it here keeps one
+     copy of the policy: the app used to hold its own constant, and when the
+     engine's gate became depth-scaled the app went on storing at a flat
+     5 cm, which would have made the change a no-op on device. 0 when the
+     engine has no scene depth yet; use the configured floor. */
+  float   store_spacing_m;
   int32_t scale_locked;       /* metric gauge locked from LiDAR agreement  */
 
   /* Pending storage directives (drained by this call). */

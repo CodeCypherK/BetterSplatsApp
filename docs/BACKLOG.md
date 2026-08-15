@@ -114,9 +114,11 @@ non-expert to that data on the first try.
       at 0.019 m rigid. The scaffold is no longer carrying the run; it is
       insurance.
 
-- [ ] **Capture-pass coverage: 75.4% tracked, and that is the real target
-      now that accuracy is understood.** (Measured on the OLD 33 m
-      walkthrough; superseded by the entry above, kept for its analysis.) The relocalization anchor bug took
+- [x] ~~**Capture-pass coverage: 75.4% tracked, and that is the real target
+      now that accuracy is understood.**~~ **Closed at 100.0% — see the entry
+      above.** (Measured on the OLD 33 m walkthrough; kept only for its
+      analysis, which is still worth having: the two things it ruled out are
+      still ruled out.) The relocalization anchor bug took
       it from 12% to 62%; trajectory reshaping to 75%. What is left is
       genuine: the pass still loses tracking at the doorway transits, where
       the turn outruns mapping (see ARCHITECTURE.md). Two geometry-side
@@ -161,18 +163,33 @@ non-expert to that data on the first try.
       implemented at the time (the floater sweep's radius-outlier pass); two
       more have been since; one of the eight turned out to be a **mistake in
       this list** and is corrected below. What is left:
-      - **`live_max_keyframes = 600`** — the live map has NO keyframe cap. A
-        two-room capture measured 675 keyframes / 32k points, so one room is
-        ~350 and a large open-plan space could run well past it with nothing
-        to stop it. This is the one with real on-device consequences.
+      - **`live_max_keyframes = 600`** — the live map has NO keyframe cap,
+        and it is now measured rather than feared. The two-room walk builds
+        **921 keyframes / 42.9k points, serializing to 41 MB**; call it
+        ~63 KB per keyframe on disk and rather more resident. Keyframes scale
+        with PATH, not with frames or with stored frames, so the app's
+        500-frame session cap does not bound this: a five-minute walk at
+        1 m/s is ~300 m, about 2.5x this fixture, so ~1,600 keyframes and
+        ~100 MB serialized. Not fatal on the target device, and a chained
+        session loads only its immediate parent's map (one level, not the
+        whole chain), so the ceiling is roughly two sessions' worth.
+        **The reason not to just add the cap is that culling keyframes costs
+        exactly what the scaffold is for** — a capture pass relocalizes into
+        those keyframes, and the ones a cap would drop are the oldest, which
+        is to say the first room. If this ever needs a bound, bound it by
+        BYTES and cull by redundancy (a keyframe whose points are nearly all
+        seen by others), not by age.
       - **`final_bow_top_k = 10`** — appearance retrieval for the pair graph
         (plan stage S2). The graph is index-only. Not costing anything
         measurable today (SIFT connects the walk on strides alone) but it is
         the reason a revisit hundreds of frames later is never proposed.
-        Partly compensated now: track completion borrows candidates from the
-        nearest cameras in SPACE, so a revisit gets its shared observations
-        one BA round after a pose exists — later than retrieval would, and
-        only for tracks that already have a point, but the same connections.
+        Track completion was tried as a substitute — it borrows candidates
+        from the nearest cameras in SPACE, which reaches revisits an index
+        stride never will — and it made the reconstruction worse (entry
+        below). Retrieval is still the right shape for this: it proposes
+        pairs BEFORE any pose exists, and those pairs then go through the
+        same geometric verification as every other, rather than being
+        adopted on a projection.
       - **`final_max_pairs_per_image = 40`** — pair cap. Moot at current
         stride counts (~18/image) but real under `final_exhaustive_below`,
         where a 140-image fixture matches 139 pairs per image and takes 20
@@ -363,9 +380,11 @@ non-expert to that data on the first try.
 
       | | flat 5 cm | 4% of depth |
       |---|---|---|
-      | room A | 1,096 | **382** |
-      | room B | 948 | **423** |
-      | whole walk | 2,044 | **805** |
+      | room A | 1,096 | 382 |
+      | room B | 948 | 423 |
+      | whole walk | 2,044 | 805 |
+
+      (All simulated, and all superseded — see the measured table below.)
 
       In practice 24 cm down a wall at 6 m, 11 cm around a table at 2.7 m,
       5 cm wherever the phone is close enough for the floor to bind. A test
@@ -600,7 +619,9 @@ Newest first. One line per session: what changed, what it measured.
 
   The **store gate was too dense** for it — 944 frames for one room against a
   200-500 budget — and is now scaled by scene depth, which puts a room at
-  382/423. See the entry above.
+  382/423 in simulation — and 1267 for the whole walk when finally measured
+  through the engine, which is what moved it to 6% of depth and a 15 deg
+  rotation term. See the entry above.
 
 - **End of capture is no longer a dead end.** It said "Saved:
   session_20260814-142230_a3f2c1" with a Done button — a filename and an

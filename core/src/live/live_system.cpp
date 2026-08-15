@@ -720,10 +720,25 @@ bool LiveSystem::TrackFrame(const LiveFrameInput& input,
     }
   }
 
-  // Bookkeeping.
+  // Bookkeeping, and the tracker's own residual while we have the inliers
+  // in hand. `px_error_mean` has been in bs_live_status since M4 and nothing
+  // ever wrote it — it was published as a tracking-health number and was
+  // always exactly 0.0, which is the same defect as a config knob nothing
+  // reads, one layer up.
+  double err_sum = 0;
+  int err_n = 0;
   for (const int idx : inliers) {
-    if (MapPoint* mp = map_.FindPoint(match_pids[idx])) ++mp->found_count;
+    MapPoint* mp = map_.FindPoint(match_pids[idx]);
+    if (mp == nullptr) continue;
+    ++mp->found_count;
+    const Eigen::Vector3d xc = pose.Apply(mp->X);
+    if (xc.z() <= 0.05) continue;
+    const Eigen::Vector2d proj = input.K.Project(xc);
+    const cv::Point2f& px = features.undistorted[match_feat[idx]];
+    err_sum += std::hypot(proj.x() - px.x, proj.y() - px.y);
+    ++err_n;
   }
+  last_px_error_ = err_n > 0 ? err_sum / err_n : 0.0;
   if (have_prev_pose_ || frames_processed_ > 0) {
     velocity_ = pose * last_pose_.Inverse();
     have_prev_pose_ = true;
@@ -1033,7 +1048,6 @@ void LiveSystem::FillStatus(bs_live_status& out) const {
   out.map_points = static_cast<uint32_t>(map_.points().size());
   out.guidance = guidance_;
   out.scale_locked = scale_locked_ ? 1 : 0;
-  out.blur_metric = static_cast<float>(last_lap_var_);
   out.store_spacing_m = store_spacing_m_;
   out.store_rotation_deg = config_.store_min_rotation_deg;
   out.readiness_overall = readiness_.OverallScore();
@@ -1041,6 +1055,7 @@ void LiveSystem::FillStatus(bs_live_status& out) const {
       last_matches_ > 0
           ? static_cast<float>(last_inliers_) / static_cast<float>(last_matches_)
           : 0.0f;
+  out.px_error_mean = static_cast<float>(last_px_error_);
   if (state_ == BS_LIVE_TRACKING) {
     out.pose_valid = 1;
     out.q[0] = last_pose_.q.w();

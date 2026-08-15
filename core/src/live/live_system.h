@@ -184,6 +184,8 @@ class LiveSystem {
 
   // Status/diagnostics (guarded by the engine's lock via const access).
   uint32_t frames_processed_ = 0;
+  // Mean reprojection error of the last frame's PnP inliers, px.
+  double last_px_error_ = 0.0;
   uint32_t last_frame_id_ = 0;
   int last_inliers_ = 0;
   int last_matches_ = 0;

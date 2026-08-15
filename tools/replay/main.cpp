@@ -378,6 +378,8 @@ int FeedPass(const bs::SessionReader& session, const std::string& config,
   uint32_t fed = 0;
   std::set<uint32_t> stored_ids;
   std::map<uint32_t, double> sharpness;
+  std::vector<float> inlier_ratios;
+  std::vector<float> px_errors;
   for (const uint32_t frame_id : frame_ids) {
     const auto meta = session.ReadMeta(frame_id);
     const auto depth = session.ReadDepth(frame_id);
@@ -431,6 +433,15 @@ int FeedPass(const bs::SessionReader& session, const std::string& config,
       for (int32_t i = 0; i < poll.directive_count; ++i) {
         stored_ids.insert(poll.directives[i].frame_id);
       }
+      // Tracking HEALTH, as distinct from tracking coverage. The tracked
+      // percentage says how often PnP succeeded; these say how comfortably.
+      // A pass tracking 99% on a thin inlier ratio at 1.5 px is one bad
+      // frame from losing it, and is indistinguishable in the coverage
+      // number from one tracking on 200 inliers at 0.4 px.
+      if (poll.state == BS_LIVE_TRACKING && poll.inlier_ratio > 0) {
+        inlier_ratios.push_back(poll.inlier_ratio);
+        px_errors.push_back(poll.px_error_mean);
+      }
     }
     if (meta->quality.lap_var > 0) sharpness[frame_id] = meta->quality.lap_var;
   }
@@ -445,6 +456,19 @@ int FeedPass(const bs::SessionReader& session, const std::string& config,
               status_out.frames_fed, status_out.state,
               status_out.keyframes, status_out.map_points,
               status_out.scale_locked);
+
+  if (inlier_ratios.size() > 10) {
+    const size_t mid = inlier_ratios.size() / 2;
+    std::nth_element(inlier_ratios.begin(), inlier_ratios.begin() + mid,
+                     inlier_ratios.end());
+    std::nth_element(px_errors.begin(), px_errors.begin() + mid,
+                     px_errors.end());
+    std::printf("%s tracking health: median %.0f%% inliers at %.2f px "
+                "(%zu tracked frames)\n",
+                pass == BS_PASS_SCOUT ? "scout" : "live",
+                100.0 * inlier_ratios[mid], px_errors[mid],
+                inlier_ratios.size());
+  }
 
   // What the storage gate actually selected. The gate prefers sharp frames,
   // so stored sharpness should sit above the sequence average — if it does

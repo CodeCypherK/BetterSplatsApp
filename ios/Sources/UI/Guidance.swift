@@ -74,8 +74,14 @@ struct RecoveryHint: Equatable {
     /// Set when the target sits behind the user, where an on-screen arrow is
     /// a poor way to say "turn round".
     let isBehind: Bool
+    /// Name of the region being pointed at, when the session has more than
+    /// one and the user has a reason to care which. "Head left to Kitchen"
+    /// is a place; "head left, 8 ft" is a vector, and someone who is lost is
+    /// much better at finding the first.
+    let regionName: String?
 
-    init?(status: bs_live_status) {
+    init?(status: bs_live_status, regionName: String? = nil) {
+        self.regionName = regionName
         guard status.guidance == Int32(BS_GUIDE_TRACKING_LOST.rawValue),
               status.guide_dist_m > 0 else { return nil }
         let x = Double(status.guide_dir.0)
@@ -98,12 +104,13 @@ struct RecoveryHint: Equatable {
     /// One line, phrased for someone who is stuck and wants to be unstuck.
     var text: String {
         let feet = max(1, Int((distanceM * 3.28).rounded()))
+        let place = regionName.map { " (\($0))" } ?? ""
         if isBehind {
-            return "Lost track — turn around. The scanned area is about "
-                 + "\(feet) ft behind you."
+            return "Lost track — turn around. The scanned area\(place) is "
+                 + "about \(feet) ft behind you."
         }
         return "Lost track — head \(bearing.rawValue), about \(feet) ft, to "
-             + "where you have already scanned."
+             + "where you have already scanned\(place)."
     }
 }
 

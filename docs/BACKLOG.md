@@ -137,7 +137,32 @@ non-expert to that data on the first try.
 
 ## Next
 
-- [ ] **Five `bs_live_status` fields the app reads from nothing.** The same
+- [x] ~~**Five `bs_live_status` fields the app reads from nothing.**~~
+      **Closed, and one of them was worse than unread — it was never
+      written.** `px_error_mean` was published as a tracking-health number
+      since M4 and no code ever assigned it: every poll reported exactly
+      0.0. The engine now computes it from the reprojection error of the
+      PnP inliers, while they are still in hand.
+
+      What each field got, and why:
+      - `px_error_mean` + `inlier_ratio` -> `bs_replay`'s live summary, as
+        **tracking health, which is a different question from tracking
+        coverage**. The tracked percentage says how often PnP succeeded;
+        these say how comfortably. A pass tracking 99% on a thin inlier
+        ratio at 1.5 px is one bad frame away from losing it, and is
+        indistinguishable in the coverage number from one tracking on 200
+        inliers at 0.4 px. Clean scene reads `median 97% inliers at 0.64 px`.
+      - `guide_region_id` -> the TRACKING LOST hint now names the room it
+        points at, when the session has more than one to mean. The engine
+        had been computing it since M4 and the app drew an unnamed arrow.
+      - `blur_metric` -> **deleted from the ABI**. The app computes its own
+        `lap_var` in FrameAnalysis and writes it to meta.json; a second copy
+        across the boundary was redundant rather than merely unused.
+      - `last_frame_id`, `map_points` -> already read, by `test_api` and
+        `bs_replay` respectively. An app-only audit had missed them, which
+        is worth remembering: the app is not the only client of this ABI.
+
+      Original entry kept below for the failure mode it names. The same
       audit as the config knobs, one layer up, and the same failure mode: the
       engine measures something, publishes it across the ABI, and the app
       drops it — which is exactly how `keyframe_ids` came to be empty in

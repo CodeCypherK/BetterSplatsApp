@@ -193,7 +193,6 @@ typedef struct bs_live_status {
   /* Tracking quality diagnostics. */
   float   inlier_ratio;       /* PnP inliers / matches, 0..1               */
   float   px_error_mean;      /* mean reprojection error of tracked points */
-  float   blur_metric;        /* Laplacian variance of last luma           */
   /* How far the camera must travel before another frame is worth storing,
      right now, for this scene. The app satisfies storage from its own ring
      buffer — the engine's decision arrives after the frame has gone by — so

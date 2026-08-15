@@ -767,7 +767,15 @@ final class CaptureViewModel {
                 if !keyframed.isEmpty {
                     await context.store.addKeyframeIds(keyframed)
                 }
-                self.recovery = RecoveryHint(status: status)
+                // Name the place the arrow points at, when there is more
+                // than one place to mean. `guide_region_id` had been
+                // published by the engine and read by nothing since M4.
+                let regions = self.snapshot.regions
+                let guideRegion = regions.count > 1
+                    ? regions.first { $0.id == status.guide_region_id }?.name
+                    : nil
+                self.recovery = RecoveryHint(status: status,
+                                             regionName: guideRegion)
                 self.framesSeen = status.frames_fed
                 // The tracker's share of the camera. Some dropping is normal
                 // and harmless — a relocalization sweep costs several frames

@@ -94,9 +94,17 @@ Checkpointed stage pipeline (resumable after cancel/thermal pause/app kill):
 feature re-extraction → session vocabulary → pair selection (sequential +
 covisibility + loops + retrieval) → verified matching → track building →
 pose init from live → global triangulation → rounds of [global BA with
-confidence-weighted LiDAR residuals → outlier pruning → registration of
-missing frames → track completion] → floater sweep → final LiDAR alignment →
-COLMAP text export + readiness report.
+confidence-weighted LiDAR residuals → outlier pruning → dropping cameras the
+model cannot justify → registration of missing frames → re-triangulation] →
+floater sweep → final LiDAR alignment → COLMAP text export + readiness
+report.
+
+The plan also lists **track completion** in that round. It was built and
+removed: measured on a 400-frame capture it raised mean track length 4.8 to
+4.9 and took ATE from 5.7 cm to 10.4 cm. Candidates come from nearby
+cameras, so every observation it adds is short-baseline — weight without
+constraint. Numbers and the one variant worth trying are in
+docs/BACKLOG.md.
 
 The gauge is metric: scale is locked once during live bootstrap from robust
 LiDAR/triangulation depth agreement, and held in the final solve by the
@@ -283,7 +291,7 @@ Measured on the two-room scene (6×8 m each), at 1.0 m/s and 40 deg/s pan:
 | doorway bearings | 11 of 12 |
 | worst single frame | 1.33 deg (exactly the declared pan limit) |
 | clearance from furniture / wall, minimum | 0.35 m / 0.45 m |
-| stored frames per room | **382 / 423** |
+| stored frames per room, through the engine | **517** |
 
 And what each move actually films, which is the number that says whether a
 plan is any good — the first surface the optical axis hits, not where the
@@ -312,21 +320,47 @@ the baseline. At 5 cm the circle-and-orbit walk stores **~1,100 frames for
 one room** against a 200–500 budget — twice what a project is sized for, and
 a house ten times over.
 
-It is now `max(5 cm, 4% of the median scene depth)`, where the depth comes
+It is now `max(5 cm, 6% of the median scene depth)`, where the depth comes
 from the points of the most recent keyframe — the ones actually being looked
 at. Not the depth image: LiDAR stops at 5 m and would go blank on exactly
 the wide shots this exists for. Not the whole map either, which would count
 the far room through a doorway and pull the median past what is in frame.
 
-| | flat 5 cm | 4% of depth |
-|---|---|---|
-| room A | 1,096 | **382** |
-| room B | 948 | **423** |
-| whole walk | 2,044 | **805** |
+**The numbers here were simulated once and the engine disagreed by 36%.**
+The simulation counts against the true distance to the first surface along
+the optical axis; the engine scales by the median depth of its TRACKED
+points, which sit on near, textured surfaces and are therefore closer, so
+the spacing is smaller and the count larger. The engine's measure is the
+better one — what fills the frame is what has to overlap — so these are the
+numbers measured through `bs_replay --live` on the 3370-frame walk:
 
-In practice that is 24 cm down a wall at 6 m, 11 cm around a table at 2.7 m,
-and the 5 cm floor wherever the phone is close enough for that to bind. A
-test asserts a room lands in 200–500 rather than merely "not absurd".
+| translation / rotation | kept | per room |
+|---|---|---|
+| flat 5 cm / 5° | 2,044 (simulated) | — |
+| 4% / 5° | 1,267 | 633 |
+| 6% / 5° | 1,155 | 578 |
+| **6% / 15°** | **1,034** | **517** |
+
+Two things that only showed up by measuring. First, raising the depth
+fraction alone barely moved the count, because the gate is an **OR** and the
+rotation term is a cadence of its own: at 0.86 deg/frame a 5° threshold
+fires every six frames whatever the camera has done, and the capture walk is
+mostly orbits. Second, 6% is only ~11 cm at the observed 1.9 m median depth
+— about 93% overlap between neighbours, where ordinary photogrammetry
+practice asks for 60–80%. There is a lot of headroom left; 6%/15° is where
+this stops rather than where it has to stop.
+
+Both halves of the rule are published through `bs_live_status`
+(`store_spacing_m`, `store_rotation_deg`) because the app has to apply it
+from its own ring buffer — the engine's directive arrives after the frame
+has gone by, so the app needs the RULE, not the verdict. The app held its
+own copy of both constants; the distance was fixed when the gate became
+depth-scaled, and the rotation would have silently overridden this change
+the same way.
+
+`SynthTest.CaptureWalkStoresARoomsWorthOfFrames` still asserts 200–500, but
+read it as a bound on the PLAN. It failing means the walk has gone wrong; it
+passing does not mean the shipped counts are in band.
 
 ### Nothing on the walk passes through anything, with room to spare
 
@@ -407,11 +441,37 @@ close-up of part of it. Same scene, same path, same seed, 4809 frames at
 The scout circuit, unchanged in shape, tracks 99.4% at 0.021 m rigid — up
 from 85.9% before the yaw/pitch rate limiter replaced the great-circle slew.
 
-What is left is 37.6% of the capture pass untracked, in three stretches: the
-first 12 m before the capture relocalizes into the scaffold at all, room B's
-lap from its back-left corner, and the room A doorway orbit. Per-frame error
-where it does track is 1.8 cm median. That is a matching problem, not a
-geometry one — see docs/BACKLOG.md.
+**Then hugging the perimeter closed the rest of it.** The 62.4% column
+above was measured with the lap standing back from the wall; walking it
+tight against the perimeter, still looking across, takes the capture pass to
+**100.0% tracked at 0.019 m rigid** (scout 99.4% / 0.021 m, seed 7, 3370
+capture frames):
+
+| capture pass | 45 deg, stood back | **hugging, looking across** |
+|---|---|---|
+| frames tracked | 62.4% | **100.0%** |
+| ATE, rigid fit | 0.029 m / 0.41 deg | **0.019 m** / 0.24 deg |
+| ATE, anchored | 0.067 m / 0.72 deg | **0.023 m** / 0.26 deg |
+| keyframes, points | 675, 32.5k | **921, 42.9k** |
+
+Two things worth reading off that table rather than the headline. The 37.6%
+that used to be lost was mostly **one stretch** — 340 frames at the start,
+sweeping the map to relocalize into the scaffold — and it is gone not
+because relocalization got smarter but because the capture pass now begins
+0.4 m from where the scout finished and pointed within a couple of degrees
+of the same bearing, so the five newest scaffold keyframes match on frame
+one. A fix was planned for the search order and was never needed; measuring
+first is what saved building it.
+
+And **anchored and rigid ATE have converged** (0.023 against 0.019). The
+gap between them was the whole "capture-pass ATE keeps rising" mystery: an
+anchor pose with rotation error multiplies that error by distance
+travelled, and the anchor landed on the relocalization frame, the least
+constrained pose in the run. Relocalize well and the artefact disappears
+rather than needing to be corrected for.
+
+The capture pass with **no scout at all** tracks 99.8% at the same 0.019 m,
+so the scaffold is now insurance rather than the thing carrying the run.
 
 ## Floor calibration: measuring the floor instead of guessing it
 

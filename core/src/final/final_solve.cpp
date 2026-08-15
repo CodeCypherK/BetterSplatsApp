@@ -626,6 +626,10 @@ FinalOutcome RunFinalSolve(const EngineConfig& config,
             session_frames, sift_mb, config.final_sift_budget_mb);
   }
 
+  // Set at track building: whether the descriptors were kept resident for
+  // the track-completion stage rather than released.
+  bool complete_tracks = false;
+
   // Resume cache setup.
   const fs::path cache_dir = fs::path(session_dir) / "final" / "cache";
   {
@@ -923,7 +927,31 @@ FinalOutcome RunFinalSolve(const EngineConfig& config,
     // Descriptors are no longer needed past track building — releasing
     // them bounds peak memory (matters for the SIFT quality path on-device;
     // the resume cache keeps them on disk).
-    for (auto& frame : frames) frame.features.descriptors.release();
+    //
+    // Track completion is the one exception: it runs inside the BA rounds
+    // and confirms every projection against a descriptor. Holding them costs
+    // exactly what the SIFT budget already measured, but at a WORSE moment —
+    // during matching nothing else is allocated, during BA the tracks,
+    // points and Ceres blocks are — so this asks for half the budget rather
+    // than all of it, and skips the stage over that. Logged, because a
+    // quality stage that silently does not run on the device it was written
+    // for is the same defect as a config knob nothing reads.
+    const double descriptor_mb =
+        static_cast<double>(frames.size()) *
+        (use_sift ? config.final_sift_features * 128 * sizeof(float)
+                  : config.final_orb_features * 32) /
+        (1024.0 * 1024.0);
+    complete_tracks = config.final_track_complete_px > 0.0f &&
+                      descriptor_mb <= 0.5 * config.final_sift_budget_mb;
+    if (!complete_tracks) {
+      for (auto& frame : frames) frame.features.descriptors.release();
+      if (config.final_track_complete_px > 0.0f) {
+        BS_LOGI("final",
+                "track completion needs %.0f MB of descriptors held through "
+                "BA, against half a %d MB budget — skipping it",
+                descriptor_mb, config.final_sift_budget_mb);
+      }
+    }
     report(BS_STAGE_TRACKS, 1.0f);
   }
 
@@ -1596,7 +1624,8 @@ FinalOutcome RunFinalSolve(const EngineConfig& config,
     // Extend tracks into frames that should see them and never matched.
     // After PnP so frames registered this round are completed too, and
     // before re-triangulation so the new observations count toward it.
-    const int completed = CompleteTracks(frames, tracks, config, use_sift);
+    const int completed =
+        complete_tracks ? CompleteTracks(frames, tracks, config, use_sift) : 0;
 
     // Re-triangulate tracks that lost their point or gained posed views.
     int retriangulated = 0;
@@ -1637,6 +1666,14 @@ FinalOutcome RunFinalSolve(const EngineConfig& config,
         change_frac < config.final_early_stop_frac) {
       break;
     }
+  }
+
+  // Track completion was the last thing that needed them. Everything below —
+  // levelling, the floater sweep, the dense cloud, the export — works on
+  // poses and points, and the dense cloud is where memory peaks.
+  if (complete_tracks) {
+    for (auto& frame : frames) frame.features.descriptors.release();
+    complete_tracks = false;
   }
 
   // ------------------------------------------------ S8b level the world

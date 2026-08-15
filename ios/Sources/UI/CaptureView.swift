@@ -499,10 +499,21 @@ struct CaptureView: View {
                     } label: {
                         Label("Route", systemImage: "figure.walk.motion")
                     }
+                    // Raw engine numbers. Every device report so far has
+                    // arrived as a symptom and cost a round trip to turn
+                    // into a measurement; this is the measurement, on
+                    // screen, while it is happening.
+                    Button {
+                        model.showsStats.toggle()
+                    } label: {
+                        Label("Stats", systemImage: "waveform.path.ecg")
+                    }
                 }
             }
             .font(.caption)
             .buttonStyle(.bordered)
+
+            if model.isRunning && model.showsStats { statsPanel }
 
             // Said plainly during the circuit, because the frame counter is
             // climbing and someone watching it would otherwise reasonably
@@ -604,6 +615,27 @@ struct CaptureView: View {
         .padding(24)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
         .padding(32)
+    }
+
+    /// Live engine counters, for diagnosing a capture in a room the
+    /// developer cannot stand in. Deliberately dense and unstyled — it is an
+    /// instrument, not a feature, and it is off unless asked for.
+    private var statsPanel: some View {
+        let s = model.stats
+        return VStack(alignment: .leading, spacing: 2) {
+            Text("\(s.stateName)  ·  kf \(s.keyframes)  ·  pts \(s.mapPoints)")
+            Text("frames \(s.fed)/\(s.delivered) fed  ·  \(s.dropPercent)% dropped")
+            Text(String(format: "inliers %.0f%%  ·  err %.2f px",
+                        s.inlierRatio * 100, s.pxError))
+            Text(String(format: "store every %.2f m / %.0f deg",
+                        s.storeSpacingM, s.storeRotationDeg))
+            Text("stored \(model.framesStored)  ·  seen \(model.framesSeen)")
+        }
+        .font(.caption2.monospacedDigit())
+        .foregroundStyle(.white.opacity(0.85))
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background(.black.opacity(0.55), in: RoundedRectangle(cornerRadius: 8))
     }
 }
 

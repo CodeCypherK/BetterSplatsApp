@@ -417,6 +417,43 @@ final class CaptureViewModel {
     private(set) var framesStored: UInt32 = 0
     private(set) var megabytesWritten: Double = 0
     private(set) var storageNote: String?
+
+    /// Raw engine numbers, for when a capture misbehaves in a room nobody
+    /// developing this app can stand in.
+    ///
+    /// Every device report so far has arrived as a description of a symptom
+    /// — "it hitches", "the pill flips", "it wants me to crawl" — and each
+    /// took a round trip to turn into a number. These are the numbers, on
+    /// screen, at the moment it happens. Off by default; the capture screen
+    /// is for capturing.
+    struct LiveStats {
+        var state: Int32 = 0
+        var delivered: UInt32 = 0
+        var fed: UInt32 = 0
+        var dropped: UInt32 = 0
+        var inlierRatio: Float = 0
+        var pxError: Float = 0
+        var keyframes: UInt32 = 0
+        var mapPoints: UInt32 = 0
+        var storeSpacingM: Float = 0
+        var storeRotationDeg: Float = 0
+
+        var stateName: String {
+            switch bs_live_state(rawValue: bs_live_state.RawValue(max(0, state))) {
+            case BS_LIVE_INITIALIZING: return "starting"
+            case BS_LIVE_TRACKING: return "tracking"
+            case BS_LIVE_LOST: return "LOST"
+            case BS_LIVE_FINISHED: return "finished"
+            default: return "idle"
+            }
+        }
+        var dropPercent: Int {
+            delivered > 0 ? Int((Double(dropped) / Double(delivered) * 100).rounded()) : 0
+        }
+    }
+    private(set) var stats = LiveStats()
+    /// User-toggled, from the capture screen's status row.
+    var showsStats = false
     /// How the storage note should read. Too thin and too full are opposite
     /// problems and must not look alike: one says keep going, the other says
     /// stop. Derived here rather than in the view, which used to infer it
@@ -756,6 +793,7 @@ final class CaptureViewModel {
         var storageNote: String?
         var storageNoteLevel: StorageNoteLevel
         var walkedCentre: SIMD3<Double>?
+        var stats: LiveStats
     }
 
     @MainActor
@@ -779,6 +817,7 @@ final class CaptureViewModel {
         storageNoteLevel = r.storageNoteLevel
         if isScouting { scaffoldKeyframes = r.keyframes }
         if let centre = r.walkedCentre { extendWalked(centre) }
+        stats = r.stats
     }
 
     /// Polls the engine for status, storage directives and readiness.
@@ -908,7 +947,17 @@ final class CaptureViewModel {
                     framesStored: UInt32(stored),
                     megabytesWritten: Double(bytes) / 1_048_576.0,
                     trackerNote: trackerNote, storageNote: note,
-                    storageNoteLevel: level, walkedCentre: viewer?.center))
+                    storageNoteLevel: level, walkedCentre: viewer?.center,
+                    stats: LiveStats(
+                        state: status.state,
+                        delivered: counts.delivered, fed: counts.fed,
+                        dropped: counts.dropped,
+                        inlierRatio: status.inlier_ratio,
+                        pxError: status.px_error_mean,
+                        keyframes: status.keyframes,
+                        mapPoints: status.map_points,
+                        storeSpacingM: status.store_spacing_m,
+                        storeRotationDeg: status.store_rotation_deg)))
 
                 // Snapshot copy also takes the engine mutex, so it stays off
                 // the main actor too; only the handoff to the renderer runs
@@ -978,7 +1027,14 @@ final class CaptureViewModel {
     }
 
     func renameRegion(id: UInt32, name: String) {
-        _ = CoreEngine.shared.renameRegion(id: id, name: name)
+        // Off the main actor: this takes the engine mutex, which a tracking
+        // frame holds for its whole duration. Renaming a room happens on the
+        // dashboard while capture may still be running, so doing it inline
+        // would stall the UI for exactly as long as a frame takes — the same
+        // defect the poll loop had.
+        Task.detached(priority: .userInitiated) {
+            _ = CoreEngine.shared.renameRegion(id: id, name: name)
+        }
         // The engine's copy is live-layer and disposable; session.json is
         // what survives the session, and is where FORMATS.md says the user's
         // names live.

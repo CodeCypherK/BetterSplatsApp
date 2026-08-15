@@ -257,21 +257,24 @@ Measured on the two-room scene (6×8 m each), at 1.0 m/s and 40 deg/s pan:
 
 | | value |
 |---|---|
-| path per room | 62 m / 57 m |
+| path per room | 60.5 m / 55.2 m (115.7 m total) |
 | bearings each object is framed from | 4–11 of 12 thirty-degree sectors |
 | doorway bearings | 11 of 12 |
 | worst single frame | 1.33 deg (exactly the declared pan limit) |
-| **stored frames per room, 5 cm gate** | **944 / 867** |
-| stored frames per room, 10 cm / 8 deg gate | 473 / 435 |
+| clearance from furniture / wall, minimum | 0.35 m / 0.45 m |
+| stored frames per room | **382 / 423** |
 
-That last pair is the finding. The flow is right and the **gate is wrong for
-it**: at the shipping `store_min_translation_m = 0.05` a single room asks for
-~900 images, roughly twice the 200–500 a project is sized for. 10 cm lands in
-the middle of the band, and at 2.5 m median depth 10 cm is still only a 2.3
-deg baseline between neighbouring stored views. Changing it is an on-device
-behaviour change with its own measurement (does final-solve registration
-hold at half the density), so it is tracked in docs/BACKLOG.md rather than
-done here.
+And what each move actually films, which is the number that says whether a
+plan is any good — the first surface the optical axis hits, not where the
+look target happens to sit:
+
+| move | walked | subject distance |
+|---|---|---|
+| circling the room | 40.1 m | 6.36 m |
+| orbiting an object | 35.6 m | 2.81 m |
+| orbiting the doorway | 8.6 m | 2.08 m |
+| through the opening | 3.8 m | 6.13 m |
+| walking between | 27.6 m | 5.82 m |
 
 Objects against a wall cannot be orbited past about 150 deg — you cannot
 walk behind a sideboard — so their bearing coverage is 7–8 sectors while a

@@ -258,23 +258,28 @@ non-expert to that data on the first try.
       (scripts/validate_colmap.py says why), because a gate that swings from
       0.05 m to 1.34 m on unrelated changes is not a gate.
 
-- [ ] **The store gate is too dense for the capture flow: ~900 frames per
-      room where the budget is 200-500.** Now that the capture walk is
-      circle-then-orbit (ARCHITECTURE.md), a 6×8 m room is 62 m of walking,
-      and at the shipping `store_min_translation_m = 0.05` that stores
-      **944 frames** — about double what a project is sized for, and a house
-      of 10 rooms would be 9,000 images. At a 10 cm / 8 deg gate the same
-      room stores **473**, mid-band. 10 cm at 2.5 m median depth is a 2.3 deg
-      baseline between neighbouring stored views, which is still dense for a
-      final solve.
-      Before changing it, measure what it costs: `bs_replay --decimate 2` on
-      a capture-flow session, comparing final-solve registration %, point
-      count and reprojection RMSE against full density. If those hold, change
-      the gate; consider making it depth-scaled — `max(0.05, 0.04 * median
-      depth)` — the way `kf_translation_depth_frac` already is, so a tight
-      orbit at 1.5 m keeps storing at 6 cm while a room-scale lap relaxes.
-      DO NOT shorten the capture walk to fit the gate: the walk is the thing
-      that makes objects reconstruct as solids rather than cards.
+- [x] ~~**The store gate is too dense for the capture flow: ~900 frames per
+      room where the budget is 200-500.**~~ **Done: scaled by scene depth.**
+      A flat distance cannot be right for both an orbit at 2 m and a wall at
+      6 m — what sets the overlap between neighbouring stored images is the
+      ratio of baseline to subject distance, not the baseline. The gate is now
+      `max(5 cm, 4% of median scene depth)`, taken from the points of the most
+      recent keyframe (not the depth image, which goes blank past the LiDAR's
+      5 m on exactly the wide shots this is for; not the whole map, which
+      would count the far room through a doorway).
+
+      | | flat 5 cm | 4% of depth |
+      |---|---|---|
+      | room A | 1,096 | **382** |
+      | room B | 948 | **423** |
+      | whole walk | 2,044 | **805** |
+
+      In practice 24 cm down a wall at 6 m, 11 cm around a table at 2.7 m,
+      5 cm wherever the phone is close enough for the floor to bind. A test
+      asserts a room lands in 200-500 rather than merely "not absurd".
+      Counts above are simulated over the plan's own subject distances; a
+      live replay confirming them against the engine's tracked-point median
+      is the remaining check.
 
 - [ ] **Do the seams show between separately-solved sessions?** A house is
       ~10 captures / 2,000-5,000 images, which **cannot be one on-device
@@ -486,8 +491,9 @@ Newest first. One line per session: what changed, what it measured.
   gauges). New metric `live_poses_used` records the decision, because the
   outcome does not: a 14-frame scene recovers from a bad seed either way.
 
-  Still open above as a work item: the **store gate is now too dense** — 944
-  frames for one room against a 200-500 budget.
+  The **store gate was too dense** for it — 944 frames for one room against a
+  200-500 budget — and is now scaled by scene depth, which puts a room at
+  382/423. See the entry above.
 
 - **End of capture is no longer a dead end.** It said "Saved:
   session_20260814-142230_a3f2c1" with a Done button — a filename and an

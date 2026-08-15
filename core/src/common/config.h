@@ -9,6 +9,12 @@ namespace bs {
 // compatible. Every threshold that shapes reconstruction behavior belongs
 // here, not inline in the algorithms, so tests and the replay CLI can sweep
 // them.
+// Every field here must be READ somewhere in the engine —
+// scripts/check_config_used.py fails the build otherwise, and it found
+// eight that were not. A knob nothing reads is the same defect as a
+// session field that always lies: the behaviour it names is either absent
+// or hard-coded elsewhere, and someone who sets it gets silence. What was
+// removed, and what it was meant to do, is in docs/BACKLOG.md.
 struct EngineConfig {
   // --- logging ---
   int log_level = 1;  // 0 debug .. 3 error
@@ -23,7 +29,6 @@ struct EngineConfig {
   float live_match_ratio = 0.8f;
   float live_pnp_thresh_px = 2.0f;
   int live_pnp_min_inliers = 15;
-  int live_queue_depth = 2;
   // Motion plausibility. PnP RANSAC can converge on a geometrically
   // consistent but physically impossible pose — measured on a walkthrough, a
   // 5.9 m single-frame jump accepted with 92/114 inliers, after which every
@@ -47,7 +52,6 @@ struct EngineConfig {
   // --- bootstrap ---
   int boot_min_matches = 80;
   float boot_ransac_px = 1.5f;
-  float boot_h_over_e_max = 0.45f;   // reject rotation-dominant pairs
   float boot_min_cheirality = 0.90f;
   float boot_min_median_tri_deg = 1.2f;
   int scale_min_samples = 30;
@@ -72,6 +76,11 @@ struct EngineConfig {
 
   // --- storage gating ---
   float store_min_translation_m = 0.05f;
+  // ...or this fraction of the median scene depth, whichever is larger. A
+  // fixed spacing in metres cannot be right for both an orbit at 2 m and a
+  // wall at 6 m; overlap between neighbouring images is what matters and it
+  // is set by the ratio, not the distance.
+  float store_translation_depth_frac = 0.04f;
   float store_min_rotation_deg = 5.0f;
   // Sharpness a frame must reach, as a fraction of recent typical sharpness,
   // to be stored when geometry says one is due. RAW is never rewritten, so a
@@ -82,7 +91,6 @@ struct EngineConfig {
   float store_min_sharpness_frac = 0.6f;
 
   // --- live map caps (LIVE layer is disposable; caps are safe) ---
-  int live_max_keyframes = 600;
   int live_max_points = 300000;
 
   // --- local BA ---
@@ -141,9 +149,7 @@ struct EngineConfig {
   // months earlier against a phone nobody is holding.
   int final_sift_budget_mb = 1500;
   int final_seq_window = 8;
-  int final_bow_top_k = 10;
   int final_exhaustive_below = 150;
-  int final_max_pairs_per_image = 40;
   float final_match_ratio = 0.8f;
   float final_ransac_px = 1.25f;
   int final_pair_min_inliers = 30;
@@ -156,7 +162,6 @@ struct EngineConfig {
   float final_prune_point_mean_px = 2.5f;
   int final_register_min_inliers = 25;
   float final_register_thresh_px = 3.0f;
-  float final_track_complete_px = 6.0f;
   // Dropping a camera the model cannot justify. Both conditions must hold:
   // fewer than this fraction of the median observation count, AND worse than
   // this multiple of the median per-image reprojection error.

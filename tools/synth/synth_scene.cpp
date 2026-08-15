@@ -1505,14 +1505,24 @@ TrajectoryMotion MeasureMotion(const std::vector<SE3>& poses) {
 }
 
 int GatedFrameCount(const std::vector<SE3>& poses, double min_step_m,
-                    double min_turn_deg) {
+                    double min_turn_deg, double depth_frac,
+                    const Scene* scene) {
   if (poses.empty()) return 0;
   int stored = 1;
   SE3 last = poses.front();
   for (size_t i = 1; i < poses.size(); ++i) {
     const double step = (poses[i].CameraCenter() - last.CameraCenter()).norm();
     const double turn = RadToDeg(poses[i].q.angularDistance(last.q));
-    if (step < min_step_m && turn < min_turn_deg) continue;
+    double needed = min_step_m;
+    if (scene != nullptr && depth_frac > 0.0) {
+      const Eigen::Vector3d fwd =
+          poses[i].Inverse().q * Eigen::Vector3d(0, 0, 1);
+      const RayHit hit = CastRay(*scene, poses[i].CameraCenter(), fwd);
+      if (hit.plane_index >= 0) {
+        needed = std::max(needed, depth_frac * hit.t);
+      }
+    }
+    if (step < needed && turn < min_turn_deg) continue;
     ++stored;
     last = poses[i];
   }

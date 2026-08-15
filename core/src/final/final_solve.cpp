@@ -1562,10 +1562,100 @@ FinalOutcome RunFinalSolve(const EngineConfig& config,
         ++removed;
       }
     }
-    metrics.floaters_removed = removed;
-    metrics.points -= std::min(metrics.points, removed);
+    // Second pass: points with no neighbours. The LiDAR vote above only
+    // reaches points a confident depth reading disagrees with, which leaves
+    // everything the sensor never saw — past its 5 m range, through the
+    // doorway, on a grazing surface — and a mis-triangulated point out there
+    // survives into the export as a speck in mid-air. A splat trained on
+    // those grows a blob around each one.
+    //
+    // The test is the classic one and needs no parameters beyond a
+    // multiple: a point whose mean distance to its k nearest neighbours is
+    // far outside what the model as a whole does is not part of a surface.
+    uint32_t isolated = 0;
+    {
+      std::vector<Eigen::Vector3d> live;
+      std::vector<Track*> live_track;
+      for (auto& track : tracks) {
+        if (track.dead || !track.has_point) continue;
+        live.push_back(track.X);
+        live_track.push_back(&track);
+      }
+      const int k = std::max(1, config.floater_radius_neighbors);
+      if (static_cast<int>(live.size()) > 4 * k) {
+        // A 25 cm voxel grid, so this is a neighbour search rather than an
+        // n^2 scan: 80k points squared is 6.4 billion distance tests.
+        constexpr double kCell = 0.25;
+        std::unordered_map<uint64_t, std::vector<int>> grid;
+        auto key = [](int a, int b, int c) {
+          return (static_cast<uint64_t>(a + 4096) << 42) ^
+                 (static_cast<uint64_t>(b + 4096) << 21) ^
+                 static_cast<uint64_t>(c + 4096);
+        };
+        auto cell_of = [&](const Eigen::Vector3d& p) {
+          return std::array<int, 3>{
+              static_cast<int>(std::floor(p.x() / kCell)),
+              static_cast<int>(std::floor(p.y() / kCell)),
+              static_cast<int>(std::floor(p.z() / kCell))};
+        };
+        for (size_t i = 0; i < live.size(); ++i) {
+          const auto c = cell_of(live[i]);
+          grid[key(c[0], c[1], c[2])].push_back(static_cast<int>(i));
+        }
+        std::vector<double> mean_dist(live.size(), 0.0);
+        std::vector<double> near;
+        for (size_t i = 0; i < live.size(); ++i) {
+          near.clear();
+          const auto c = cell_of(live[i]);
+          for (int dz = -1; dz <= 1; ++dz) {
+            for (int dy = -1; dy <= 1; ++dy) {
+              for (int dx = -1; dx <= 1; ++dx) {
+                const auto it =
+                    grid.find(key(c[0] + dx, c[1] + dy, c[2] + dz));
+                if (it == grid.end()) continue;
+                for (const int j : it->second) {
+                  if (static_cast<size_t>(j) == i) continue;
+                  near.push_back((live[j] - live[i]).norm());
+                }
+              }
+            }
+          }
+          if (near.empty()) {
+            mean_dist[i] = std::numeric_limits<double>::max();
+            continue;
+          }
+          const size_t take = std::min(near.size(), static_cast<size_t>(k));
+          std::nth_element(near.begin(), near.begin() + take - 1, near.end());
+          double sum = 0;
+          for (size_t n = 0; n < take; ++n) sum += near[n];
+          mean_dist[i] = sum / take;
+        }
+        std::vector<double> finite;
+        finite.reserve(mean_dist.size());
+        for (const double d : mean_dist) {
+          if (d < 1e30) finite.push_back(d);
+        }
+        if (finite.size() > 32) {
+          std::nth_element(finite.begin(), finite.begin() + finite.size() / 2,
+                           finite.end());
+          const double limit =
+              config.floater_radius_factor * finite[finite.size() / 2];
+          for (size_t i = 0; i < live.size(); ++i) {
+            if (mean_dist[i] <= limit) continue;
+            live_track[i]->dead = true;
+            ++isolated;
+          }
+        }
+      }
+    }
+
+    metrics.floaters_removed = removed + isolated;
+    metrics.points -= std::min(metrics.points, removed + isolated);
     report(BS_STAGE_FLOATER_SWEEP, 1.0f);
-    BS_LOGI("final", "floater sweep removed %u points", removed);
+    BS_LOGI("final",
+            "floater sweep removed %u points in front of LiDAR, %u with no "
+            "neighbours",
+            removed, isolated);
   }
 
   // ------------------------------------------- S10 final LiDAR alignment

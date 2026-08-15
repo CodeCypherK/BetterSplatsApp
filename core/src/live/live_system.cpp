@@ -930,7 +930,45 @@ void LiveSystem::UpdateStoreGate(const LiveFrameInput& input,
       (last_pose_.CameraCenter() - last_store_pose_.CameraCenter()).norm();
   const double rotation_deg =
       RadToDeg(AngularDistance(last_pose_.q, last_store_pose_.q));
-  const bool moved = translation > config_.store_min_translation_m ||
+  // How far apart stored frames need to be is a question about the SCENE,
+  // not about the room. A capture flown at arm's length around a table and
+  // one walked down a wall six metres away want very different spacings for
+  // the same overlap between neighbouring images, and a single distance in
+  // metres has to be wrong for one of them. At a flat 5 cm the circle-and-
+  // orbit walk stores ~944 frames for one room against a 200-500 budget —
+  // twice what a project is sized for, and a house ten times over.
+  //
+  // Scaled by scene depth it is ~4% of what the camera is looking at: 24 cm
+  // down a wall at 6 m, 11 cm around a table at 2.7 m, and the 5 cm floor
+  // wherever the phone is close enough for that to be the tighter rule.
+  // Median depth of the tracked points, the same measure the keyframe gate
+  // uses, because it works past the LiDAR's 5 m range where a depth-image
+  // median would simply go blank on exactly the wide shots this is for.
+  // From the points of the most recent keyframe, which are the ones actually
+  // being looked at. Sampling the whole map instead would count anything
+  // that happens to lie in front of the camera, including the far room
+  // through a doorway, and pull the median out past what is in frame.
+  double median_depth = 0;
+  if (const Keyframe* kf = map_.FindKeyframe(last_kf_id_)) {
+    std::vector<double> depths;
+    depths.reserve(kf->point_ids.size());
+    for (const int32_t pid : kf->point_ids) {
+      if (pid < 0) continue;
+      const auto it = map_.points().find(pid);
+      if (it == map_.points().end()) continue;
+      const double z = last_pose_.Apply(it->second.X).z();
+      if (z > 0.05) depths.push_back(z);
+    }
+    if (depths.size() > 10) {
+      std::nth_element(depths.begin(), depths.begin() + depths.size() / 2,
+                       depths.end());
+      median_depth = depths[depths.size() / 2];
+    }
+  }
+  const double needed_translation =
+      std::max(static_cast<double>(config_.store_min_translation_m),
+               config_.store_translation_depth_frac * median_depth);
+  const bool moved = translation > needed_translation ||
                      rotation_deg > config_.store_min_rotation_deg;
   if (!moved) return;
 
@@ -954,7 +992,7 @@ void LiveSystem::UpdateStoreGate(const LiveFrameInput& input,
   // continuous pan — store what there is. A gap in coverage cannot be fixed
   // later; a slightly soft frame can at least be down-weighted.
   const bool overdue =
-      translation > 2.0 * config_.store_min_translation_m ||
+      translation > 2.0 * needed_translation ||
       rotation_deg > 2.0 * config_.store_min_rotation_deg;
 
   if (!sharp && !overdue) return;

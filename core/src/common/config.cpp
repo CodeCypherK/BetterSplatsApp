@@ -46,7 +46,6 @@ EngineConfig EngineConfig::FromJson(const char* text, bool* ok) {
   get_to(j, "live_match_ratio", c.live_match_ratio);
   get_to(j, "live_pnp_thresh_px", c.live_pnp_thresh_px);
   get_to(j, "live_pnp_min_inliers", c.live_pnp_min_inliers);
-  get_to(j, "live_queue_depth", c.live_queue_depth);
   get_to(j, "track_max_speed_mps", c.track_max_speed_mps);
   get_to(j, "track_max_rot_dps", c.track_max_rot_dps);
   get_to(j, "track_warn_rot_dps", c.track_warn_rot_dps);
@@ -54,7 +53,6 @@ EngineConfig EngineConfig::FromJson(const char* text, bool* ok) {
 
   get_to(j, "boot_min_matches", c.boot_min_matches);
   get_to(j, "boot_ransac_px", c.boot_ransac_px);
-  get_to(j, "boot_h_over_e_max", c.boot_h_over_e_max);
   get_to(j, "boot_min_cheirality", c.boot_min_cheirality);
   get_to(j, "boot_min_median_tri_deg", c.boot_min_median_tri_deg);
   get_to(j, "scale_min_samples", c.scale_min_samples);
@@ -71,10 +69,10 @@ EngineConfig EngineConfig::FromJson(const char* text, bool* ok) {
   get_to(j, "kf_force_interval_s", c.kf_force_interval_s);
 
   get_to(j, "store_min_translation_m", c.store_min_translation_m);
+  get_to(j, "store_translation_depth_frac", c.store_translation_depth_frac);
   get_to(j, "store_min_rotation_deg", c.store_min_rotation_deg);
   get_to(j, "store_min_sharpness_frac", c.store_min_sharpness_frac);
 
-  get_to(j, "live_max_keyframes", c.live_max_keyframes);
   get_to(j, "live_max_points", c.live_max_points);
 
   get_to(j, "lba_window", c.lba_window);
@@ -108,9 +106,7 @@ EngineConfig EngineConfig::FromJson(const char* text, bool* ok) {
   get_to(j, "final_drop_weak_obs_frac", c.final_drop_weak_obs_frac);
   get_to(j, "final_drop_err_factor", c.final_drop_err_factor);
   get_to(j, "final_seq_window", c.final_seq_window);
-  get_to(j, "final_bow_top_k", c.final_bow_top_k);
   get_to(j, "final_exhaustive_below", c.final_exhaustive_below);
-  get_to(j, "final_max_pairs_per_image", c.final_max_pairs_per_image);
   get_to(j, "final_match_ratio", c.final_match_ratio);
   get_to(j, "final_ransac_px", c.final_ransac_px);
   get_to(j, "final_pair_min_inliers", c.final_pair_min_inliers);
@@ -123,7 +119,6 @@ EngineConfig EngineConfig::FromJson(const char* text, bool* ok) {
   get_to(j, "final_prune_point_mean_px", c.final_prune_point_mean_px);
   get_to(j, "final_register_min_inliers", c.final_register_min_inliers);
   get_to(j, "final_register_thresh_px", c.final_register_thresh_px);
-  get_to(j, "final_track_complete_px", c.final_track_complete_px);
   get_to(j, "final_early_stop_frac", c.final_early_stop_frac);
   get_to(j, "final_threads", c.final_threads);
   get_to(j, "final_multi_component", c.final_multi_component);

@@ -224,8 +224,13 @@ TrajectoryMotion MeasureMotion(const std::vector<SE3>& poses);
 // final solve runs out of baseline. A plan is only "done" once this has been
 // counted against the same thresholds the engine ships with
 // (EngineConfig::store_min_translation_m / store_min_rotation_deg).
+// `depth_frac` and `scene` model the engine's depth-scaled spacing: a frame
+// is due after max(min_step_m, depth_frac * subject distance), where the
+// subject distance is what the optical axis actually hits. Omit them for the
+// flat-distance behaviour.
 int GatedFrameCount(const std::vector<SE3>& poses, double min_step_m,
-                    double min_turn_deg);
+                    double min_turn_deg, double depth_frac = 0.0,
+                    const Scene* scene = nullptr);
 
 // True when the camera centre is inside walkable floor: within a room, clear
 // of the walls, out of the furniture, and — at the divider — inside the

@@ -279,6 +279,31 @@ free-standing table reaches 11. That is a property of the room, not a defect
 of the plan, and it is why the readiness score weights view overlap per
 patch rather than per object.
 
+### How far apart stored frames go is a question about the scene
+
+The store gate was a flat 5 cm of travel. That cannot be right for both an
+orbit at 2 m and a wall at 6 m: what decides whether neighbouring stored
+images overlap usefully is the ratio of baseline to subject distance, not
+the baseline. At 5 cm the circle-and-orbit walk stores **~1,100 frames for
+one room** against a 200–500 budget — twice what a project is sized for, and
+a house ten times over.
+
+It is now `max(5 cm, 4% of the median scene depth)`, where the depth comes
+from the points of the most recent keyframe — the ones actually being looked
+at. Not the depth image: LiDAR stops at 5 m and would go blank on exactly
+the wide shots this exists for. Not the whole map either, which would count
+the far room through a doorway and pull the median past what is in frame.
+
+| | flat 5 cm | 4% of depth |
+|---|---|---|
+| room A | 1,096 | **382** |
+| room B | 948 | **423** |
+| whole walk | 2,044 | **805** |
+
+In practice that is 24 cm down a wall at 6 m, 11 cm around a table at 2.7 m,
+and the 5 cm floor wherever the phone is close enough for that to bind. A
+test asserts a room lands in 200–500 rather than merely "not absurd".
+
 ### Nothing on the walk passes through anything, with room to spare
 
 The path clears **0.35 m of furniture and 0.60 m of wall** at every point,

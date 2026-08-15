@@ -292,14 +292,16 @@ TEST_F(SynthTest, CaptureWalkStoresARoomsWorthOfFrames) {
   for (const SE3& p : poses) {
     if (p.CameraCenter().x() < layout.door_x) room_a.push_back(p);
   }
-  const int stored = synth::GatedFrameCount(room_a, cfg.store_min_translation_m,
-                                            cfg.store_min_rotation_deg);
-  // Two rooms of this size are two captures, and each one has to land inside
-  // the project budget on its own. The 5 cm gate puts a 6x8 m room at the
-  // very top of it; see docs/BACKLOG.md — the gate, not the plan, is the
-  // thing to change if this needs to come down.
+  const synth::Scene scene = synth::MakeTwoRoomScene(4);
+  const int stored = synth::GatedFrameCount(
+      room_a, cfg.store_min_translation_m, cfg.store_min_rotation_deg,
+      cfg.store_translation_depth_frac, &scene);
+  // Two rooms of this size are two captures, and each has to land inside the
+  // project budget on its own — which is the point of the gate being scaled
+  // by scene depth rather than fixed in metres. At a flat 5 cm this room
+  // stored ~1100 frames; at 4% of subject distance it stores ~400.
   EXPECT_GE(stored, 200) << "a room's capture is too thin to reconstruct";
-  EXPECT_LE(stored, 1000) << "a room's capture will not fit a project";
+  EXPECT_LE(stored, 500) << "a room's capture will not fit a project";
 }
 
 // The plan never passes through a wall or an object, and "through" is not

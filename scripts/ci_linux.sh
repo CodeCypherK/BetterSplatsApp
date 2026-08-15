@@ -40,6 +40,10 @@ validate() {
     echo "ERROR: ARKit usage detected — image-first SfM only" >&2
     exit 1
   fi
+  # Spec invariant: every EngineConfig field is read by the engine. A knob
+  # nothing reads is a documented lie, and this found eight of them.
+  python3 scripts/check_config_used.py
+
   # End-to-end pipeline validation: synth session -> replay live -> final
   # solve -> COLMAP export -> pycolmap assertions + RAW immutability.
   python3 scripts/validate_colmap.py --build-dir "build/$PRESET"

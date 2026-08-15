@@ -120,6 +120,35 @@ non-expert to that data on the first try.
 
 ## Next
 
+- [ ] **Six pieces of documented behaviour that were never built.** Found by
+      `scripts/check_config_used.py`, now a CI gate: every `EngineConfig`
+      field must be read somewhere in the engine, and eight were not. Two are
+      now implemented (the floater sweep's radius-outlier pass). The other six
+      are deleted from the config — a knob that does nothing is the same
+      defect as `keyframe_ids` being empty in every session ever captured —
+      and listed here so removing them does not lose the intent:
+      - **`live_max_keyframes = 600`** — the live map has NO keyframe cap. A
+        two-room capture measured 675 keyframes / 32k points, so one room is
+        ~350 and a large open-plan space could run well past it with nothing
+        to stop it. This is the one with real on-device consequences.
+      - **`boot_h_over_e_max = 0.45`** — the plan's H/E model selection,
+        rejecting a bootstrap pair whose homography explains it as well as
+        the essential matrix. Without it a rotation-dominant or planar start
+        can seed a degenerate map.
+      - **`final_bow_top_k = 10`** — appearance retrieval for the pair graph
+        (plan stage S2). The graph is index-only. Not costing anything
+        measurable today (SIFT connects the walk on strides alone) but it is
+        the reason a revisit hundreds of frames later is never proposed.
+      - **`final_max_pairs_per_image = 40`** — pair cap. Moot at current
+        stride counts (~18/image) but real under `final_exhaustive_below`,
+        where a 140-image fixture matches 139 pairs per image and takes 20
+        minutes.
+      - **`final_track_complete_px = 6.0`** — track completion (project a
+        point into frames that should see it and match nearby unassigned
+        features). Longer tracks, better conditioned BA.
+      - **`live_queue_depth = 2`** — bounded frame queue. Arguably belongs to
+        the app rather than the engine; the app already applies backpressure.
+
 - [ ] **THE performance problem: the final solve registers under half the
       images at the density a real capture actually has.** The user's figure
       is ~200 images per room, so two rooms is ~400 over a 116 m walk — 29 cm

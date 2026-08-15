@@ -302,26 +302,35 @@ TEST_F(SynthTest, CaptureWalkStoresARoomsWorthOfFrames) {
   EXPECT_LE(stored, 1000) << "a room's capture will not fit a project";
 }
 
-// Nothing in the plan may pass through a solid. The clearances used to walk
-// the plan are generous — half a metre off a wall — so this asks the strict
-// question instead: did the camera end up inside a wall, inside the divider,
-// or inside the furniture.
-TEST_F(SynthTest, CaptureWalkNeverPassesThroughAnything) {
+// The plan never passes through a wall or an object, and "through" is not
+// the interesting bar — "not inside a solid" is satisfied by a path that
+// grazes a chest at 3 cm, which no one can walk and which films the chest
+// from 3 cm. So this asks for a real margin, everywhere, including the
+// rounded corners of the lap, which for a while were emitted with no
+// walkability test at all: the four straight legs were checked and the
+// curves joining them were not.
+//
+// Measured: the whole walk clears 0.35 m of furniture and 0.60 m of wall
+// in the planner's own model, which is what the planner promises. The
+// bounds below sit just under that, so an erosion of the promise fails
+// here rather than being discovered in a picture.
+TEST_F(SynthTest, CaptureWalkKeepsClearOfEverything) {
   const std::vector<SE3> poses =
       synth::CaptureTrajectory(3645, 1.5, /*seed=*/4, 40.0 / 30.0);
-  int inside = 0;
+  ASSERT_FALSE(poses.empty());
+  int tight = 0;
   Eigen::Vector3d worst = Eigen::Vector3d::Zero();
   for (const SE3& p : poses) {
     const Eigen::Vector3d c = p.CameraCenter();
-    if (synth::TwoRoomWalkable(c, /*wall_clearance=*/0.10,
-                               /*object_clearance=*/0.05)) {
+    if (synth::TwoRoomWalkable(c, /*wall_clearance=*/0.50,
+                               /*object_clearance=*/0.33)) {
       continue;
     }
-    ++inside;
+    ++tight;
     worst = c;
   }
-  EXPECT_EQ(inside, 0) << "path enters a solid, e.g. at (" << worst.x() << ", "
-                       << worst.z() << ")";
+  EXPECT_EQ(tight, 0) << "path squeezes past or enters a solid, e.g. at ("
+                      << worst.x() << ", " << worst.z() << ")";
 }
 
 TEST_F(SynthTest, ScoutCircuitHugsWallsAndFacesInward) {

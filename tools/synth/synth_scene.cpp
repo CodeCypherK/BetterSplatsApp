@@ -604,6 +604,10 @@ constexpr double kCornerRadius = 0.5;     // rounded circuit corners
 // from the lens, which fills the frame, gives the tracker nothing that
 // persists, and records a 70 cm patch of a 6 m surface.
 constexpr double kLapStandoff = 0.95;
+// What the lap keeps clear of furniture when it can. kPlanObjClear is the
+// hard limit — can a body fit — and it is not the same question as whether
+// a person would walk there filming.
+constexpr double kLapObjClear = 0.60;
 constexpr double kLapViewDeg = 52.0;  // from the wall normal, toward travel
 
 struct Rect {
@@ -674,10 +678,11 @@ Floorplan MakeFloorplan(const TwoRoomLayout& L, double wall_clear,
 // walkable limit, because that keeps the loop large; only if that fails does
 // it come inward, which is what a sideboard standing 1.3 m off the back wall
 // forces and is exactly where a person walks around it.
-Rect CircuitRect(const Floorplan& plan, Rect limit, double standoff,
-                 double y) {
+Rect CircuitRect(const Floorplan& roomy, const Floorplan& tight, Rect limit,
+                 double standoff, double y) {
   constexpr double kStep = 0.05;
   constexpr double kMinSpan = 1.2;
+  const Floorplan* plan = &roomy;
   limit = {limit.x0 + 0.02, limit.x1 - 0.02, limit.z0 + 0.02, limit.z1 - 0.02};
   Rect r = {std::min(limit.x0 + standoff, 0.5 * (limit.x0 + limit.x1)),
             std::max(limit.x1 - standoff, 0.5 * (limit.x0 + limit.x1)),
@@ -690,11 +695,11 @@ Rect CircuitRect(const Floorplan& plan, Rect limit, double standoff,
     const Eigen::Vector3d b(side == 3 ? r.x1 : r.x0, y,
                             side == 1 ? r.z1 : r.z0);
     if (side < 2) {
-      return plan.WalkableLine({r.x0, y, side ? r.z1 : r.z0},
-                               {r.x1, y, side ? r.z1 : r.z0});
+      return plan->WalkableLine({r.x0, y, side ? r.z1 : r.z0},
+                                {r.x1, y, side ? r.z1 : r.z0});
     }
-    return plan.WalkableLine({side == 3 ? r.x1 : r.x0, y, r.z0},
-                             {side == 3 ? r.x1 : r.x0, y, r.z1});
+    return plan->WalkableLine({side == 3 ? r.x1 : r.x0, y, r.z0},
+                              {side == 3 ? r.x1 : r.x0, y, r.z1});
   };
   auto edge = [&](int side) -> double& {
     return side == 0 ? r.z0 : side == 1 ? r.z1 : side == 2 ? r.x0 : r.x1;
@@ -708,6 +713,12 @@ Rect CircuitRect(const Floorplan& plan, Rect limit, double standoff,
   };
 
   for (int side = 0; side < 4; ++side) {
+    // Two passes: place the leg with a person's width to spare, and only if
+    // that is impossible anywhere on the side, allow the tight clearance.
+    // Without this the leg happily threads the 38 cm slot between a chest
+    // and the wall — legal by the walkability test, unwalkable by anybody
+    // holding a phone, and 40 cm from the only thing it can then see.
+    plan = &roomy;
     if (leg_clear(side)) continue;
     const double start = edge(side);
     const double outward = wall(side) > start ? kStep : -kStep;
@@ -724,6 +735,28 @@ Rect CircuitRect(const Floorplan& plan, Rect limit, double standoff,
     if (fixed) continue;
     edge(side) = start;
     for (int i = 0; i < 200 && span_ok(side); ++i) {  // then inward
+      edge(side) -= outward;
+      if (leg_clear(side)) {
+        fixed = true;
+        break;
+      }
+    }
+    if (fixed) continue;
+
+    plan = &tight;  // nothing roomy exists on this side; take what there is
+    edge(side) = start;
+    for (int i = 0; i < 60; ++i) {
+      const double next = edge(side) + outward;
+      if ((outward > 0) != (next < wall(side))) break;
+      edge(side) = next;
+      if (leg_clear(side)) {
+        fixed = true;
+        break;
+      }
+    }
+    if (fixed) continue;
+    edge(side) = start;
+    for (int i = 0; i < 200 && span_ok(side); ++i) {
       edge(side) -= outward;
       if (leg_clear(side)) break;
     }
@@ -872,6 +905,7 @@ bool TwoRoomWalkable(const Eigen::Vector3d& p, double wall_clearance,
 CapturePlan BuildCapturePlan(double eye_height) {
   const TwoRoomLayout& L = TwoRoomLayoutSpec();
   const Floorplan plan = MakeFloorplan(L, kPlanWallClear, kPlanObjClear);
+  const Floorplan roomy = MakeFloorplan(L, kPlanWallClear, kLapObjClear);
   const double plan_y = eye_height;
   const double look_y = eye_height * 0.72;
 
@@ -1007,7 +1041,8 @@ CapturePlan BuildCapturePlan(double eye_height) {
                          R.z0 + kPlanWallClear, R.z1 - kPlanWallClear}
                   : Rect{L.face_b() + kPlanWallClear, R.x1 - kPlanWallClear,
                          R.z0 + kPlanWallClear, R.z1 - kPlanWallClear};
-    const Rect circuit = CircuitRect(plan, bounds, kLapStandoff, plan_y);
+    const Rect circuit =
+        CircuitRect(roomy, plan, bounds, kLapStandoff, plan_y);
     const Eigen::Vector3d hub(0.5 * (circuit.x0 + circuit.x1), plan_y,
                               0.5 * (circuit.z0 + circuit.z1));
 
@@ -1022,8 +1057,31 @@ CapturePlan BuildCapturePlan(double eye_height) {
         {circuit.x1, plan_y, circuit.z0},
         {circuit.x1, plan_y, circuit.z1},
     };
-    const double cr =
-        std::min({kCornerRadius, circuit.width() / 3, circuit.depth() / 3});
+    // Rounding a corner must not cut through what the legs were placed to
+    // avoid. The arcs used to be emitted with no walkability test at all —
+    // the legs were checked, the curve joining them was not — so a corner
+    // could slice a furniture corner off however tightly it liked.
+    double cr = std::min({kCornerRadius, circuit.width() / 3,
+                          circuit.depth() / 3});
+    for (; cr > 0.05; cr -= 0.05) {
+      bool ok = true;
+      for (int i = 0; i < 4 && ok; ++i) {
+        const Eigen::Vector3d here(i == 0 || i == 1 ? circuit.x0 : circuit.x1,
+                                   plan_y,
+                                   i == 0 || i == 3 ? circuit.z1 : circuit.z0);
+        // The arc is inscribed in the corner; its centre is the point the
+        // curve stays `cr` from, so testing that centre's disc is enough.
+        const Eigen::Vector3d inward(
+            here.x() + (i <= 1 ? cr : -cr), plan_y,
+            here.z() + (i == 0 || i == 3 ? -cr : cr));
+        for (int k = 0; k <= 8 && ok; ++k) {
+          const double a = 2.0 * M_PI * k / 8;
+          ok = plan.Walkable({inward.x() + cr * std::cos(a), plan_y,
+                              inward.z() + cr * std::sin(a)});
+        }
+      }
+      if (ok) break;
+    }
     std::vector<Eigen::Vector3d> lap;
     auto lap_line = [&](const Eigen::Vector3d& a, const Eigen::Vector3d& b) {
       const int steps =

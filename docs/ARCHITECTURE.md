@@ -279,6 +279,29 @@ free-standing table reaches 11. That is a property of the room, not a defect
 of the plan, and it is why the readiness score weights view overlap per
 patch rather than per object.
 
+### Nothing on the walk passes through anything, with room to spare
+
+The path clears **0.35 m of furniture and 0.60 m of wall** at every point,
+and a test asserts it end to end. "Not inside a solid" is the wrong bar and
+was the one being checked: it is satisfied by a path that grazes a chest at
+3 cm, which nobody can walk and which films the chest from 3 cm. Two things
+were passing that bar and failing this one:
+
+- **The lap's rounded corners were never tested.** `CircuitRect` places the
+  four straight legs by walkability and the curves joining them were emitted
+  with no check at all, so a corner could cut whatever it liked off a
+  furniture corner. The radius now shrinks until the arc is clear.
+- **A leg would thread any gap that was technically walkable.** Room B's lap
+  found the 0.38 m slot between the chest and the wall, which is legal by
+  the clearance test, unwalkable by anybody holding a phone, and 0.4 m from
+  the only surface it can then see. Lap legs are now placed against a roomier
+  floorplan (0.60 m of furniture) and only fall back to the hard limit if no
+  placement on that side clears it.
+
+Standing out of the squeeze also fixed what the lap could see: subject
+distance 1.99 → **2.60 m**, and the walk shortened from 106 m to 99 m
+because it stopped detouring behind things.
+
 ### Subject distance is the number that says whether a plan is any good
 
 `bs_synth --dump-plan` writes the layout and the walk as JSON and

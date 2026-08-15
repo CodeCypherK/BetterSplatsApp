@@ -381,9 +381,21 @@ FinalOutcome RunFinalSolve(const EngineConfig& config,
   const auto& calib = session->calibration();
   if (calib.colmap_model && calib.colmap_model->model == "OPENCV" &&
       calib.colmap_model->params.size() >= 6) {
-    k1 = calib.colmap_model->params[4];
-    k2 = calib.colmap_model->params[5];
-    camera_model = "OPENCV";
+    // Same plausibility gate as a fresh fit — a model that came off disk is
+    // an input, not a fact, and one written by an older build may be the
+    // very thing that made this session need re-solving.
+    const double file_k1 = calib.colmap_model->params[4];
+    const double file_k2 = calib.colmap_model->params[5];
+    if (IsPhysicalLensModel(file_k1, file_k2, calib.intrinsics_session)) {
+      k1 = file_k1;
+      k2 = file_k2;
+      camera_model = "OPENCV";
+    } else {
+      BS_LOGW("final",
+              "calibration.json carries a non-physical lens model "
+              "(k1=%.4f k2=%.4f); solving uncorrected as PINHOLE",
+              file_k1, file_k2);
+    }
   } else if (!calib.distortion_lut.empty()) {
     if (const auto fit =
             FitOpencvModelFromLut(calib.distortion_lut, calib.intrinsics_session)) {

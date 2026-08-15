@@ -73,8 +73,21 @@ bs_result Engine::LiveBegin(const char* session_dir, bs_pass_kind pass) {
     if (const auto calib = CalibrationInfo::FromJson(calib_text)) {
       if (calib->colmap_model && calib->colmap_model->params.size() >= 6 &&
           calib->colmap_model->model == "OPENCV") {
-        k1_ = calib->colmap_model->params[4];
-        k2_ = calib->colmap_model->params[5];
+        const double k1 = calib->colmap_model->params[4];
+        const double k2 = calib->colmap_model->params[5];
+        // A model off disk gets the same scrutiny as one we just computed.
+        // It may have been written by an older build whose fit was wrong,
+        // and a wrong lens model is far more destructive than none: with
+        // k1 = -5.04 this pipeline does not bootstrap at all, where with no
+        // correction it tracks and reconstructs at reduced accuracy.
+        if (IsPhysicalLensModel(k1, k2, calib->intrinsics_session)) {
+          k1_ = k1;
+          k2_ = k2;
+        } else {
+          BS_LOGW("engine",
+                  "calibration.json carries a non-physical lens model "
+                  "(k1=%.4f k2=%.4f); tracking uncorrected instead", k1, k2);
+        }
         distortion_ready_ = true;
       } else if (!calib->distortion_lut.empty()) {
         if (const auto fit = FitOpencvModelFromLut(

@@ -120,22 +120,7 @@ std::optional<LutFitResult> FitOpencvModelFromLut(
   // This is the gate that was specified ("accept < 0.3 px, fall back over
   // 0.5 px") and never built, which is how a fit with a 252 px worst-case
   // error came to be used on a capture without anything objecting.
-  bool physical = true;
-  double previous_rd = 0;
-  for (int i = 1; i <= kSamples; ++i) {
-    const double ru = (static_cast<double>(i) / kSamples) * r_max_px / f;
-    const double rd = ru * (1.0 + result.k1 * ru * ru +
-                            result.k2 * ru * ru * ru * ru);
-    // Monotonic, positive, and never displacing a point by more than a
-    // quarter of the frame. Real phone lenses move corners by a few percent.
-    if (!(rd > previous_rd) || rd <= 0.0 ||
-        std::abs(rd - ru) * f > 0.25 * r_max_px) {
-      physical = false;
-      break;
-    }
-    previous_rd = rd;
-  }
-  if (!physical) {
+  if (!IsPhysicalLensModel(result.k1, result.k2, intrinsics)) {
     BS_LOGW("calib",
             "lens fit rejected as non-physical: k1=%.4f k2=%.4f "
             "(worst residual %.1f px) — using pinhole instead",
@@ -145,6 +130,31 @@ std::optional<LutFitResult> FitOpencvModelFromLut(
     result.rejected = true;
   }
   return result;
+}
+
+bool IsPhysicalLensModel(double k1, double k2,
+                         const PinholeIntrinsics& intrinsics) {
+  if (k1 == 0.0 && k2 == 0.0) return true;  // pinhole is always allowed
+  const double f = 0.5 * (intrinsics.fx + intrinsics.fy);
+  if (!(f > 0)) return false;
+  // Corner radius from the principal point: the worst case the model faces.
+  const double dx = std::max(intrinsics.cx, intrinsics.ref_w - intrinsics.cx);
+  const double dy = std::max(intrinsics.cy, intrinsics.ref_h - intrinsics.cy);
+  const double r_max_px = std::hypot(dx, dy);
+  if (!(r_max_px > 0)) return false;
+
+  constexpr int kSteps = 64;
+  double previous_rd = 0;
+  for (int i = 1; i <= kSteps; ++i) {
+    const double ru = (static_cast<double>(i) / kSteps) * r_max_px / f;
+    const double rd = ru * (1.0 + k1 * ru * ru + k2 * ru * ru * ru * ru);
+    if (!(rd > previous_rd) || rd <= 0.0 ||
+        std::abs(rd - ru) * f > 0.25 * r_max_px) {
+      return false;
+    }
+    previous_rd = rd;
+  }
+  return true;
 }
 
 Eigen::Vector2d DistortNormalized(const Eigen::Vector2d& xy, double k1,

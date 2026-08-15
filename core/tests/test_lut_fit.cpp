@@ -208,5 +208,40 @@ TEST(LutFit, ANonPhysicalFitIsRejectedRatherThanApplied) {
   EXPECT_EQ(fit->k2, 0.0);
 }
 
+// The same judgement, reachable on a model that did not come from a fit.
+// calibration.json is an input: it can have been written by an older build
+// whose fit was wrong, which is exactly the session most in need of being
+// re-solved. Trusting a persisted model more than a freshly computed one
+// has the check backwards.
+//
+// The stakes are asymmetric and measured. On the synthetic lens scene the
+// live pass tracks 31.7% of frames with the correct model and 28.3% with no
+// correction at all — but with the device's broken k1 = -5.04 it never
+// bootstraps: 0 keyframes, 0 points, 0 tracked poses out of 60. Falling back
+// to an uncorrected pinhole costs accuracy. Applying a wrong model costs
+// everything.
+TEST(LutFit, APersistedModelIsJudgedTheSameWayAFittedOneIs) {
+  PinholeIntrinsics K;
+  K.fx = K.fy = 1438.316528;
+  K.cx = 957.4606934;
+  K.cy = 720.9101562;
+  K.ref_w = 1920;
+  K.ref_h = 1440;
+
+  // What the device actually wrote down.
+  EXPECT_FALSE(IsPhysicalLensModel(-5.04, 5.54, K));
+  // What the fixed fit produces for the same lens.
+  EXPECT_TRUE(IsPhysicalLensModel(0.0415, -0.0976, K));
+  // No distortion is always a legal claim.
+  EXPECT_TRUE(IsPhysicalLensModel(0.0, 0.0, K));
+  // Strong but real barrel/pincushion stays allowed — the gate rejects
+  // impossible lenses, not merely unusual ones.
+  EXPECT_TRUE(IsPhysicalLensModel(-0.15, 0.05, K));
+  // A model that folds the frame back on itself does not.
+  EXPECT_FALSE(IsPhysicalLensModel(-3.0, 0.0, K));
+  // Degenerate intrinsics cannot be checked, so they are not trusted.
+  EXPECT_FALSE(IsPhysicalLensModel(0.05, 0.0, PinholeIntrinsics{}));
+}
+
 }  // namespace
 }  // namespace bs

@@ -40,6 +40,21 @@ struct LutFitResult {
 std::optional<LutFitResult> FitOpencvModelFromLut(
     const DistortionLut& lut, const PinholeIntrinsics& intrinsics);
 
+// Does (k1, k2) describe something a lens could do over this frame?
+//
+// True when the forward model is monotonic and positive across the whole
+// radius range and never displaces a point by more than a quarter of it.
+// Real phone lenses move corners by a few percent; a broken fit sends a
+// 900 px radius to -112 px, and every undistorted point downstream of that
+// is wrong in a way nothing else notices.
+//
+// Applied to fits AND to any model read off disk. A calibration.json is an
+// input like any other — it may have been written by an older build whose
+// fit was wrong, or by hand — so trusting a persisted model more than a
+// freshly computed one has the check backwards.
+bool IsPhysicalLensModel(double k1, double k2,
+                         const PinholeIntrinsics& intrinsics);
+
 // Applies the fitted forward model: undistorted normalized -> distorted
 // normalized (used by tests and the point undistortion below).
 Eigen::Vector2d DistortNormalized(const Eigen::Vector2d& xy_undistorted,

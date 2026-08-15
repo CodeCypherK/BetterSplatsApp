@@ -279,6 +279,24 @@ free-standing table reaches 11. That is a property of the room, not a defect
 of the plan, and it is why the readiness score weights view overlap per
 patch rather than per object.
 
+### The lap looks along the wall, not at it
+
+Circling a room means walking about half a metre off the wall, and a camera
+pointed square out from there is 50 cm from a flat surface: it fills the
+frame, sweeps past at walking speed, and records a 70 cm patch of a 6 m
+wall. The first version of this plan did exactly that, and the measurement
+was unambiguous — **every orbit in the capture tracked, and the laps tracked
+at zero**: the whole of room B's lap, 26 m and 748 consecutive frames, with
+the tracker lost, plus the first 12 m of room A before it could relocalize
+into the scout scaffold at all. Per-frame error where it did track was 1.3 cm
+median; the failure was total, not gradual, and it was in one place.
+
+The lap now looks about 45 deg forward of the wall normal. The same wall is
+then seen obliquely and several metres deep, which is what a person filming
+a wall does, what gives a tracker features that persist across frames, and
+what gives the reconstruction a usable view of the surface instead of a
+close-up of part of it.
+
 ## Floor calibration: measuring the floor instead of guessing it
 
 Everything the levelling search has to reason around — floor against

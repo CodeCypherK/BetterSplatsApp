@@ -13,6 +13,7 @@ is safe to wire into CI from M0.
 import argparse
 import subprocess
 import json
+import re
 import sys
 import tempfile
 from pathlib import Path
@@ -340,10 +341,22 @@ def main() -> int:
     # coordinates exactly. A room-at-a-time workflow only works because the
     # parts were never re-anchored — any drift here and separately trained
     # splats would not line up, which is the entire reason to split.
+    # 340 frames is not a round number, it is a DENSITY. --two-room is now
+    # the circle-and-orbit capture walk (ARCHITECTURE.md), 118 m rather than
+    # the 33 m loop this fixture was sized for, and a frame count over a
+    # fixed path is a spacing: 340 puts stored images 35 cm apart, which is
+    # what the old 110 gave and still 3x sparser than a device stores. The
+    # cost of getting this wrong is not a failed assertion, it is a fixture
+    # that passes while reconstructing nonsense — measured on this scene,
+    # 110 frames (94 cm apart) lands 0.74 m from ground truth and 180 frames
+    # fragments into six components and lands 7.0 m out, while 340 comes in
+    # at 0.051 m and 0.31 deg with 199 of 340 registered. A fixture that
+    # cannot reconstruct the scene cannot detect a regression in
+    # reconstructing it.
     with tempfile.TemporaryDirectory(prefix="bs_validate_split_") as tmp:
         split = Path(tmp) / "session"
         out = subprocess.run(
-            [str(synth), str(split), "--frames", "110", "--width", "640",
+            [str(synth), str(split), "--frames", "340", "--width", "640",
              "--height", "480", "--seed", "4", "--two-room"],
             capture_output=True, text=True)
         if out.returncode != 0:
@@ -358,6 +371,24 @@ def main() -> int:
             capture_output=True, text=True)
         if out.returncode != 0:
             print(f"ERROR: split final solve failed:\n{out.stderr}",
+                  file=sys.stderr)
+            return 1
+
+        # Gate the fixture's GEOMETRY, not just its file structure. Every
+        # assertion below this point — part counts, point counts, shared
+        # coordinates — passes just as happily on a model that is metres out
+        # of place, which is exactly what this fixture was doing before the
+        # frame count was raised. 5.4 cm measured; 25 cm leaves room for
+        # feature-detector differences across platforms without leaving room
+        # for a wrong reconstruction.
+        ate = re.search(r"final ATE: RMSE ([0-9.]+) m", out.stdout)
+        if ate is None:
+            print("ERROR: split final solve printed no ATE", file=sys.stderr)
+            return 1
+        if float(ate.group(1)) > 0.25:
+            print(f"ERROR: split fixture reconstruction is {ate.group(1)} m "
+                  f"from ground truth — the fixture is not reconstructing the "
+                  f"scene, so it cannot detect a regression in doing so",
                   file=sys.stderr)
             return 1
 

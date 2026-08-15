@@ -931,12 +931,30 @@ FinalOutcome RunFinalSolve(const EngineConfig& config,
         ++posed;
       }
     }
+    int live_used = posed;
 
-    if (posed < 2) {
+    // A THIN hint is worse than none, and "at least two poses" was not a
+    // high enough bar. Measured on a 340-frame two-room capture whose live
+    // pass bootstrapped and immediately lost tracking: two posed frames out
+    // of 340 — with a scale lock 2.7x out — seeded the whole model, S7 found
+    // 129 points off them, and the solve finished at **6/340 registered**.
+    // The same path with zero live poses bootstrapped from image geometry
+    // and reached 104/180. `build_component` chooses a well-conditioned pair
+    // on purpose; the live pass's first two frames are wherever tracking
+    // happened to start, which is not the same thing and can be far worse.
+    const int min_live =
+        std::max<int>(8, static_cast<int>(frames.size()) / 20);
+    if (posed < min_live) {
       BS_LOGI("final",
-              "live initialization unusable (%d posed) — bootstrapping the "
-              "model from image geometry",
-              posed);
+              "live initialization too thin (%d of %zu posed) — bootstrapping "
+              "the model from image geometry",
+              posed, frames.size());
+      // Discard the hint completely first. Leaving even one live pose in
+      // place mixes two world gauges: the bootstrap component defines its
+      // own, and a frame still posed in the live frame belongs to neither.
+      for (auto& frame : frames) frame.posed = false;
+      posed = 0;
+      live_used = 0;
       auto unposed = [&](int i) { return !frames[i].posed; };
       const auto comp = build_component(unposed);
       if (!comp || comp->pose.size() < 2) {
@@ -953,6 +971,7 @@ FinalOutcome RunFinalSolve(const EngineConfig& config,
       metrics.frames_recovered = static_cast<uint32_t>(comp->pose.size());
     }
 
+    metrics.live_poses_used = static_cast<uint32_t>(live_used);
     metrics.images_registered = posed;
     report(BS_STAGE_INIT_POSES, 1.0f);
   }

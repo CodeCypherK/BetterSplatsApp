@@ -1006,9 +1006,18 @@ std::vector<SE3> CaptureTrajectory(int frame_count, double eye_height,
                          arc_c.z() + cr * std::sin(a));
       }
     }
-    // Look outward at the wall being passed, with a slow yaw sweep over it:
-    // straight-out alone leaves the ceiling and the corners unseen, and a
-    // person scanning a room does not hold the phone rigid.
+    // Look along the wall being passed, angled out into it — not square at
+    // it. The lap runs half a metre off the wall because that is what
+    // circling a room means, and a camera pointed straight out from there is
+    // 0.5 m from a flat surface: it fills the frame, sweeps past at the
+    // walking speed, and shows a 70 cm patch of a 6 m wall. Measured, the
+    // whole of one room's lap tracked at zero — 26 m with the tracker lost —
+    // while every orbit in the same capture tracked fine. Angled ~45 deg
+    // forward the same wall is seen obliquely and metres deep, which is both
+    // what a person filming a wall does and what a tracker can follow.
+    //
+    // On top of that a slow yaw sweep, because straight-anything leaves the
+    // ceiling and the corners unseen and nobody holds a phone rigid.
     std::vector<Eigen::Vector3d> lap_look;
     lap_look.reserve(lap.size());
     for (size_t i = 0; i < lap.size(); ++i) {
@@ -1016,13 +1025,20 @@ std::vector<SE3> CaptureTrajectory(int frame_count, double eye_height,
       out.y() = 0;
       if (out.norm() < 1e-6) out = Eigen::Vector3d(1, 0, 0);
       out.normalize();
+      Eigen::Vector3d along =
+          lap[i + 1 < lap.size() ? i + 1 : i] - lap[i > 0 ? i - 1 : i];
+      along.y() = 0;
+      if (along.norm() < 1e-6) along = out;
+      along.normalize();
+      Eigen::Vector3d dir = 0.72 * along + 0.70 * out;  // ~44 deg off the wall
+      dir.normalize();
       const double yaw =
           DegToRad(24.0) *
           std::sin(2.0 * M_PI * static_cast<double>(i) * kPathStep / 3.5);
       lap_look.emplace_back(
-          lap[i].x() + 2.4 * (out.x() * std::cos(yaw) - out.z() * std::sin(yaw)),
+          lap[i].x() + 2.6 * (dir.x() * std::cos(yaw) - dir.z() * std::sin(yaw)),
           look_y,
-          lap[i].z() + 2.4 * (out.x() * std::sin(yaw) + out.z() * std::cos(yaw)));
+          lap[i].z() + 2.6 * (dir.x() * std::sin(yaw) + dir.z() * std::cos(yaw)));
     }
     if (pos.empty()) {
       home = lap.front();

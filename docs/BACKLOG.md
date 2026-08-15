@@ -286,14 +286,38 @@ Newest first. One line per session: what changed, what it measured.
   35 deg pitch clamp because the roll-locked camera frame degenerates near
   vertical.
 
-  Two consequences recorded above as work items: the **store gate is now too
-  dense** (944 frames for one room against a 200-500 budget), and the
-  **CI split fixture is under-sampled** — 110 frames over a 121 m path is
-  0.94 m between images, where it used to be 0.30 m. Measured: 180 frames
-  fragments into six components, S7b recovers three of them on as few as
-  27/61 alignment inliers, and the result is 7.0 m ATE. That is the sparse
-  input failure mode, not a geometry regression, but the fixture has to be
-  re-sampled or it cannot detect a real one.
+  **The lap looks 45 deg along the wall, not square at it.** First version
+  pointed the camera straight out while walking half a metre off the wall,
+  and the measurement was total rather than gradual: every orbit in the
+  capture tracked and **every lap tracked at zero** — room B's whole 26 m lap
+  lost, 748 consecutive frames, plus the first 12 m of room A before the
+  capture could relocalize into the scaffold at all. Where it did track,
+  median error was 1.3 cm. A camera 50 cm from a flat wall is not a tracking
+  problem to be solved, it is a picture nobody wants.
+
+  **CI split fixture re-sampled, 110 -> 340 frames**, because --two-room is
+  now 118 m rather than 33 m and a frame count over a fixed path is a
+  spacing. 110 frames = 94 cm apart lands 0.74 m from ground truth; 180
+  fragments into six components and lands 7.0 m out; 340 (35 cm, matching
+  what the fixture always had) comes in at **0.051 m / 0.31 deg, 199 of 340
+  registered, 5 parts**. The script now gates on that ATE: every other
+  assertion in the split section passes just as happily on a model metres out
+  of place. Costs ~7 min of CI.
+
+  **And a real engine bug fell out of it: "at least two live poses" is not a
+  usable initialization.** A live pass that bootstrapped and immediately lost
+  tracking left 2 posed frames out of 340, with the scale lock 2.7x out; the
+  final solve seeded itself on them and finished at **6/340 registered,
+  1,573 points, 7.0 m ATE**. Discarding them and bootstrapping from image
+  geometry — which is what `build_component` is for, and it picks a
+  well-conditioned pair on purpose — gave 99/340 and 26,734 points at 0.054
+  m. S6 now requires the hint to cover `max(8, 5%)` of the session and drops
+  it wholesale otherwise (leaving even one live pose in place mixes two world
+  gauges). New metric `live_poses_used` records the decision, because the
+  outcome does not: a 14-frame scene recovers from a bad seed either way.
+
+  Still open above as a work item: the **store gate is now too dense** — 944
+  frames for one room against a 200-500 budget.
 
 - **End of capture is no longer a dead end.** It said "Saved:
   session_20260814-142230_a3f2c1" with a Done button — a filename and an

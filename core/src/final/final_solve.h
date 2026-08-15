@@ -30,6 +30,11 @@ struct FinalMetrics {
   uint32_t lidar_residuals = 0;
   // Resume accounting: stages reloaded from final/cache/ instead of
   // recomputed (features per frame; matches whole-stage).
+  // How many live poses the solve actually initialized from. Zero means it
+  // bootstrapped from image geometry instead — either the live pass never
+  // ran, or what it left behind was too thin to be a usable seed, which is a
+  // decision worth being able to see rather than infer from the outcome.
+  uint32_t live_poses_used = 0;
   // Components rebuilt from image geometry because the live pass never
   // posed them, and how many frames that recovered.
   uint32_t components_recovered = 0;

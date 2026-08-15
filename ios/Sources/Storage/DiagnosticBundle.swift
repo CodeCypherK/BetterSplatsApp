@@ -95,20 +95,26 @@ enum DiagnosticBundle {
         // What is on disk, against what the metadata claims. A frame
         // directory holding an image but no meta.json is an interrupted
         // write; the counts make that visible without shipping the frames.
-        let inventory = """
-        {
-          "session": "\(name)",
-          "frame_directories": \(frames.count),
-          "with_image": \(withImage),
-          "with_depth": \(withDepth),
-          "meta_lines": \(meta.isEmpty ? 0 : String(decoding: meta, as: UTF8.self)
-                            .split(separator: "\n").count),
-          "app_version": "\(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?")",
-          "engine": "\(CoreEngine.version)",
-          "device": "\(deviceModel())",
-          "ios": "\(ProcessInfo.processInfo.operatingSystemVersionString)"
-        }
-        """
+        let metaLines = meta.isEmpty
+            ? 0
+            : String(decoding: meta, as: UTF8.self)
+                .split(separator: "\n", omittingEmptySubsequences: true).count
+        let appVersion = (Bundle.main.infoDictionary?["CFBundleShortVersionString"]
+                          as? String) ?? "?"
+        let engine = CoreEngine.version
+        let model = deviceModel()
+        let os = ProcessInfo.processInfo.operatingSystemVersionString
+        var inventory = "{\n"
+        inventory += "  \"session\": \"\(name)\",\n"
+        inventory += "  \"frame_directories\": \(frames.count),\n"
+        inventory += "  \"with_image\": \(withImage),\n"
+        inventory += "  \"with_depth\": \(withDepth),\n"
+        inventory += "  \"meta_lines\": \(metaLines),\n"
+        inventory += "  \"app_version\": \"\(appVersion)\",\n"
+        inventory += "  \"engine\": \"\(engine)\",\n"
+        inventory += "  \"device\": \"\(model)\",\n"
+        inventory += "  \"ios\": \"\(os)\"\n"
+        inventory += "}\n"
         try? Data(inventory.utf8)
             .write(to: root.appendingPathComponent("inventory.json"))
 
@@ -134,16 +140,21 @@ enum DiagnosticBundle {
         return try result.get()
     }
 
-    /// Hardware identifier ("iPhone17,1"), which is what actually determines
+    /// Hardware identifier ("iPhone18,1"), which is what actually determines
     /// the camera; the marketing name does not.
+    ///
+    /// Walked with Mirror rather than by taking a pointer into the utsname
+    /// tuple: `withUnsafePointer(to: &info.machine)` while also reading
+    /// `info.machine` for its size is overlapping access to the same stored
+    /// property, and the compiler rejects it under checked exclusivity.
     private static func deviceModel() -> String {
         var info = utsname()
         uname(&info)
-        return withUnsafePointer(to: &info.machine) { ptr in
-            ptr.withMemoryRebound(to: CChar.self,
-                                  capacity: MemoryLayout.size(ofValue: info.machine)) {
-                String(cString: $0)
-            }
+        var out = ""
+        for child in Mirror(reflecting: info.machine).children {
+            guard let byte = child.value as? CChar, byte != 0 else { continue }
+            out.append(Character(UnicodeScalar(UInt8(byte))))
         }
+        return out
     }
 }

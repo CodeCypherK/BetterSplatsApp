@@ -28,6 +28,11 @@ struct GenerateOptions {
   double hfov_deg = 70.0;
   uint32_t seed = 7;
   bool blank_wall = true;
+  // Exactly-repeating structure (tile/brick/panelling) over the floor and
+  // the textured walls. 0 = the aperiodic noise this harness has always
+  // used, which is the friendliest world a matcher will ever see.
+  float repetitive = 0.0f;
+  double repeat_period_m = 0.25;
   double depth_noise_scale = 1.0;  // 0 disables depth noise/dropouts
   double sweep_deg = 140.0;        // total orbit arc over the sequence
   int keyframe_every = 5;

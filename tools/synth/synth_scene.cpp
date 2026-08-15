@@ -69,10 +69,33 @@ float Speckle(double u, double v, float density, uint32_t seed) {
   return std::clamp(value, -1.0f, 1.0f);
 }
 
+// One period of a tiled surface: sharp grout lines plus a checker of two
+// shades. Deliberately has NO per-tile variation — the whole point is that
+// period n is indistinguishable from period n+1.
+float TilePattern(double u, double v, float period) {
+  if (period <= 1e-4f) return 0.0f;
+  const double su = u / period;
+  const double sv = v / period;
+  const double fu = su - std::floor(su);
+  const double fv = sv - std::floor(sv);
+  // Grout: a dark band along both edges of every cell.
+  const double grout = 0.06;
+  const bool on_line = fu < grout || fu > 1.0 - grout || fv < grout ||
+                       fv > 1.0 - grout;
+  if (on_line) return -1.0f;
+  // Alternating shade, so the repeat has structure a detector can latch on
+  // to rather than being a flat field between lines.
+  const int cu = static_cast<int>(std::floor(su));
+  const int cv = static_cast<int>(std::floor(sv));
+  return ((cu + cv) & 1) ? 0.45f : -0.25f;
+}
+
 }  // namespace
 
 float TextureValue(const TexturedPlane& plane, double u, double v) {
-  if (plane.texture_amount <= 0.0f) return 0.5f;
+  if (plane.texture_amount <= 0.0f && plane.periodic_amount <= 0.0f) {
+    return 0.5f;
+  }
   const uint32_t s = plane.texture_seed;
   float value = 0.5f;
   value += 0.20f * (ValueNoise(u, v, 3.1f, s ^ 1) - 0.5f);
@@ -80,7 +103,13 @@ float TextureValue(const TexturedPlane& plane, double u, double v) {
   value += 0.08f * (ValueNoise(u, v, 31.0f, s ^ 3) - 0.5f);
   value += 0.30f * Speckle(u, v, 14.0f, s ^ 4);
   value += 0.18f * Speckle(u, v, 4.5f, s ^ 5);
-  return 0.5f + plane.texture_amount * (std::clamp(value, 0.0f, 1.0f) - 0.5f);
+  float out = 0.5f + plane.texture_amount *
+                         (std::clamp(value, 0.0f, 1.0f) - 0.5f);
+  if (plane.periodic_amount > 0.0f) {
+    out += plane.periodic_amount *
+           TilePattern(u, v, plane.period_m);
+  }
+  return std::clamp(out, 0.0f, 1.0f);
 }
 
 Scene MakeRoomScene(uint32_t seed, bool blank_wall) {
@@ -244,6 +273,21 @@ Scene MakeTwoRoomScene(uint32_t seed, bool blank_wall) {
   }
 
   return scene;
+}
+
+void ApplyRepetitiveTexture(Scene& scene, float amount, double period_m) {
+  if (amount <= 0.0f || scene.planes.empty()) return;
+  for (size_t i = 0; i < scene.planes.size(); ++i) {
+    TexturedPlane& p = scene.planes[i];
+    // The floor is always plane 0 in both builders, and it is the surface
+    // most often genuinely tiled. Otherwise: only the well-textured walls,
+    // so the blank wall stays blank — it exists to test the LiDAR anchoring
+    // path, and covering it in tiles would quietly delete that test.
+    const bool floor = i == 0;
+    if (!floor && p.texture_amount < 0.6f) continue;
+    p.periodic_amount = amount;
+    p.period_m = static_cast<float>(period_m);
+  }
 }
 
 RayHit CastRay(const Scene& scene, const Eigen::Vector3d& center,

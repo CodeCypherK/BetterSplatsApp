@@ -110,8 +110,9 @@ bool GenerateSession(const GenerateOptions& o) {
   SessionWriter writer;
   if (!SessionWriter::Create(o.out_dir, info, calib, writer)) return false;
 
-  const Scene scene = o.two_room ? MakeTwoRoomScene(o.seed, o.blank_wall)
-                                 : MakeRoomScene(o.seed, o.blank_wall);
+  Scene scene = o.two_room ? MakeTwoRoomScene(o.seed, o.blank_wall)
+                           : MakeRoomScene(o.seed, o.blank_wall);
+  ApplyRepetitiveTexture(scene, o.repetitive, o.repeat_period_m);
   // Trajectory shapes are functions of frame count over a fixed path, so a
   // coarse pass measures the path and a second pass renders it at the rate
   // the physics asks for.

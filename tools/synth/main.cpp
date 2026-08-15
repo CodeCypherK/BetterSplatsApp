@@ -35,6 +35,11 @@ void PrintUsage() {
                "  --height H        image height (default 720)\n"
                "  --seed S          scene/trajectory seed (default 7)\n"
                "  --no-blank-wall   texture every wall\n"
+               "  --repetitive F    lay exactly-repeating tile/brick over the\n"
+               "                    floor and textured walls (0..0.4). Real\n"
+               "                    rooms are full of it and every other\n"
+               "                    texture here is unique at every point\n"
+               "  --repeat-period M tile size in metres (default 0.25)\n"
                "  --depth-noise F   depth noise scale, 0 = perfect (default 1)\n"
                "  --jpeg-quality Q  (default 88)\n"
                "  --exposure-drift F  per-frame gain swing amplitude (default 0)\n"
@@ -142,6 +147,11 @@ int main(int argc, char** argv) {
     else if (arg == "--height") options.image_height = std::atoi(next("--height"));
     else if (arg == "--seed") options.seed = static_cast<uint32_t>(std::atoi(next("--seed")));
     else if (arg == "--no-blank-wall") options.blank_wall = false;
+    else if (arg == "--repetitive") {
+      options.repetitive = static_cast<float>(std::atof(next("--repetitive")));
+    } else if (arg == "--repeat-period") {
+      options.repeat_period_m = std::atof(next("--repeat-period"));
+    }
     else if (arg == "--sweep") options.sweep_deg = std::atof(next("--sweep"));
     else if (arg == "--depth-noise") options.depth_noise_scale = std::atof(next("--depth-noise"));
     else if (arg == "--jpeg-quality") options.jpeg_quality = std::atoi(next("--jpeg-quality"));

@@ -21,6 +21,21 @@ struct TexturedPlane {
   cv::Vec3f base_color{0.72f, 0.72f, 0.72f};  // BGR in [0,1]
   float texture_amount = 0.5f;  // 0 = perfectly blank surface
   uint32_t texture_seed = 1;
+  // EXACTLY repeating structure laid over the noise: tile grout, brick
+  // courses, wallpaper stripes, blind slats, bookshelf rows. Every other
+  // texture in this harness is band-limited value noise, which is unique at
+  // every point — the friendliest world a feature matcher will ever see, and
+  // nothing like a kitchen or a bathroom.
+  //
+  // Repetition is the classic photogrammetry killer and it fails in a
+  // specific way: a tile matches its neighbour as well as itself, so a whole
+  // consistent set of correspondences can be offset by one period. RANSAC
+  // then finds a strong consensus on a pose that is confidently wrong,
+  // which is far worse than finding nothing. `period_m` must be the same on
+  // every tile for that to be possible — give each one its own seed and the
+  // problem evaporates, along with the test.
+  float periodic_amount = 0.0f;  // 0 = no repeating structure
+  float period_m = 0.25f;        // world-space period of the repeat
 };
 
 struct Scene {
@@ -93,6 +108,19 @@ const TwoRoomLayout& TwoRoomLayoutSpec();
 // TwoRoomLayoutSpec(). Exercises multi-room region clustering and the drift
 // that accumulates walking between spaces.
 Scene MakeTwoRoomScene(uint32_t seed, bool blank_wall = true);
+
+// Lays exactly-repeating structure (tile, brick, panelling) over the floor
+// and the well-textured walls, leaving the deliberately blank wall blank so
+// the two stresses stay separable.
+//
+// This is the one thing a real room does that this harness never did. Every
+// other surface here is band-limited value noise: unique at every point, so
+// a descriptor match is either right or obviously wrong. A tiled floor is
+// the opposite — period n looks exactly like period n+1 — and the failure
+// is not "no match" but a whole set of consistent matches offset by one
+// period, which RANSAC endorses. Kitchens, bathrooms, offices and lifts are
+// full of it, and it is where photogrammetry classically fails.
+void ApplyRepetitiveTexture(Scene& scene, float amount, double period_m);
 
 // Nearest intersection of the pixel ray with the scene. `dir_world` must be
 // R_cw * (x_n, y_n, 1) — unnormalized, so `t` is camera-space depth.

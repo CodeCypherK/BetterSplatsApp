@@ -200,29 +200,78 @@ struct SolveReport: Decodable {
     /// the list to look thorough.
     var advice: [String] {
         var out: [String] = []
+        // Say what happened. Do NOT say why unless it is actually known.
+        //
+        // This used to attribute every unplaced photo to "moving or turning
+        // too fast for the tracker to keep up" — a guess, stated as fact, and
+        // one that blames the person holding the phone. On a scan where 2 of
+        // 429 photos placed it was not merely unhelpful but wrong: a
+        // reconstruction that fails almost completely has failed for a
+        // structural reason, and telling someone to walk slower sends them
+        // to repeat a scan that was never the problem.
         if let fraction = registrationFraction, fraction < 0.95,
            let total = imagesTotal, let registered = imagesRegistered {
-            out.append("\(total - registered) photos could not be placed. "
-                     + "They were usually taken while moving or turning too "
-                     + "fast for the tracker to keep up.")
+            let missing = total - registered
+            if fraction < 0.2 {
+                out.append("Only \(registered) of \(total) photos could be "
+                         + "placed, which is a failure of the reconstruction "
+                         + "rather than of the capture — a scan this size "
+                         + "does not normally degrade, it either works or it "
+                         + "does not. Share the full session (not just the "
+                         + "COLMAP export) so it can be diagnosed; the photos "
+                         + "themselves are intact and can be re-solved.")
+            } else if fraction < 0.7 {
+                out.append("\(missing) of \(total) photos could not be "
+                         + "placed. With this many missing the cause is worth "
+                         + "looking into rather than guessing at — sharing "
+                         + "the full session preserves everything needed to.")
+            } else {
+                out.append("\(missing) photos could not be placed. At this "
+                         + "level that is normal: photos at the very start, "
+                         + "or looking at a blank surface with nothing to "
+                         + "match against, often cannot be tied to the rest.")
+            }
         }
         let flagged = flaggedImages
         let blurry = flagged.filter { $0.flags.contains("blurry") }.count
         let overexposed = flagged.filter { $0.flags.contains("overexposed") }.count
-        if blurry > 0 {
-            out.append("\(blurry) photos are noticeably softer than the rest "
-                     + "of the session. Moving more slowly is the fix.")
+        let total = imagesTotal ?? 0
+        // Only worth raising when it is a large enough share to change the
+        // result. "110 photos are softer" out of 429 reads as an accusation;
+        // it is also just what a handheld walk looks like.
+        if total > 0, Double(blurry) / Double(total) > 0.35 {
+            out.append("\(blurry) of \(total) photos are softer than the "
+                     + "rest of this session. That is a large enough share to "
+                     + "cost detail — more light, or a slower walk, gives the "
+                     + "camera a shorter exposure to work with.")
         }
-        if overexposed > 0 {
-            out.append("\(overexposed) photos have blown-out highlights. "
-                     + "Bright windows are the usual cause; a splat cannot "
-                     + "recover detail that was clipped at capture.")
+        // Blown highlights are NOT a mistake. Any room with a window on a
+        // sunny day clips somewhere, and there is nothing the person holding
+        // the phone can reasonably do about it. Worth a line only when it is
+        // widespread enough to actually cost surface.
+        if total > 0, Double(overexposed) / Double(total) > 0.4 {
+            out.append("\(overexposed) of \(total) photos have large "
+                     + "blown-out areas. Windows do this and it is expected; "
+                     + "it only matters because a splat cannot invent detail "
+                     + "that was clipped, so those surfaces will be soft.")
         }
         // Levelling has three outcomes and they need different things said.
         if levelled == false {
-            out.append("The floor could not be found, so the model is not "
-                     + "levelled — it will import at an arbitrary tilt. "
-                     + "Measuring the floor at the start of a scan fixes this.")
+            // Three different situations, and the old text told all of them
+            // to go and measure the floor — including the case where the user
+            // HAD measured it and was told to do the thing they just did.
+            if floorMeasured == true {
+                out.append("The floor was measured during the scan, but the "
+                         + "photo it was measured from is one of the ones "
+                         + "that could not be placed — so there was no pose "
+                         + "to resolve it through. Fixing the placement above "
+                         + "fixes this too; it is not a separate problem.")
+            } else {
+                out.append("The floor could not be found, so the model is not "
+                         + "levelled — it will import at an arbitrary tilt. "
+                         + "Measuring the floor at the start of a scan fixes "
+                         + "this.")
+            }
         } else if let spread = levelCameraHeightSpreadM, spread > 0.15 {
             // Camera height should barely vary across a handheld walk. A wide
             // spread means the fitted floor does not agree with where the

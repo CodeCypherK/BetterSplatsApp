@@ -120,6 +120,37 @@ non-expert to that data on the first try.
 
 ## Next
 
+- [ ] **THE performance problem: the final solve registers under half the
+      images at the density a real capture actually has.** The user's figure
+      is ~200 images per room, so two rooms is ~400 over a 116 m walk — 29 cm
+      apart. Measured there:
+
+      | | registered | points | rmse | ATE |
+      |---|---|---|---|---|
+      | lap angled along the wall | 132/400 (33%) | 32.2k | 0.54 px | 0.205 m |
+      | lap hugging + facing across | **189/400 (47%)** | 39.3k | 0.57 px | **0.133 m** |
+
+      What registers is geometrically sound, so this is connectivity, not
+      accuracy. Two structural causes found, both being measured now:
+      1. **The pair graph has no appearance retrieval.** S3 is sequential
+         ±8 plus fixed index strides {12,20,32,52,84} plus live-pose
+         proximity — and the live pass produces nothing usable at store
+         cadence, so in practice it is index-only. The capture walk revisits
+         places hundreds of frames apart (the lap passes a wall that an
+         orbit views 200 frames later; the walk closes at frame 400 against
+         frame 0) and no index stride reaches that far. The graph is a chain
+         and every break splits off a component with literally zero shared
+         points. `final_bow_top_k` exists in the config and nothing reads
+         it: the S2 BoW stage from the plan was never built.
+      2. **`final_sift_max_frames = 250` silently drops the quality preset
+         to ORB above that.** 400 frames is over it, so the measurements
+         above are ORB — the more viewpoint-sensitive detector, on a walk
+         designed to view surfaces from many angles. The cap is about
+         transient descriptor memory and was set before anyone knew a room
+         is 200 images.
+      Running: exhaustive pairing (the ceiling retrieval could reach) and
+      forced SIFT, separately, to size each.
+
 - [ ] **The final solve fragments on the capture walk, and density does not
       fix it.** On the two-room circle-and-orbit walk the batch solve
       registers a third to a half of the images and leaves the rest in

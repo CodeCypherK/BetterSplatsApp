@@ -315,9 +315,23 @@ non-expert to that data on the first try.
       In practice 24 cm down a wall at 6 m, 11 cm around a table at 2.7 m,
       5 cm wherever the phone is close enough for the floor to bind. A test
       asserts a room lands in 200-500 rather than merely "not absurd".
-      Counts above are simulated over the plan's own subject distances; a
-      live replay confirming them against the engine's tracked-point median
-      is the remaining check.
+
+      **The live replay came back and the simulation was 36% low.** Fed
+      through the actual engine (`bs_replay --live` on the two-room walk,
+      3370 frames), the gate keeps **1267**, not the 805 simulated — about
+      **633 per room, above the 200-500 band**, and over the app's 500-frame
+      cap for a two-room session. The gap is the depth estimate, and the
+      difference is real rather than an artefact: the simulation used the
+      true distance to the first surface along the optical axis, the engine
+      uses the median depth of the tracked points in the last keyframe, and
+      tracked points sit on near, textured surfaces. The engine's number is
+      the more honest one for overlap — what fills the frame is what has to
+      overlap — but it is smaller, so the spacing is smaller and the count is
+      larger. Re-measuring at `store_translation_depth_frac = 0.06` now;
+      even that is ~14 cm at the observed 2.3 m median, which is still ~95%
+      frame overlap, so there is room to move without hurting the solve.
+      **Do not trust a gate count that was not measured through the
+      engine.**
 
 - [ ] **Do the seams show between separately-solved sessions?** A house is
       ~10 captures / 2,000-5,000 images, which **cannot be one on-device

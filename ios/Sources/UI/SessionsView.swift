@@ -119,7 +119,10 @@ struct SessionsView: View {
     private func share(folder: URL, name: String) {
         isSharing = true
         shareError = nil
-        Task {
+        // @MainActor explicitly: `share` is a nonisolated method, so a
+        // bare Task has no isolation to inherit and would touch @State
+        // off the main actor.
+        Task { @MainActor in
             defer { isSharing = false }
             do {
                 shareURL = try await ZipExporter.zipDirectory(at: folder,

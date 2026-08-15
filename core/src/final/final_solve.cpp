@@ -294,6 +294,7 @@ bool ReadMatchCache(const fs::path& path, std::vector<CachedPair>& pairs) {
 
 std::unordered_map<uint32_t, SE3> LoadLivePoses(const std::string& session_dir) {
   std::unordered_map<uint32_t, SE3> poses;
+  std::map<unsigned, std::unordered_map<uint32_t, SE3>> by_segment;
   std::ifstream in(fs::path(session_dir) / "live" / "poses.jsonl");
   std::string line;
   while (std::getline(in, line)) {
@@ -311,7 +312,37 @@ std::unordered_map<uint32_t, SE3> LoadLivePoses(const std::string& session_dir) 
     SE3 pose;
     pose.q = Eigen::Quaterniond(qw, qx, qy, qz).normalized();
     pose.t = Eigen::Vector3d(px, py, pz);
-    poses[frame_id] = pose;
+    // Which live world frame this pose belongs to. The live pass abandons
+    // and rebuilds its map when it has been lost long enough that searching
+    // is pointless, and every rebuild starts a NEW gauge — a fresh origin,
+    // a fresh scale lock. Poses either side of that boundary describe
+    // different coordinate systems, so seeding a single model from both is
+    // strictly worse than seeding it from neither. Absent key reads as
+    // segment 0, which is what every session written before this had.
+    unsigned segment = 0;
+    if (const char* seg = std::strstr(line.c_str(), "\"segment\":")) {
+      std::sscanf(seg, "\"segment\":%u", &segment);
+    }
+    by_segment[segment][frame_id] = pose;
+  }
+  // Keep the largest segment only: one gauge, and the one that saw most of
+  // the capture.
+  size_t best = 0;
+  for (const auto& [seg, group] : by_segment) {
+    if (group.size() > best) {
+      best = group.size();
+      poses = group;
+    }
+  }
+  if (by_segment.size() > 1) {
+    BS_LOGI("final",
+            "live poses span %zu world frames; keeping the largest (%zu of "
+            "%zu poses) — mixing them would mix gauges",
+            by_segment.size(), poses.size(), [&] {
+              size_t n = 0;
+              for (const auto& [s, g] : by_segment) n += g.size();
+              return n;
+            }());
   }
   return poses;
 }

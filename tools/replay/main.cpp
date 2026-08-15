@@ -517,6 +517,16 @@ struct PassAccuracy {
   // answer different questions and diverge in an informative way.
   double ate_rigid = 0;
   double rot_rigid = 0;
+  // How many world frames the pass produced. >1 means the tracker gave up on
+  // a hopeless map and re-bootstrapped; the accuracy figures then describe
+  // the largest segment only (see EvaluatePass).
+  int segments = 1;
+  // Coverage of the largest segment alone. tracked_frac counts every tracked
+  // frame across every segment, so on its own it would let a run that
+  // re-bootstraps its way through a capture clear a coverage bar while the
+  // accuracy figures describe a small slice of it. This is the number the
+  // gate uses.
+  double largest_frac = 0;
 };
 
 PassAccuracy EvaluatePass(const bs::SessionReader& session,
@@ -530,9 +540,10 @@ PassAccuracy EvaluatePass(const bs::SessionReader& session,
   struct LivePose {
     uint32_t frame_id;
     double t;
+    unsigned segment;
     bs::SE3 pose;
   };
-  std::vector<LivePose> live_poses;
+  std::vector<LivePose> all_poses;
   std::string line;
   while (std::getline(poses_file, line)) {
     // Minimal parse of the fixed jsonl schema.
@@ -548,13 +559,40 @@ PassAccuracy EvaluatePass(const bs::SessionReader& session,
         std::sscanf(p, "\"p\":[%lf,%lf,%lf]", &px, &py, &pz) != 3) {
       continue;
     }
+    // Sessions written before segments existed have no key and are all one
+    // segment, which is exactly what a 0 default says.
+    lp.segment = 0;
+    if (const char* seg = std::strstr(line.c_str(), "\"segment\":")) {
+      std::sscanf(seg, "\"segment\":%u", &lp.segment);
+    }
     lp.pose.q = Eigen::Quaterniond(qw, qx, qy, qz).normalized();
     lp.pose.t = Eigen::Vector3d(px, py, pz);
-    live_poses.push_back(lp);
+    all_poses.push_back(lp);
   }
   out.have = true;
-  out.tracked = static_cast<int>(live_poses.size());
+  // Coverage counts every tracked frame: the user was localized against SOME
+  // map for all of them, which is what the on-screen state reflects.
+  out.tracked = static_cast<int>(all_poses.size());
   out.tracked_frac = pass_ids.empty()
+                         ? 0.0
+                         : static_cast<double>(all_poses.size()) /
+                               static_cast<double>(pass_ids.size());
+
+  // Accuracy does NOT. Re-bootstrapping after a hopeless loss starts a new
+  // world frame, so poses either side of that boundary live in different
+  // gauges and no single rigid alignment can relate them — averaging across
+  // one measures the gap between two arbitrary origins, not tracking error.
+  // Take the largest segment, the same choice the final solve's LoadLivePoses
+  // makes, and say so when there was more than one.
+  std::map<unsigned, std::vector<LivePose>> by_segment;
+  for (const auto& lp : all_poses) by_segment[lp.segment].push_back(lp);
+  out.segments = static_cast<int>(by_segment.size());
+  std::vector<LivePose> live_poses;
+  for (const auto& [seg, group] : by_segment) {
+    (void)seg;
+    if (group.size() > live_poses.size()) live_poses = group;
+  }
+  out.largest_frac = pass_ids.empty()
                          ? 0.0
                          : static_cast<double>(live_poses.size()) /
                                static_cast<double>(pass_ids.size());
@@ -568,15 +606,18 @@ PassAccuracy EvaluatePass(const bs::SessionReader& session,
   {
     double step_sum = 0, turn_sum = 0, dt_sum = 0;
     int n = 0;
-    for (size_t i = 1; i < live_poses.size(); ++i) {
-      if (live_poses[i].frame_id != live_poses[i - 1].frame_id + 1) continue;
-      const double dt = live_poses[i].t - live_poses[i - 1].t;
+    for (size_t i = 1; i < all_poses.size(); ++i) {
+      if (all_poses[i].frame_id != all_poses[i - 1].frame_id + 1) continue;
+      // A pair straddling a re-bootstrap spans two world frames; the "motion"
+      // between them is the offset between two origins.
+      if (all_poses[i].segment != all_poses[i - 1].segment) continue;
+      const double dt = all_poses[i].t - all_poses[i - 1].t;
       if (dt <= 0) continue;
-      step_sum += (live_poses[i].pose.CameraCenter() -
-                   live_poses[i - 1].pose.CameraCenter())
+      step_sum += (all_poses[i].pose.CameraCenter() -
+                   all_poses[i - 1].pose.CameraCenter())
                       .norm();
       turn_sum += bs::RadToDeg(
-          bs::AngularDistance(live_poses[i].pose.q, live_poses[i - 1].pose.q));
+          bs::AngularDistance(all_poses[i].pose.q, all_poses[i - 1].pose.q));
       dt_sum += dt;
       ++n;
     }
@@ -600,6 +641,45 @@ PassAccuracy EvaluatePass(const bs::SessionReader& session,
     }
     return std::nullopt;
   };
+
+  // Each segment measured in its own frame, so a re-bootstrap can be read as
+  // what it is — a second, independent attempt — instead of disappearing into
+  // one number that describes neither. Anchored at each segment's own first
+  // pose, which is the origin that segment's map was actually built on.
+  if (out.segments > 1) {
+    std::printf(
+        "%s: %d tracking segments (%zu poses); the figures below are the "
+        "largest alone, %zu poses (%.1f%% of the pass) — segments do not "
+        "share a world frame, so no single alignment relates them\n",
+        label, out.segments, all_poses.size(), live_poses.size(),
+        100.0 * out.largest_frac);
+    for (const auto& [seg, group] : by_segment) {
+      if (group.size() < 5) {
+        std::printf("  segment %u: %zu poses (too few to measure)\n", seg,
+                    group.size());
+        continue;
+      }
+      const auto seg_ref = find_gt(group.front().frame_id);
+      if (!seg_ref) continue;
+      const bs::SE3 seg_align = group.front().pose.Inverse() * (*seg_ref);
+      double sq = 0, rot = 0;
+      int n = 0;
+      for (const auto& lp : group) {
+        const auto gt_pose = find_gt(lp.frame_id);
+        if (!gt_pose) continue;
+        const bs::SE3 in_live = *gt_pose * seg_align.Inverse();
+        sq += (lp.pose.CameraCenter() - in_live.CameraCenter()).squaredNorm();
+        rot += bs::RadToDeg(bs::AngularDistance(lp.pose.q, in_live.q));
+        ++n;
+      }
+      if (n == 0) continue;
+      std::printf(
+          "  segment %u: %zu poses (frames %u-%u), RMSE %.3f m, "
+          "rot %.2f deg\n",
+          seg, group.size(), group.front().frame_id, group.back().frame_id,
+          std::sqrt(sq / n), rot / n);
+    }
+  }
 
   if (live_poses.size() < 5) {
     std::printf("%s ATE: only %zu tracked poses\n", label, live_poses.size());
@@ -775,8 +855,14 @@ int RunLive(const bs::SessionReader& session, const std::string& config,
   if (live.compared == 0) return check ? 1 : 0;
 
   if (check) {
-    if (live.tracked_frac < 0.7) {
-      std::fprintf(stderr, "CHECK FAILED: tracked %.0f%% < 70%%\n",
+    // Gate on the largest segment, not on total coverage: the accuracy bounds
+    // below only describe that segment, so letting fragments sum to 70% would
+    // shrink what the accuracy bounds cover without shrinking the number.
+    if (live.largest_frac < 0.7) {
+      std::fprintf(stderr,
+                   "CHECK FAILED: tracked %.0f%% in the largest of %d "
+                   "segment(s) < 70%% (%.0f%% across all segments)\n",
+                   100.0 * live.largest_frac, live.segments,
                    100.0 * live.tracked_frac);
       return 1;
     }

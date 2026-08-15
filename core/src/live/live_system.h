@@ -34,6 +34,10 @@ struct PoseLogEntry {
   uint32_t frame_id = 0;
   double t = 0;
   bool tracked = false;
+  // Which live world frame this pose belongs to. Bumped when the map is
+  // abandoned and rebuilt; poses from different segments must never be
+  // mixed, because they are measured against different gauges.
+  uint32_t segment = 0;
   SE3 pose;
 };
 
@@ -177,6 +181,9 @@ class LiveSystem {
   double last_track_time_ = -1.0;
   // Rotating start index for the relocalization sweep over older keyframes.
   uint32_t reloc_cursor_ = 0;
+  // Which world frame the current poses belong to. Bumped whenever the live
+  // map is abandoned and rebuilt, because that starts a new gauge.
+  uint32_t segment_ = 0;
 
   // Storage gating.
   SE3 last_store_pose_;

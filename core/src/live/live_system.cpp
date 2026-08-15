@@ -879,6 +879,62 @@ bool LiveSystem::Relocalize(const LiveFrameInput& input,
                     static_cast<uint32_t>(sweep_span);
   }
 
+  // Hopelessly lost: stop searching a map that cannot contain us, and build
+  // a new one from where the camera actually is.
+  //
+  // A real capture failed exactly this way. Tracking died four frames after
+  // bootstrap, so no further keyframes were ever inserted; the map stayed at
+  // the two bootstrap keyframes, from the spot the user was standing in when
+  // they pressed record. They then walked a whole room, and relocalization
+  // spent 4,380 consecutive frames trying to match a place they had left.
+  // Nothing recovered, nothing was mapped, and the live pass produced two
+  // usable poses out of 4,386 frames.
+  //
+  // That is a death spiral rather than a hard problem: the map cannot grow
+  // because tracking is lost, and tracking cannot recover because the map
+  // never grew. Re-bootstrapping breaks it. The live map is the disposable
+  // layer — its jobs are user feedback and pose initialization, and while
+  // lost it is doing neither — so trading a map of somewhere the user is not
+  // for a map of where they are is strictly better.
+  //
+  // Deliberately generous before giving up: a capture pass that loaded a
+  // scaffold has a real map worth finding, and a momentary glance at a blank
+  // wall must never trigger this.
+  if (consecutive_lost_ >= config_.live_relocalize_give_up_frames) {
+    BS_LOGW("live",
+            "lost for %d frames against %d keyframes — abandoning that map "
+            "and bootstrapping a new segment from here",
+            consecutive_lost_, kf_count);
+    map_ = LiveMap();
+    // The readiness grid is keyed on WORLD coordinates, so it belongs to the
+    // gauge that just died. Keeping it would score patches from the old
+    // world frame alongside the new one and report coverage of a room in
+    // coordinates nothing else uses.
+    readiness_ = PatchGrid();  // same state it was constructed in
+    last_kf_id_ = 0;
+    scaffold_keyframes_ = 0;
+    have_prev_pose_ = false;
+    velocity_ = SE3::Identity();
+    consecutive_lost_ = 0;
+    reloc_cursor_ = 0;
+    // Scale is part of the gauge too, and the samples that set it are
+    // d_lidar / z_est ratios measured against the DEAD map's arbitrary
+    // two-view baseline. Carried into the next bootstrap they would
+    // outnumber its own samples and hand the new map the old map's metre —
+    // wrong by however much the two baselines differ. A new gauge measures
+    // its own scale from scratch, and says so until it has.
+    scale_samples_.clear();
+    scale_locked_ = false;
+    // A new map is a NEW WORLD FRAME. Anything downstream that mixes poses
+    // across this boundary is mixing two gauges, so the boundary is recorded
+    // and the final solve keeps only one side of it.
+    ++segment_;
+    state_ = BS_LIVE_INITIALIZING;
+    guidance_ = BS_GUIDE_MOVE_SIDEWAYS;
+    ResetBootstrap();
+    return false;
+  }
+
   for (const int i : candidates) {
     const Keyframe& kf = kfs[i];
 
@@ -1061,6 +1117,7 @@ void LiveSystem::LogPose(const LiveFrameInput& input, bool tracked) {
   entry.frame_id = input.frame_id;
   entry.t = input.t_capture;
   entry.tracked = tracked;
+  entry.segment = segment_;
   if (tracked) entry.pose = last_pose_;
   pose_log_.push_back(entry);
 }
@@ -1254,7 +1311,7 @@ bool LiveSystem::End() {
   out.precision(12);
   for (const auto& e : pose_log_) {
     out << "{\"frame_id\":" << e.frame_id << ",\"t\":" << e.t << ",\"state\":\""
-        << (e.tracked ? "tracking" : "lost") << "\"";
+        << (e.tracked ? "tracking" : "lost") << "\",\"segment\":" << e.segment;
     if (e.tracked) {
       out << ",\"q\":[" << e.pose.q.w() << "," << e.pose.q.x() << ","
           << e.pose.q.y() << "," << e.pose.q.z() << "],\"p\":[" << e.pose.t.x()

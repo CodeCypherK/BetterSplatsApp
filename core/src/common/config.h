@@ -132,6 +132,15 @@ struct EngineConfig {
   // is discarded rather than written into the map.
   float lba_max_pose_shift_m = 0.5f;
 
+  // Frames spent lost before the live map is abandoned and rebuilt from
+  // where the camera actually is. Generous on purpose: a capture pass that
+  // loaded a scaffold has a real map worth finding, and a glance at a blank
+  // wall must never trigger it. At 30 fps this is ten seconds — by then the
+  // user has walked somewhere the map does not cover, and a map of where
+  // they are beats continuing to search one they have left. A real capture
+  // spent 4,380 consecutive frames in that search and mapped nothing.
+  int live_relocalize_give_up_frames = 300;
+
   // --- loop closure (live) ---
   float loop_search_radius_m = 6.0f;
   int loop_exclude_recent = 20;

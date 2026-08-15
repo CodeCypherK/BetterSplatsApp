@@ -603,12 +603,12 @@ constexpr double kCornerRadius = 0.5;     // rounded circuit corners
 // walking the skirting board and looking sideways puts a flat wall 60 cm
 // from the lens, which fills the frame, gives the tracker nothing that
 // persists, and records a 70 cm patch of a 6 m surface.
-constexpr double kLapStandoff = 0.95;
+constexpr double kLapStandoff = 0.60;
 // What the lap keeps clear of furniture when it can. kPlanObjClear is the
 // hard limit — can a body fit — and it is not the same question as whether
 // a person would walk there filming.
 constexpr double kLapObjClear = 0.60;
-constexpr double kLapViewDeg = 52.0;  // from the wall normal, toward travel
+constexpr double kLapSweepDeg = 26.0;  // yaw sweep either side of across
 
 struct Rect {
   double x0, x1, z0, z1;
@@ -1114,40 +1114,43 @@ CapturePlan BuildCapturePlan(double eye_height) {
                          arc_c.z() + cr * std::sin(a));
       }
     }
-    // Look along the wall being passed, angled out into it — not square at
-    // it. The lap runs half a metre off the wall because that is what
-    // circling a room means, and a camera pointed straight out from there is
-    // 0.5 m from a flat surface: it fills the frame, sweeps past at the
-    // walking speed, and shows a 70 cm patch of a 6 m wall. Measured, the
-    // whole of one room's lap tracked at zero — 26 m with the tracker lost —
-    // while every orbit in the same capture tracked fine. Angled ~45 deg
-    // forward the same wall is seen obliquely and metres deep, which is both
-    // what a person filming a wall does and what a tracker can follow.
+    // Face ACROSS the room, at the far wall — not at the wall being walked
+    // past. This is the whole geometry of the lap and it took two wrong
+    // answers to get here. Pointed square at the near wall, the camera is
+    // half a metre from a flat surface: it fills the frame, sweeps by at
+    // walking speed, records a 70 cm patch of a 6 m wall, and tracked at
+    // zero for a whole room's lap. Angled 52 deg along that wall fixed the
+    // tracking and still filmed a surface 2 m away that the orbits cover
+    // better anyway.
     //
-    // On top of that a slow yaw sweep, because straight-anything leaves the
+    // Facing the far wall is the answer to both. Every frame sees a whole
+    // wall rather than a patch; walking the perimeter views that wall from
+    // one end of the room to the other, which is a baseline of metres
+    // against a subject metres away — the best triangulation geometry
+    // anywhere in the capture. The near wall is not skipped, it is simply
+    // filmed from the opposite side of the loop, where it is the far one.
+    // It is also why the scout circuit faces inward, and that circuit
+    // tracks at 99.4%.
+    //
+    // On top of it a slow yaw sweep, because straight-anything leaves the
     // ceiling and the corners unseen and nobody holds a phone rigid.
     std::vector<Eigen::Vector3d> lap_look;
     lap_look.reserve(lap.size());
     for (size_t i = 0; i < lap.size(); ++i) {
-      Eigen::Vector3d out = lap[i] - hub;
-      out.y() = 0;
-      if (out.norm() < 1e-6) out = Eigen::Vector3d(1, 0, 0);
-      out.normalize();
-      Eigen::Vector3d along =
-          lap[i + 1 < lap.size() ? i + 1 : i] - lap[i > 0 ? i - 1 : i];
-      along.y() = 0;
-      if (along.norm() < 1e-6) along = out;
-      along.normalize();
-      Eigen::Vector3d dir = std::sin(DegToRad(kLapViewDeg)) * along +
-                            std::cos(DegToRad(kLapViewDeg)) * out;
-      dir.normalize();
+      Eigen::Vector3d in = hub - lap[i];
+      in.y() = 0;
+      if (in.norm() < 1e-6) in = Eigen::Vector3d(1, 0, 0);
+      in.normalize();
       const double yaw =
-          DegToRad(24.0) *
+          DegToRad(kLapSweepDeg) *
           std::sin(2.0 * M_PI * static_cast<double>(i) * kPathStep / 3.5);
+      // Aimed past the centre so the target lands on the far wall rather
+      // than in mid-air over the middle of the room.
+      const double reach = 2.0 * (lap[i] - hub).norm() + 1.0;
       lap_look.emplace_back(
-          lap[i].x() + 2.6 * (dir.x() * std::cos(yaw) - dir.z() * std::sin(yaw)),
+          lap[i].x() + reach * (in.x() * std::cos(yaw) - in.z() * std::sin(yaw)),
           look_y,
-          lap[i].z() + 2.6 * (dir.x() * std::sin(yaw) + dir.z() * std::cos(yaw)));
+          lap[i].z() + reach * (in.x() * std::sin(yaw) + in.z() * std::cos(yaw)));
     }
     if (pos.empty()) {
       home = lap.front();

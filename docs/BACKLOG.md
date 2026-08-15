@@ -120,6 +120,22 @@ non-expert to that data on the first try.
 
 ## Next
 
+- [ ] **Seven `bs_live_status` fields the app reads from nothing.** The same
+      audit as the config knobs, one layer up, and the same failure mode: the
+      engine measures something, publishes it across the ABI, and the app
+      drops it — which is exactly how `keyframe_ids` came to be empty in
+      every session ever captured. Unconsumed today:
+      `frames_processed` (fed minus dropped — a capture where the tracker is
+      falling behind is one the user should be told about, and nothing says
+      so), `inlier_ratio` and `px_error_mean` (the engine's own tracking-health
+      numbers; the UI shows only the guidance pill), `blur_metric` (the app
+      computes its own in FrameAnalysis, so this one is genuinely redundant
+      and could be removed from the ABI instead), `last_frame_id`,
+      `map_points`, `guide_region_id`.
+      `store_spacing_m` was the eighth until the store gate needed it.
+      Worth a `check_abi_used.py` in the same spirit, though it is harder:
+      a Swift field read is not a grep away from a C struct member.
+
 - [ ] **Six pieces of documented behaviour that were never built.** Found by
       `scripts/check_config_used.py`, now a CI gate: every `EngineConfig`
       field must be read somewhere in the engine, and eight were not. Two are

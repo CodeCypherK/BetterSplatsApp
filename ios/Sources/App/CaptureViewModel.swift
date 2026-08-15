@@ -337,8 +337,26 @@ final class FrameFeedContext: @unchecked Sendable {
             out.dfy = Double(m.columns.1.y) * dsy
             out.dcx = Double(m.columns.2.x) * dsx
             out.dcy = Double(m.columns.2.y) * dsy
+
+            // Lens tables, in the calibration's own reference pixel space —
+            // NOT scaled to the downsampled luma. The engine fits its model
+            // in that reference space and applies it to whatever resolution
+            // the points arrive at.
+            out.lut = Self.floats(calibration.lensDistortionLookupTable)
+            out.lutInverse =
+                Self.floats(calibration.inverseLensDistortionLookupTable)
+            out.lutCenter = SIMD2(Float(calibration.lensDistortionCenter.x),
+                                  Float(calibration.lensDistortionCenter.y))
+            out.lutRefWidth = Int32(ref.width)
+            out.lutRefHeight = Int32(ref.height)
         }
         feeder.offer(out)
+    }
+
+    /// Apple hands the distortion tables over as raw `Data` of float32.
+    nonisolated static func floats(_ data: Data?) -> [Float] {
+        guard let data, !data.isEmpty else { return [] }
+        return data.withUnsafeBytes { Array($0.bindMemory(to: Float.self)) }
     }
 
     static func scaledIntrinsics(

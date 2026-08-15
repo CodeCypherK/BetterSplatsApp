@@ -45,6 +45,14 @@ final class EngineFeeder: @unchecked Sendable {
         var depthHeight: Int
         var dfx: Double, dfy: Double, dcx: Double, dcy: Double
         var gyro: SIMD3<Float>?
+        /// Apple's radial distortion tables, in the calibration reference
+        /// pixel space. Sent on every frame; the engine keeps the first and
+        /// ignores the rest.
+        var lut: [Float] = []
+        var lutInverse: [Float] = []
+        var lutCenter: SIMD2<Float> = .zero
+        var lutRefWidth: Int32 = 0
+        var lutRefHeight: Int32 = 0
     }
 
     /// Width the engine tracks at. It downsamples anything wider than 1280 to
@@ -146,11 +154,36 @@ final class EngineFeeder: @unchecked Sendable {
             input.gyro_dz = gyro.z
             input.gyro_valid = 1
         }
+        // The lens tables. Without these the engine has no distortion model
+        // at all during the live pass: it reads calibration.json at
+        // `bs_live_begin`, and that file is not written until the FIRST
+        // STORED FRAME, which is necessarily later. The ABI has carried
+        // these fields since M1 and nothing ever populated them, so every
+        // live pose ever computed on a device was computed against an
+        // uncorrected camera — around 17 px of error at the frame corners on
+        // a real iPhone, against a guided-match search radius of 15 px.
+        // Correct matches at the edge of frame simply fell outside the
+        // window they were searched in.
+        input.lut_center_x = frame.lutCenter.x
+        input.lut_center_y = frame.lutCenter.y
+        input.lut_ref_width = frame.lutRefWidth
+        input.lut_ref_height = frame.lutRefHeight
         frame.luma.withUnsafeBufferPointer { lumaBuf in
             frame.depth.withUnsafeBufferPointer { depthBuf in
-                input.luma = lumaBuf.baseAddress
-                input.depth = depthBuf.baseAddress
-                _ = CoreEngine.shared.liveFeed(&input)
+                frame.lut.withUnsafeBufferPointer { lutBuf in
+                    frame.lutInverse.withUnsafeBufferPointer { invBuf in
+                        input.luma = lumaBuf.baseAddress
+                        input.depth = depthBuf.baseAddress
+                        if !frame.lut.isEmpty {
+                            input.lut = lutBuf.baseAddress
+                            input.lut_count = Int32(frame.lut.count)
+                        }
+                        if !frame.lutInverse.isEmpty {
+                            input.lut_inverse = invBuf.baseAddress
+                        }
+                        _ = CoreEngine.shared.liveFeed(&input)
+                    }
+                }
             }
         }
     }

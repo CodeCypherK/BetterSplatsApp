@@ -26,6 +26,14 @@ struct EngineConfig {
   int live_fast_threshold = 20;
   int live_fast_threshold_min = 7;
   float live_match_search_px = 15.0f;
+  // Lowe's ratio for the LIVE tracker, and deliberately LOOSER than the
+  // final solve's. The two matchers face opposite problems: this one
+  // searches a 15 px window around a predicted position, against the local
+  // map only, so geometry has already disambiguated and the ratio test can
+  // only discard good matches. Measured on a tiled room, tightening it made
+  // things strictly worse — 48.3% of frames tracked at 0.8, 40.0% at 0.7,
+  // 33.3% at 0.6, with ATE rising 0.006 -> 0.012 m. See final_match_ratio
+  // for the opposite result on the same scene.
   float live_match_ratio = 0.8f;
   float live_pnp_thresh_px = 2.0f;
   int live_pnp_min_inliers = 15;
@@ -171,7 +179,29 @@ struct EngineConfig {
   int final_sift_budget_mb = 1500;
   int final_seq_window = 8;
   int final_exhaustive_below = 150;
-  float final_match_ratio = 0.8f;
+  // Lowe's ratio for the FINAL solve, tighter than the live tracker's
+  // because it has no geometric prior to lean on: it matches whole images
+  // against whole images, so the ratio test is the only thing standing
+  // between it and a repeating pattern.
+  //
+  // 0.8 is Lowe's canonical value and it is not safe here. Measured on a
+  // room with an exactly-repeating tiled floor and walls (`--repetitive`),
+  // where a match to the wrong tile is geometrically consistent and RANSAC
+  // endorses it:
+  //
+  //   ratio  clean ATE / pts    hard ATE / pts    TILED ATE / pts
+  //   0.80   0.0013 / 7,226     0.0035 / 5,422    0.3372 / 14,534
+  //   0.70   0.0014 / 8,756     0.0026 / 5,362    0.0113 / 17,787
+  //   0.60      -               0.0026 / 5,213    0.0021 / 18,743
+  //
+  // 0.70 costs nothing anywhere — same 60/60 registration and same
+  // reprojection error on every scene, MORE points on the clean one, and a
+  // slightly better hard-scene ATE — while taking the repetitive case from
+  // 34 cm out of place to 1.1 cm. 0.60 is better again on tiles and equal on
+  // hard; it is held in reserve rather than shipped, because 0.70 already
+  // removes the failure and 0.60 is a long way from conventional practice on
+  // data this harness cannot simulate.
+  float final_match_ratio = 0.7f;
   float final_ransac_px = 1.25f;
   int final_pair_min_inliers = 30;
   float final_tri_min_angle_deg = 1.0f;

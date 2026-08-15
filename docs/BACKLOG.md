@@ -490,6 +490,24 @@ non-expert to that data on the first try.
       finally resolves to left/right/forward/back, and the five messages lead
       with the action instead of the diagnosis.
 
+- [ ] **A tiled room still loses live tracking half the time, and that is
+      not the matcher's fault.** `--repetitive 0.30` (new) reproduces a
+      kitchen/bathroom: exactly-repeating tile over the floor and textured
+      walls. The final solve is fixed — see the ratio change — but the LIVE
+      pass drops from 95.0% tracked to **48.3%** and ends LOST, and
+      tightening the ratio makes it worse rather than better (40.0% at 0.7,
+      33.3% at 0.6), because the guided 15 px search plus the local map has
+      already disambiguated and the ratio test is only discarding good
+      matches. Where it does track it is accurate to 6 mm, so this is an
+      honest refusal, not a wrong answer — but a user in a tiled bathroom
+      gets a TRACKING LOST pill half the time.
+      Worth trying, in rough order of promise: raise the ORB feature budget
+      when the inlier ratio sags (more candidates in the window); use the
+      LiDAR depth to reject candidates at the wrong distance, which
+      disambiguates tiles perfectly and costs nothing since the depth is
+      already there; or accept it and tell the user what is happening, since
+      "point at something with more variety" is real advice.
+
 ## Needs a real device session
 
 These cannot be settled on synthetic data. Each names what to look for.

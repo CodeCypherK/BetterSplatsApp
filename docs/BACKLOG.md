@@ -148,6 +148,26 @@ non-expert to that data on the first try.
          designed to view surfaces from many angles. The cap is about
          transient descriptor memory and was set before anyone knew a room
          is 200 images.
+      **Answered: (2) was the whole registration story, and a third problem
+      was hiding behind it.** With SIFT the solve registers 400/400 at 0.35 px
+      — and reported 1.26 m ATE, which was neither warp nor scale (model/truth
+      distance ratio 0.999 even 200 frames apart) but **21 cameras registered
+      on evidence too thin to hold a pose**: a median of 119 observations
+      against the model's 899, at 1.67 px against 0.33. The other 379 were at
+      **2.2 cm**. Those 21 also broke levelling, by pulling the camera-centre
+      plane the floor search uses for its up-direction.
+      The solve now unregisters a camera with under 25% of the median
+      observation count AND over 2x the median per-image error — both,
+      because either alone is an honest state — and puts the frame back in
+      the pool for PnP to try again next round. End to end on the same
+      session:
+
+      | | registered | points | rmse | ATE |
+      |---|---|---|---|---|
+      | ORB (shipped) | 189/400 | 39.3k | 0.57 px | 0.205 m |
+      | SIFT | 400/400 | 79.6k | 0.35 px | 1.256 m |
+      | **SIFT + drop weak cameras** | **378/400** | **83.3k** | **0.32 px** | **0.063 m** |
+
       **Answered: it is (2), and it is the whole thing.** Forced SIFT on the
       same 400 frames registers **400/400** with 79.6k points at 0.35 px,
       against 189/400 and 39.3k at 0.57 px with ORB. So the index-only pair
@@ -159,7 +179,14 @@ non-expert to that data on the first try.
       pairs of ORB was going to take another half hour to tell us something
       we no longer needed.)
 
-- [ ] **Levelling picks the wrong plane on a dense model.** Found by the
+- [x] ~~**Levelling picks the wrong plane on a dense model.**~~ **It was not
+      levelling.** 21 of 400 cameras were metres out of place while the other
+      379 sat at 2.2 cm; the floor search takes its up-direction from a plane
+      fit to the camera centres, and cameras scattered off the walk are not
+      in that plane, so the true floor was rejected. Fixed at the source —
+      see the entry above. Original note kept below for the diagnosis trail.
+
+- [x] ~~**Levelling picks the wrong plane on a dense model.**~~ Found by the
       SIFT run above, and it is the reason that run's ATE is 1.26 m despite
       400/400 registered at 0.35 px: the reconstruction is excellent and the
       levelling put it somewhere wrong. Floor search found a plane with

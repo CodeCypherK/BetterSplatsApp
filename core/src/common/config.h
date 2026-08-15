@@ -157,6 +157,11 @@ struct EngineConfig {
   int final_register_min_inliers = 25;
   float final_register_thresh_px = 3.0f;
   float final_track_complete_px = 6.0f;
+  // Dropping a camera the model cannot justify. Both conditions must hold:
+  // fewer than this fraction of the median observation count, AND worse than
+  // this multiple of the median per-image reprojection error.
+  float final_drop_weak_obs_frac = 0.25f;
+  float final_drop_err_factor = 2.0f;
   float final_early_stop_frac = 0.005f;
   int final_threads = 4;
 

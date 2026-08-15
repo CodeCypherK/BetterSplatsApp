@@ -1236,6 +1236,8 @@ FinalOutcome RunFinalSolve(const EngineConfig& config,
     size_t pruned_points = 0;
     double err_sq_sum = 0;
     size_t err_count = 0;
+    std::vector<int> obs_of_frame(frames.size(), 0);
+    std::vector<double> err_sq_of_frame(frames.size(), 0.0);
     for (auto& track : tracks) {
       if (track.dead || !track.has_point) continue;
       std::vector<TrackObs> kept;
@@ -1260,6 +1262,8 @@ FinalOutcome RunFinalSolve(const EngineConfig& config,
           ++pruned_obs;
           continue;
         }
+        ++obs_of_frame[obs.frame_index];
+        err_sq_of_frame[obs.frame_index] += err * err;
         err_sum += err;
         err_sq_sum += err * err;
         ++err_count;
@@ -1303,6 +1307,69 @@ FinalOutcome RunFinalSolve(const EngineConfig& config,
     metrics.reproj_rmse_px =
         err_count > 0 ? static_cast<float>(std::sqrt(err_sq_sum / err_count))
                       : 0.0f;
+
+    // Unregister cameras standing on evidence too thin to hold a pose.
+    //
+    // Measured on a 400-image two-room capture that otherwise solved
+    // perfectly — 400/400 registered, 0.35 px, 79.5k points — twenty-one
+    // cameras were metres out of place while the other 379 sat at 2.2 cm.
+    // Their signature was unmistakable: a median of 119 observations against
+    // the model's 899, at 1.67 px against 0.33. PnP had found each of them a
+    // pose that satisfied a handful of points and nothing else.
+    //
+    // Those 21 dragged the reported error from 2.2 cm to 1.26 m, and they
+    // broke levelling outright: the floor search takes its up-direction from
+    // a plane fit to the camera centres, and cameras scattered metres off
+    // the walk are not in that plane, so the true floor was rejected for one
+    // tilted 30 deg with 413 inliers instead of 10,786.
+    //
+    // A pose nobody can justify is worse than a missing one — a splat
+    // trained on it smears the whole region — so it is dropped, and the
+    // frame goes back in the pool for PnP to try again next round against a
+    // better model. `report.json` already names these frames for the user.
+    {
+      std::vector<int> counts;
+      std::vector<double> rmses;
+      for (size_t i = 0; i < frames.size(); ++i) {
+        if (!frames[i].posed || obs_of_frame[i] == 0) continue;
+        counts.push_back(obs_of_frame[i]);
+        rmses.push_back(std::sqrt(err_sq_of_frame[i] / obs_of_frame[i]));
+      }
+      if (counts.size() >= 8) {
+        std::nth_element(counts.begin(), counts.begin() + counts.size() / 2,
+                         counts.end());
+        std::nth_element(rmses.begin(), rmses.begin() + rmses.size() / 2,
+                         rmses.end());
+        const double obs_floor = config.final_drop_weak_obs_frac *
+                                 counts[counts.size() / 2];
+        const double err_ceiling =
+            config.final_drop_err_factor * rmses[rmses.size() / 2];
+        int dropped = 0;
+        for (size_t i = 0; i < frames.size(); ++i) {
+          if (!frames[i].posed) continue;
+          const int n = obs_of_frame[i];
+          const double rmse =
+              n > 0 ? std::sqrt(err_sq_of_frame[i] / n) : 1e9;
+          // BOTH, deliberately. Few observations alone is the honest state
+          // of a frame at the end of a walk; poor fit alone happens to a
+          // frame looking at a hard surface. Together they mean the pose is
+          // supported by almost nothing and does not even fit that.
+          if (n >= obs_floor || rmse <= err_ceiling) continue;
+          frames[i].posed = false;
+          for (size_t feat = 0; feat < frames[i].track_of_feature.size();
+               ++feat) {
+            frames[i].track_of_feature[feat] = -1;
+          }
+          ++dropped;
+        }
+        if (dropped > 0) {
+          BS_LOGI("final",
+                  "round %d: dropped %d camera(s) held up by under %.0f "
+                  "observations at over %.2f px",
+                  round, dropped, obs_floor, err_ceiling);
+        }
+      }
+    }
 
     // Register frames the live pass missed via 2D-3D PnP.
     int newly_registered = 0;

@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <cstdio>
 #include <functional>
 #include <random>
 
@@ -593,7 +594,13 @@ namespace {
 // so the path is computed from the layout instead.
 
 constexpr double kPathStep = 0.025;       // dense path sampling, metres
-constexpr double kPlanWallClear = 0.55;   // how close the plan walks to a wall
+// How close ANY part of the plan walks to a wall. One number, deliberately:
+// giving the lap its own looser wall clearance put the lap outside the
+// floorplan the router validates against, so every detour check failed from
+// a lap endpoint and routes fell back to straight lines — 35 poses through
+// the middle of a table. A path is either walkable or it is not, and two
+// answers to that question is one too many.
+constexpr double kPlanWallClear = 0.45;
 constexpr double kPlanObjClear = 0.35;    // ... and to furniture
 constexpr double kDesiredArcDeg = 200.0;  // orbit coverage worth closing in for
 constexpr double kMinRunDeg = 25.0;       // shorter arcs are not worth walking
@@ -603,7 +610,12 @@ constexpr double kCornerRadius = 0.5;     // rounded circuit corners
 // walking the skirting board and looking sideways puts a flat wall 60 cm
 // from the lens, which fills the frame, gives the tracker nothing that
 // persists, and records a 70 cm patch of a 6 m surface.
-constexpr double kLapStandoff = 0.60;
+// The lap hugs the perimeter. Inside-out capture wants the camera as far
+// from what it is filming as the room allows, and the way to be far from
+// the opposite wall is to have your back against this one — so the loop is
+// pushed out to the wall, not held off it. Standoff is what a lap gives up
+// when furniture forces it, not a distance it aims for.
+constexpr double kLapStandoff = 0.0;
 // What the lap keeps clear of furniture when it can. kPlanObjClear is the
 // hard limit — can a body fit — and it is not the same question as whether
 // a person would walk there filming.
@@ -849,6 +861,121 @@ OrbitPlan ChooseOrbit(const Floorplan& plan, const Eigen::Vector3d& centre,
   return best;
 }
 
+// A walkable-cell grid over the floorplan, and a breadth-first search on it.
+//
+// The router used to be "straight line, else one detour point, else straight
+// line anyway". One hop is not enough: getting from a room's back corner to
+// the doorway has to dodge the sideboard AND the table, no single via clears
+// both, and the fallback then drew a 6 m diagonal that clipped the sideboard
+// at 9 cm. A grid search either finds a way round or proves there is none —
+// and if a plan ever needs the second answer, that is worth failing on
+// rather than papering over with a line through the furniture.
+struct Grid {
+  double step = 0.15;
+  double x0 = 0, z0 = 0;
+  int nx = 0, nz = 0;
+  std::vector<char> free;
+  bool At(int i, int j) const {
+    return i >= 0 && j >= 0 && i < nx && j < nz &&
+           free[static_cast<size_t>(j) * nx + i] != 0;
+  }
+  Eigen::Vector3d Point(int i, int j, double y) const {
+    return {x0 + i * step, y, z0 + j * step};
+  }
+};
+
+Grid MakeGrid(const Floorplan& plan, double y) {
+  Grid g;
+  double x1 = -1e9, z1 = -1e9;
+  g.x0 = 1e9;
+  g.z0 = 1e9;
+  for (const Rect& r : plan.open) {
+    g.x0 = std::min(g.x0, r.x0);
+    g.z0 = std::min(g.z0, r.z0);
+    x1 = std::max(x1, r.x1);
+    z1 = std::max(z1, r.z1);
+  }
+  g.nx = static_cast<int>((x1 - g.x0) / g.step) + 1;
+  g.nz = static_cast<int>((z1 - g.z0) / g.step) + 1;
+  g.free.assign(static_cast<size_t>(g.nx) * g.nz, 0);
+  for (int j = 0; j < g.nz; ++j) {
+    for (int i = 0; i < g.nx; ++i) {
+      g.free[static_cast<size_t>(j) * g.nx + i] =
+          plan.Walkable(g.Point(i, j, y)) ? 1 : 0;
+    }
+  }
+  return g;
+}
+
+// Waypoints from `from` to `to` that stay walkable, or empty if the search
+// found no route at all. The result is string-pulled: the grid path is a
+// staircase, and what a person walks is the straight runs between the
+// corners it actually had to turn at.
+std::vector<Eigen::Vector3d> RoutePath(const Grid& g, const Floorplan& plan,
+                                       const Eigen::Vector3d& from,
+                                       const Eigen::Vector3d& to, double y) {
+  auto nearest = [&](const Eigen::Vector3d& p) {
+    int bi = -1, bj = -1;
+    double best = std::numeric_limits<double>::max();
+    const int ci = static_cast<int>(std::lround((p.x() - g.x0) / g.step));
+    const int cj = static_cast<int>(std::lround((p.z() - g.z0) / g.step));
+    for (int dj = -3; dj <= 3; ++dj) {
+      for (int di = -3; di <= 3; ++di) {
+        if (!g.At(ci + di, cj + dj)) continue;
+        const double d = (g.Point(ci + di, cj + dj, y) - p).squaredNorm();
+        if (d < best) {
+          best = d;
+          bi = ci + di;
+          bj = cj + dj;
+        }
+      }
+    }
+    return std::pair<int, int>{bi, bj};
+  };
+  const auto [si, sj] = nearest(from);
+  const auto [ti, tj] = nearest(to);
+  if (si < 0 || ti < 0) return {};
+
+  std::vector<int> parent(static_cast<size_t>(g.nx) * g.nz, -2);
+  std::vector<int> queue{sj * g.nx + si};
+  parent[queue[0]] = -1;
+  const int goal = tj * g.nx + ti;
+  for (size_t head = 0; head < queue.size() && parent[goal] == -2; ++head) {
+    const int cur = queue[head];
+    const int i = cur % g.nx, j = cur / g.nx;
+    for (int dj = -1; dj <= 1; ++dj) {
+      for (int di = -1; di <= 1; ++di) {
+        if (di == 0 && dj == 0) continue;
+        if (!g.At(i + di, j + dj)) continue;
+        // A diagonal step may not cut a corner between two blocked cells.
+        if (di && dj && !(g.At(i + di, j) && g.At(i, j + dj))) continue;
+        const int next = (j + dj) * g.nx + (i + di);
+        if (parent[next] != -2) continue;
+        parent[next] = cur;
+        queue.push_back(next);
+      }
+    }
+  }
+  if (parent[goal] == -2) return {};
+
+  std::vector<Eigen::Vector3d> cells;
+  for (int cur = goal; cur != -1; cur = parent[cur]) {
+    cells.push_back(g.Point(cur % g.nx, cur / g.nx, y));
+  }
+  std::reverse(cells.begin(), cells.end());
+
+  std::vector<Eigen::Vector3d> out;
+  Eigen::Vector3d anchor = from;
+  for (size_t i = 0; i < cells.size(); ++i) {
+    if (plan.WalkableLine(anchor, i + 1 < cells.size() ? cells[i + 1] : to)) {
+      continue;  // can still see further ahead
+    }
+    out.push_back(cells[i]);
+    anchor = cells[i];
+  }
+  return out;
+}
+
 // Blends two look targets AS SEEN FROM p: the direction rotates, the range
 // interpolates. Interpolating the two points instead sweeps a target across
 // the room, and on the way it passes through the camera — where it has no
@@ -906,22 +1033,9 @@ CapturePlan BuildCapturePlan(double eye_height) {
   const TwoRoomLayout& L = TwoRoomLayoutSpec();
   const Floorplan plan = MakeFloorplan(L, kPlanWallClear, kPlanObjClear);
   const Floorplan roomy = MakeFloorplan(L, kPlanWallClear, kLapObjClear);
+  const Grid grid = MakeGrid(plan, eye_height);
   const double plan_y = eye_height;
   const double look_y = eye_height * 0.72;
-
-  // Places to step through when the direct line between two moves is
-  // blocked: every walkable point on a 30 cm grid. One hop is enough to get
-  // around a table in a room — a plan that needs two has already gone wrong,
-  // and the test for walking through walls is what says so.
-  std::vector<Eigen::Vector3d> vias;
-  for (const Rect& r : plan.open) {
-    for (double x = r.x0 + 0.15; x < r.x1; x += 0.3) {
-      for (double z = r.z0 + 0.15; z < r.z1; z += 0.3) {
-        const Eigen::Vector3d v(x, plan_y, z);
-        if (plan.Walkable(v)) vias.push_back(v);
-      }
-    }
-  }
 
   std::vector<Eigen::Vector3d> pos, look;
   std::vector<CapturePhase> phase;
@@ -932,45 +1046,42 @@ CapturePlan BuildCapturePlan(double eye_height) {
 
   // Moves to `to` from wherever the path is, going around anything in the
   // way and keeping the eye on whatever it was looking at until it arrives.
-  auto route_to = [&](const Eigen::Vector3d& to, const Eigen::Vector3d& look_to,
-                      const std::vector<Eigen::Vector3d>& extra) {
+  auto route_to = [&](const Eigen::Vector3d& to,
+                      const Eigen::Vector3d& look_to) {
     const Eigen::Vector3d from = pos.back();
     const Eigen::Vector3d look_from = look.back();
     if (plan.WalkableLine(from, to)) {
       EmitLine(pos, look, from, to, look_from, look_to);
       return;
     }
-    const Eigen::Vector3d* best = nullptr;
-    double best_len = 0;
-    auto consider = [&](const Eigen::Vector3d& v) {
-      const double len = (v - from).norm() + (to - v).norm();
-      if (best && len >= best_len) return;
-      if (!plan.WalkableLine(from, v) || !plan.WalkableLine(v, to)) return;
-      best = &v;
-      best_len = len;
-    };
-    for (const Eigen::Vector3d& v : extra) consider(v);
-    for (const Eigen::Vector3d& v : vias) consider(v);
-    if (best) {
-      // Halfway between two look targets can land on top of the camera —
-      // between a table and the doorway it lands squarely in the walking
-      // lane — and a look target at zero range has no direction at all: the
-      // view spins, and the frame that spins is not recoverable. When the
-      // blend falls near the path, look where you are going instead.
-      Eigen::Vector3d mid = 0.5 * (look_from + look_to);
-      const Eigen::Vector3d half = 0.5 * (from + to);
-      if ((mid - half).norm() < 1.2) {
-        Eigen::Vector3d ahead = to - from;
-        ahead.y() = 0;
-        if (ahead.norm() < 1e-6) ahead = Eigen::Vector3d(1, 0, 0);
-        mid = half + 2.0 * ahead.normalized();
-        mid.y() = look_y;
-      }
-      EmitLine(pos, look, from, *best, look_from, mid);
-      EmitLine(pos, look, *best, to, mid, look_to);
+    const std::vector<Eigen::Vector3d> via =
+        RoutePath(grid, plan, from, to, plan_y);
+    if (via.empty()) {
+      // No route exists at all. Not something to paper over with a straight
+      // line: it means the plan asked to reach somewhere unreachable.
+      EmitLine(pos, look, from, to, look_from, look_to);
       return;
     }
-    EmitLine(pos, look, from, to, look_from, look_to);  // tested against
+    // Looking where you are going while detouring, then back onto the
+    // target as you arrive. Held on the old target the whole way, the view
+    // ends up pointed through whatever the detour was avoiding.
+    Eigen::Vector3d at = from;
+    Eigen::Vector3d aim_from = look_from;
+    for (size_t i = 0; i < via.size(); ++i) {
+      Eigen::Vector3d ahead = via[i] - at;
+      ahead.y() = 0;
+      const double f = static_cast<double>(i + 1) / (via.size() + 1);
+      Eigen::Vector3d aim_to =
+          ahead.norm() < 1e-6
+              ? look_to
+              : Eigen::Vector3d(via[i] + 2.5 * ahead.normalized());
+      aim_to.y() = look_y;
+      aim_to = aim_to + f * (look_to - aim_to);
+      EmitLine(pos, look, at, via[i], aim_from, aim_to);
+      at = via[i];
+      aim_from = aim_to;
+    }
+    EmitLine(pos, look, at, to, aim_from, look_to);
   };
 
   auto ring_point = [](const Eigen::Vector3d& c, double r, double a) {
@@ -1017,10 +1128,7 @@ CapturePlan BuildCapturePlan(double eye_height) {
         pos.push_back(entry);
         look.push_back(aim(entry));
       } else {
-        const double gap_a = run.a0 - 0.5 * run.span();
-        route_to(entry, aim(entry),
-                 {ring_point(hub, op.radius * 0.6, gap_a),
-                  ring_point(hub, op.radius * 1.45, gap_a)});
+        route_to(entry, aim(entry));
       }
       const int steps = std::max(
           2, static_cast<int>(run.span() * op.radius / kPathStep + 0.5));
@@ -1156,7 +1264,7 @@ CapturePlan BuildCapturePlan(double eye_height) {
       home = lap.front();
       home_look = lap_look.front();
     } else {
-      route_to(lap.front(), lap_look.front(), {});
+      route_to(lap.front(), lap_look.front());
     }
     tag();
     current = CapturePhase::kLap;
@@ -1249,7 +1357,7 @@ CapturePlan BuildCapturePlan(double eye_height) {
     const Eigen::Vector3d far_side(L.door_x + dir * 0.95, plan_y, lane);
     const Eigen::Vector3d through(L.door_x + dir * 1.6, look_y, 0.0);
     current = CapturePhase::kApproach;
-    route_to(near_side, through, {});
+    route_to(near_side, through);
     tag();
     current = CapturePhase::kThroughDoorway;
     const RoomBounds& next = room == 0 ? L.b : L.a;
@@ -1261,7 +1369,7 @@ CapturePlan BuildCapturePlan(double eye_height) {
     // where the camera is standing.
     tag();
     current = CapturePhase::kApproach;
-    if (room == 1) route_to(home, home_look, {});
+    if (room == 1) route_to(home, home_look);
     tag();
   }
 

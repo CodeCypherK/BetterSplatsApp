@@ -310,10 +310,15 @@ TEST_F(SynthTest, CaptureWalkStoresARoomsWorthOfFrames) {
 // walkability test at all: the four straight legs were checked and the
 // curves joining them were not.
 //
-// Measured: the whole walk clears 0.35 m of furniture and 0.60 m of wall
-// in the planner's own model, which is what the planner promises. The
-// bounds below sit just under that, so an erosion of the promise fails
-// here rather than being discovered in a picture.
+// Measured: the whole walk clears 0.35 m of furniture and 0.45 m of wall in
+// the planner's own model, which is exactly what the planner promises. The
+// bounds below sit just under that, so an erosion of the promise fails here
+// rather than being discovered in a picture.
+//
+// This is also the test that catches an incomplete router. The route from a
+// room's back corner to the doorway has to dodge the sideboard AND the
+// table; the one-detour-point router could not, fell back to a straight
+// line, and clipped the sideboard at 9 cm.
 TEST_F(SynthTest, CaptureWalkKeepsClearOfEverything) {
   const std::vector<SE3> poses =
       synth::CaptureTrajectory(3645, 1.5, /*seed=*/4, 40.0 / 30.0);
@@ -322,7 +327,7 @@ TEST_F(SynthTest, CaptureWalkKeepsClearOfEverything) {
   Eigen::Vector3d worst = Eigen::Vector3d::Zero();
   for (const SE3& p : poses) {
     const Eigen::Vector3d c = p.CameraCenter();
-    if (synth::TwoRoomWalkable(c, /*wall_clearance=*/0.50,
+    if (synth::TwoRoomWalkable(c, /*wall_clearance=*/0.42,
                                /*object_clearance=*/0.33)) {
       continue;
     }

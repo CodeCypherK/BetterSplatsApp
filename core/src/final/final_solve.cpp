@@ -356,9 +356,18 @@ FinalOutcome RunFinalSolve(const EngineConfig& config,
   } else if (!calib.distortion_lut.empty()) {
     if (const auto fit =
             FitOpencvModelFromLut(calib.distortion_lut, calib.intrinsics_session)) {
-      k1 = fit->k1;
-      k2 = fit->k2;
-      camera_model = "OPENCV";
+      // A refused fit stays PINHOLE. Exporting OPENCV with k1 = k2 = 0 is
+      // numerically the same thing but tells a downstream tool the lens was
+      // modelled when it was not, and the honest model is the one that says
+      // "no distortion parameters" rather than "distortion parameters of
+      // zero".
+      if (!fit->rejected) {
+        k1 = fit->k1;
+        k2 = fit->k2;
+        camera_model = "OPENCV";
+      }
+      BS_LOGI("final", "lens model: %s k1=%.4f k2=%.4f (worst %.2f px)",
+              camera_model.c_str(), k1, k2, fit->max_residual_px);
     }
   }
 

@@ -154,11 +154,8 @@ Eigen::Vector2d DistortNormalized(const Eigen::Vector2d& xy, double k1,
   return xy * scale;
 }
 
-Eigen::Vector2d UndistortPixel(const Eigen::Vector2d& px,
-                               const PinholeIntrinsics& intrinsics, double k1,
-                               double k2) {
-  const Eigen::Vector2d xy_d((px.x() - intrinsics.cx) / intrinsics.fx,
-                             (px.y() - intrinsics.cy) / intrinsics.fy);
+Eigen::Vector2d UndistortNormalized(const Eigen::Vector2d& xy_d, double k1,
+                                    double k2) {
   // Fixed-point iteration: xy_u = xy_d / (1 + k1 r_u^2 + k2 r_u^4).
   Eigen::Vector2d xy_u = xy_d;
   for (int i = 0; i < 10; ++i) {
@@ -167,6 +164,15 @@ Eigen::Vector2d UndistortPixel(const Eigen::Vector2d& px,
     if (std::abs(scale) < 1e-9) break;
     xy_u = xy_d / scale;
   }
+  return xy_u;
+}
+
+Eigen::Vector2d UndistortPixel(const Eigen::Vector2d& px,
+                               const PinholeIntrinsics& intrinsics, double k1,
+                               double k2) {
+  const Eigen::Vector2d xy_d((px.x() - intrinsics.cx) / intrinsics.fx,
+                             (px.y() - intrinsics.cy) / intrinsics.fy);
+  const Eigen::Vector2d xy_u = UndistortNormalized(xy_d, k1, k2);
   return {xy_u.x() * intrinsics.fx + intrinsics.cx,
           xy_u.y() * intrinsics.fy + intrinsics.cy};
 }

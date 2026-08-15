@@ -31,6 +31,11 @@ struct GenerateOptions {
   // Exactly-repeating structure (tile/brick/panelling) over the floor and
   // the textured walls. 0 = the aperiodic noise this harness has always
   // used, which is the friendliest world a matcher will ever see.
+  // Simulated lens distortion (OPENCV k1, k2) plus the Apple-style tables
+  // that describe it. 0 keeps the exact-pinhole camera every session used
+  // before — which is precisely why the whole lens path went unexercised.
+  double lens_k1 = 0.0;
+  double lens_k2 = 0.0;
   float repetitive = 0.0f;
   double repeat_period_m = 0.25;
   double depth_noise_scale = 1.0;  // 0 disables depth noise/dropouts

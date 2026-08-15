@@ -47,6 +47,10 @@ Eigen::Vector2d DistortNormalized(const Eigen::Vector2d& xy_undistorted,
 
 // Iteratively inverts the model: distorted pixel -> undistorted pixel
 // (Newton fixed-point, converges in < 10 iterations for phone-lens k1/k2).
+// Inverts the model in normalized coordinates: distorted -> undistorted.
+Eigen::Vector2d UndistortNormalized(const Eigen::Vector2d& xy_distorted,
+                                    double k1, double k2);
+
 Eigen::Vector2d UndistortPixel(const Eigen::Vector2d& px_distorted,
                                const PinholeIntrinsics& intrinsics, double k1,
                                double k2);

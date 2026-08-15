@@ -35,6 +35,10 @@ void PrintUsage() {
                "  --height H        image height (default 720)\n"
                "  --seed S          scene/trajectory seed (default 7)\n"
                "  --no-blank-wall   texture every wall\n"
+               "  --lens K1 K2      render through a real lens and write the\n"
+               "                    Apple-style tables for it, instead of an\n"
+               "                    exact pinhole (try 0.042 -0.098, measured\n"
+               "                    from an iPhone 17 Pro)\n"
                "  --repetitive F    lay exactly-repeating tile/brick over the\n"
                "                    floor and textured walls (0..0.4). Real\n"
                "                    rooms are full of it and every other\n"
@@ -147,7 +151,10 @@ int main(int argc, char** argv) {
     else if (arg == "--height") options.image_height = std::atoi(next("--height"));
     else if (arg == "--seed") options.seed = static_cast<uint32_t>(std::atoi(next("--seed")));
     else if (arg == "--no-blank-wall") options.blank_wall = false;
-    else if (arg == "--repetitive") {
+    else if (arg == "--lens") {
+      options.lens_k1 = std::atof(next("--lens"));
+      options.lens_k2 = std::atof(next("--lens"));
+    } else if (arg == "--repetitive") {
       options.repetitive = static_cast<float>(std::atof(next("--repetitive")));
     } else if (arg == "--repeat-period") {
       options.repeat_period_m = std::atof(next("--repeat-period"));

@@ -1,5 +1,7 @@
 #include "synth_scene.h"
 
+#include "calib/lut_fit.h"
+
 #include <algorithm>
 #include <cmath>
 #include <limits>
@@ -409,6 +411,30 @@ std::vector<SE3> PosesFromLookDirections(
 
 }  // namespace
 
+DistortionLut MakeDistortionLut(const Intrinsics& K, double k1, double k2,
+                               int entries) {
+  DistortionLut lut;
+  lut.center_x = K.cx;
+  lut.center_y = K.cy;
+  const double dx = std::max(K.cx, K.width - K.cx);
+  const double dy = std::max(K.cy, K.height - K.cy);
+  const double r_max = std::hypot(dx, dy);
+  const double f = 0.5 * (K.fx + K.fy);
+  for (int i = 0; i < entries; ++i) {
+    const double rf = static_cast<double>(i) / (entries - 1);
+    // inverse: indexed by UNDISTORTED radius, gives r_d / r_u - 1.
+    const double ru = rf * r_max / f;
+    const double scale = 1.0 + k1 * ru * ru + k2 * ru * ru * ru * ru;
+    lut.inverse.push_back(static_cast<float>(scale - 1.0));
+    // magnification: indexed by DISTORTED radius, gives r_u / r_d - 1.
+    const double rd = rf * r_max / f;
+    const Eigen::Vector2d u = UndistortNormalized({rd, 0.0}, k1, k2);
+    lut.magnification.push_back(
+        static_cast<float>(rd > 1e-12 ? u.x() / rd - 1.0 : 0.0));
+  }
+  return lut;
+}
+
 cv::Mat RenderImage(const Scene& scene, const SE3& pose, const Intrinsics& K,
                     const RenderOptions& opts) {
   cv::Mat img(K.height, K.width, CV_8UC3, cv::Scalar(18, 16, 14));
@@ -419,7 +445,18 @@ cv::Mat RenderImage(const Scene& scene, const SE3& pose, const Intrinsics& K,
   for (int y = 0; y < K.height; ++y) {
     cv::Vec3b* row = img.ptr<cv::Vec3b>(y);
     for (int x = 0; x < K.width; ++x) {
-      const Eigen::Vector3d dir_cam((x - K.cx) / K.fx, (y - K.cy) / K.fy, 1.0);
+      // A pixel names a DISTORTED normalized coordinate; the ray that
+      // actually produced it is the undistorted one. Rendering the other way
+      // round would simulate a camera whose distortion runs backwards, and
+      // the solve would happily "correct" it into agreement with itself.
+      double xn = (x - K.cx) / K.fx;
+      double yn = (y - K.cy) / K.fy;
+      if (opts.k1 != 0.0 || opts.k2 != 0.0) {
+        const Eigen::Vector2d u = UndistortNormalized({xn, yn}, opts.k1, opts.k2);
+        xn = u.x();
+        yn = u.y();
+      }
+      const Eigen::Vector3d dir_cam(xn, yn, 1.0);
       const RayHit hit = CastRay(scene, center, R_cw * dir_cam);
       if (hit.plane_index < 0) continue;
       const auto& plane = scene.planes[hit.plane_index];

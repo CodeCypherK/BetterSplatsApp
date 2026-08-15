@@ -8,6 +8,7 @@
 
 #include "common/geometry.h"
 #include "io/depth_codec.h"
+#include "io/session_schema.h"
 
 namespace bs::synth {
 
@@ -134,12 +135,33 @@ float TextureValue(const TexturedPlane& plane, double u, double v);
 // the original clean render exactly (mild blur + light sensor noise), so
 // existing goldens are unaffected unless a knob is changed.
 struct RenderOptions {
+  // Radial lens distortion of the simulated camera (OPENCV k1, k2).
+  //
+  // Every synthetic session before this was an exact pinhole with an empty
+  // distortion table, so the entire lens path — Apple's LUT convention, the
+  // OPENCV fit, undistortion, and the export's camera model — had never once
+  // executed against data with real distortion in it. Two separate bugs
+  // lived there undisturbed until a device found them, and both were
+  // invisible to every test because the tests fed a lens that does not bend
+  // light. A harness that only ever renders perfect cameras cannot check the
+  // code that copes with imperfect ones.
+  double k1 = 0.0;
+  double k2 = 0.0;
   float gain = 1.0f;            // multiplicative exposure/gain (AE drift)
   float noise_sigma = 1.6f;     // RGB sensor noise stddev, DN
   float blur_sigma = 0.6f;      // isotropic optical blur, px
   float motion_blur_px = 0.0f;  // linear motion-blur length, px (0 = none)
   double motion_blur_angle = 0.0;  // motion-blur direction, radians
 };
+
+// Apple-style radial tables for a camera with the given OPENCV k1/k2, in
+// the convention AVCameraCalibrationData uses: entries are RELATIVE
+// magnification (the fraction by which the radius changes), sampled evenly
+// from the optical centre to the farthest corner, so entry 0 is 0.
+//
+// `magnification` maps distorted -> undistorted, `inverse` the other way.
+DistortionLut MakeDistortionLut(const Intrinsics& K, double k1, double k2,
+                                int entries = 42);
 
 // Renders a BGR uint8 image of the scene from `pose` (world-to-camera).
 cv::Mat RenderImage(const Scene& scene, const SE3& pose, const Intrinsics& K,

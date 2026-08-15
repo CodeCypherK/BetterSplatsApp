@@ -16,6 +16,7 @@
 #include "common/geometry.h"
 #include "generate.h"
 #include "io/session_reader.h"
+#include "calib/lut_fit.h"
 #include "synth_scene.h"
 
 namespace bs {
@@ -276,6 +277,40 @@ TEST_F(SynthTest, CaptureWalkOrbitsEveryObjectAndTheDoorway) {
   // rooms: an opening is where two captures have to agree about the same
   // surface, and it is where a splat of a house shows its seam.
   EXPECT_GE(sectors_seen(layout.door_centre()), 8u);
+}
+
+// A rendered lens must survive the whole round trip: render distorted,
+// describe it with Apple-convention tables, fit those tables back to an
+// OPENCV model, and land on the coefficients we started from.
+//
+// This is the gate that did not exist. Every synthetic session was an exact
+// pinhole with an empty table, so the LUT convention, the fit and the
+// export's camera model had never once run against data with distortion in
+// it — and two separate bugs lived in that gap until a device found them.
+TEST_F(SynthTest, RenderedLensRoundTripsThroughTheAppleTables) {
+  Intrinsics K;
+  K.fx = K.fy = 960.0;
+  K.cx = 640.0;
+  K.cy = 480.0;
+  K.width = 1280;
+  K.height = 960;
+  const double k1 = 0.042, k2 = -0.098;
+
+  const DistortionLut lut = synth::MakeDistortionLut(K, k1, k2);
+  ASSERT_FALSE(lut.inverse.empty());
+  // Apple's convention: relative magnification, so the centre entry is 0.
+  EXPECT_NEAR(lut.inverse.front(), 0.0f, 1e-6);
+  EXPECT_NEAR(lut.magnification.front(), 0.0f, 1e-6);
+  // And the deviation stays small — a table of ratios would sit near 1.
+  EXPECT_LT(std::abs(lut.inverse.back()), 0.25f);
+
+  PinholeIntrinsics pin{K.fx, K.fy, K.cx, K.cy, K.width, K.height};
+  const auto fit = FitOpencvModelFromLut(lut, pin);
+  ASSERT_TRUE(fit.has_value());
+  EXPECT_FALSE(fit->rejected);
+  EXPECT_NEAR(fit->k1, k1, 0.005) << "k1 did not survive the round trip";
+  EXPECT_NEAR(fit->k2, k2, 0.01) << "k2 did not survive the round trip";
+  EXPECT_LT(fit->max_residual_px, 1.0);
 }
 
 // A capture plan is only usable if the number of images it asks for fits a

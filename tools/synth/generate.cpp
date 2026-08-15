@@ -103,9 +103,18 @@ bool GenerateSession(const GenerateOptions& o) {
   calib.ref_width = o.image_width;
   calib.ref_height = o.image_height;
   calib.intrinsics_session = {K.fx, K.fy, K.cx, K.cy, K.width, K.height};
-  // Synthetic camera is distortion-free: empty LUT, exact PINHOLE model.
-  calib.colmap_model = ColmapCameraModel{
-      "PINHOLE", {K.fx, K.fy, K.cx, K.cy}, 0.0};
+  if (o.lens_k1 != 0.0 || o.lens_k2 != 0.0) {
+    // A real lens: the images are rendered distorted and the session carries
+    // Apple-convention tables describing it, exactly as a device would. The
+    // COLMAP model is deliberately NOT written, so the solve has to fit the
+    // model from the tables — which is the path that was broken on device
+    // and that no synthetic session had ever taken.
+    calib.distortion_lut = MakeDistortionLut(K, o.lens_k1, o.lens_k2);
+  } else {
+    // Distortion-free: empty LUT, exact PINHOLE model.
+    calib.colmap_model = ColmapCameraModel{
+        "PINHOLE", {K.fx, K.fy, K.cx, K.cy}, 0.0};
+  }
 
   SessionWriter writer;
   if (!SessionWriter::Create(o.out_dir, info, calib, writer)) return false;
@@ -237,6 +246,8 @@ bool GenerateSession(const GenerateOptions& o) {
     const bool is_scout = i >= calib_count && i < calib_count + scout_count;
 
     RenderOptions ropts;
+    ropts.k1 = o.lens_k1;
+    ropts.k2 = o.lens_k2;
     ropts.noise_sigma = static_cast<float>(1.6 * o.rgb_noise_scale);
     // Auto-exposure drift: a smooth deterministic gain swing per frame.
     const double gain =

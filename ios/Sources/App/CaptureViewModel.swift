@@ -1,5 +1,6 @@
 import AVFoundation
 import Foundation
+import SwiftUI
 import UIKit
 import Observation
 import simd
@@ -65,8 +66,19 @@ final class FrameFeedContext: @unchecked Sendable {
     let lock = NSLock()
     var nextFrameId: UInt32 = 1
     var lastStoreTime: Double = -1
+    /// Frames somewhere between "handed to the encoder" and "on disk". The
+    /// cap on this is the storage backpressure: past it the gate thins
+    /// cadence rather than queueing work the device cannot keep up with.
     var encodesInFlight = 0
+    /// Depth of that pipeline. Three rather than two because a slot now spans
+    /// the write as well as the encode, and the encoder should not sit idle
+    /// while one frame drains to flash.
+    static let maxEncodesInFlight = 3
     var storeCommits = 0
+    /// Frames that failed to reach disk. Non-zero means the capture on disk
+    /// is smaller than the session thinks it walked, which changes what the
+    /// end-of-capture verdict should say.
+    var storeFailures = 0
     /// Frames stored so far by the scout circuit. Split out from
     /// `storeCommits` only so the UI can say which half of the budget the
     /// user has spent — both halves share one session and one disk cap.
@@ -95,6 +107,12 @@ final class FrameFeedContext: @unchecked Sendable {
         // rather than snapping back to the floor and storing a burst.
         if spacing > 0 { storeSpacingM = spacing }
         lock.unlock()
+    }
+
+    /// Frames the writer could not put on disk. Read from the main actor each
+    /// poll; written on the storage path.
+    var failedWrites: Int {
+        lock.lock(); defer { lock.unlock() }; return storeFailures
     }
 
     /// "capture" or "scout", stamped into each frame's meta as it is written.
@@ -140,12 +158,15 @@ final class FrameFeedContext: @unchecked Sendable {
         // where the last one was taken is a duplicate, and a duplicate is not
         // free — it is a viewpoint elsewhere that never gets captured.
         //
-        // Raw storage is still never dropped for backpressure: the gate only
-        // thins cadence when the encoder cannot keep up, and that surfaces in
-        // the UI meter.
+        // Backpressure THINS storage, it does not queue it. When the pipeline
+        // is full this frame is skipped, and because the movement gate is a
+        // distance rather than a clock, the next frame is still past the
+        // threshold — so what is lost is cadence, not coverage. Frames that
+        // fail to write are a different matter and are counted, not skipped
+        // silently.
         lock.lock()
         let elapsed = frame.tCapture - lastStoreTime
-        let busy = encodesInFlight >= 2
+        let busy = encodesInFlight >= Self.maxEncodesInFlight
         let capped = storeCommits >= Self.storedFrameCap
         // No pose (tracking lost, or before bootstrap) means we cannot tell
         // whether anything changed — so keep the frame. Losing a real
@@ -214,13 +235,9 @@ final class FrameFeedContext: @unchecked Sendable {
         let pixelBuffer = frame.pixelBuffer  // retained by the closure
         let calibration = frame.calibration
         encodeQueue.async { [self] in
-            defer {
-                lock.lock()
-                encodesInFlight -= 1
-                lock.unlock()
-            }
             guard let jpeg = encoder.encode(pixelBuffer) else {
                 lock.lock()
+                encodesInFlight -= 1
                 storeCommits -= 1  // failed encode gives its cap slot back
                 lock.unlock()
                 return
@@ -229,10 +246,34 @@ final class FrameFeedContext: @unchecked Sendable {
                 frameId: frameId, jpeg: jpeg, depthF16: depth.f16,
                 depthWidth: depth.width, depthHeight: depth.height, meta: meta)
             Task { [store] in
-                if let calibration {
-                    try? await store.writeCalibrationIfNeeded(calibration)
+                // The in-flight slot is released HERE, after the write, not
+                // when the encode returned. Releasing it early made the
+                // backpressure gate blind to the slow half: encoding is
+                // hardware and quick, writing 1.3 MB to flash is neither, and
+                // every encoded frame span=ned an unstructured Task holding its
+                // payload. Nothing bounded those, so a stalled disk grew
+                // memory by a megabyte a frame instead of thinning cadence.
+                defer {
+                    lock.lock()
+                    encodesInFlight -= 1
+                    lock.unlock()
                 }
-                try? await store.writeFrame(payload)
+                do {
+                    if let calibration {
+                        try await store.writeCalibrationIfNeeded(calibration)
+                    }
+                    try await store.writeFrame(payload)
+                } catch {
+                    // A frame that did not land must not be counted as one
+                    // that did: `storeCommits` is the cap, and `storedFrames`
+                    // is what the end-of-capture verdict judges the session
+                    // on. Silently keeping the count would tell the user they
+                    // had 400 frames when the disk took 300.
+                    lock.lock()
+                    storeCommits -= 1
+                    storeFailures += 1
+                    lock.unlock()
+                }
             }
         }
     }
@@ -360,6 +401,26 @@ final class CaptureViewModel {
     private(set) var framesStored: UInt32 = 0
     private(set) var megabytesWritten: Double = 0
     private(set) var storageNote: String?
+    /// How the storage note should read. Too thin and too full are opposite
+    /// problems and must not look alike: one says keep going, the other says
+    /// stop. Derived here rather than in the view, which used to infer it
+    /// from the frame count and so painted "photos could not be saved" as
+    /// ordinary grey progress whenever it happened early in a capture.
+    private(set) var storageNoteLevel: StorageNoteLevel = .progress
+
+    enum StorageNoteLevel {
+        case progress   // ordinary, nobody is doing anything wrong
+        case warning    // act soon
+        case critical   // act now, or something has already been lost
+
+        var tint: Color {
+            switch self {
+            case .progress: return .secondary
+            case .warning: return .orange
+            case .critical: return .red
+            }
+        }
+    }
     private(set) var readinessOverall: Float = 0
     private(set) var snapshot = CoreEngine.Snapshot()
     /// Nil once the floor step is done or skipped; drives the prompt.
@@ -716,19 +777,32 @@ final class CaptureViewModel {
                     Double(await context.store.storedBytes) / 1_048_576.0
                 let stored = Int(self.framesStored)
                 let free = Self.freeDiskBytes()
-                if free < FrameFeedContext.minFreeBytes {
+                let failed = context.failedWrites
+                if failed > 0 {
+                    // Above everything else, including "nearly full". A frame
+                    // that did not reach disk is gone — the ring buffer moved
+                    // on — so this is the one storage message the user can
+                    // still act on, by re-walking what they just covered.
+                    self.storageNote = failed == 1
+                        ? "1 photo could not be saved — check free space"
+                        : "\(failed) photos could not be saved — check free space"
+                    self.storageNoteLevel = .critical
+                } else if free < FrameFeedContext.minFreeBytes {
                     // Disk beats the frame count: a capture that dies on a
                     // write halfway through a room loses the room.
                     self.storageNote = String(
                         format: "iPhone almost full (%.1f GB left) — stop soon",
                         Double(free) / 1_073_741_824)
+                    self.storageNoteLevel = .critical
                 } else if stored >= FrameFeedContext.storedFrameCap {
                     self.storageNote =
                         "Capture full — stop here, then continue this project "
                         + "in a new capture"
+                    self.storageNoteLevel = .critical
                 } else if stored >= FrameFeedContext.storedFrameWarn {
                     self.storageNote = "Nearly full: \(stored)/"
                         + "\(FrameFeedContext.storedFrameCap) — finish up"
+                    self.storageNoteLevel = .warning
                 } else if stored < FrameFeedContext.storedFrameTarget {
                     // The under-covered case is the one people actually hit,
                     // and it is invisible without being told: the capture
@@ -737,6 +811,7 @@ final class CaptureViewModel {
                     self.storageNote = "\(stored)/"
                         + "\(FrameFeedContext.storedFrameTarget) frames — keep "
                         + "going for full coverage"
+                    self.storageNoteLevel = .progress
                 } else {
                     self.storageNote = nil
                 }

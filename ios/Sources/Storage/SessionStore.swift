@@ -116,7 +116,6 @@ actor SessionStore {
     /// intrinsics at reference dimensions plus Apple's radial distortion LUT.
     func writeCalibrationIfNeeded(_ calibration: AVCameraCalibrationData) throws {
         guard !calibrationWritten else { return }
-        calibrationWritten = true
 
         let m = calibration.intrinsicMatrix  // simd_float3x3, column-major
         let ref = calibration.intrinsicMatrixReferenceDimensions
@@ -143,9 +142,22 @@ actor SessionStore {
                 ]))
         let data = try encoder.encode(doc)
         try Self.write(data, to: directory.appendingPathComponent("calibration.json"))
+        // Only now. Setting this first meant a failed write was never retried,
+        // and a session with no calibration.json is one the reader rejects
+        // outright — the whole capture lost to one transient error.
+        calibrationWritten = true
     }
 
     /// Appends one immutable frame. Fails rather than overwrites.
+    ///
+    /// `meta.json` is written LAST and is the completion marker: readers
+    /// enumerate `frames/` on disk rather than trusting `frame_count`, so a
+    /// directory without it is a frame that never finished. On failure the
+    /// partial directory is removed here — that is not a violation of RAW
+    /// immutability, which protects frames that were written, not the debris
+    /// of one that was not. A crash between the first write and the last
+    /// leaves the same debris with nothing running to clear it, so the reader
+    /// skips incomplete directories too.
     func writeFrame(_ payload: FramePayload) throws {
         let frameDir = directory
             .appendingPathComponent("frames")
@@ -155,6 +167,8 @@ actor SessionStore {
             throw StoreError.ioFailure("frame \(payload.frameId) already exists")
         }
         try fm.createDirectory(at: frameDir, withIntermediateDirectories: true)
+        var complete = false
+        defer { if !complete { try? fm.removeItem(at: frameDir) } }
 
         try Self.write(payload.jpeg, to: frameDir.appendingPathComponent("image.jpg"))
 
@@ -172,6 +186,7 @@ actor SessionStore {
 
         let metaData = try encoder.encode(payload.meta)
         try Self.write(metaData, to: frameDir.appendingPathComponent("meta.json"))
+        complete = true
 
         frameCount += 1
         bytesWritten += Int64(payload.jpeg.count + encodedLen + metaData.count)

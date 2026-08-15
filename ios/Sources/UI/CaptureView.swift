@@ -453,15 +453,10 @@ struct CaptureView: View {
             // is ordinary progress, not a warning — nobody should feel they
             // are doing something wrong thirty seconds into a room.
             if let note = model.storageNote {
-                let stored = Int(model.framesStored)
-                let underTarget = stored < FrameFeedContext.storedFrameTarget
-                Label(note, systemImage: underTarget
+                Label(note, systemImage: model.storageNoteLevel == .progress
                       ? "circle.dotted" : "exclamationmark.triangle.fill")
                     .font(.caption.weight(.medium))
-                    .foregroundStyle(
-                        underTarget ? Color.secondary
-                        : (stored >= FrameFeedContext.storedFrameCap
-                           ? Color.red : Color.orange))
+                    .foregroundStyle(model.storageNoteLevel.tint)
                     .padding(.horizontal, 12)
                     .padding(.vertical, 5)
                     .background(.ultraThinMaterial, in: Capsule())

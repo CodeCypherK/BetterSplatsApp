@@ -155,6 +155,17 @@ bool SessionReader::AddFramesFrom(const std::string& dir) {
                      [](char c) { return c >= '0' && c <= '9'; })) {
       continue;
     }
+    // meta.json is written last, so it is the completion marker. A frame
+    // directory without one is a write that did not finish — the phone ran
+    // out of space, or was killed between the first file and the last — and
+    // taking it as a real frame means a frame with no intrinsics, no
+    // timestamp and no pass tag reaching the solve. There is no code running
+    // on the device at crash time to tidy it, so the reader has to.
+    if (!fs::exists(entry.path() / "meta.json")) {
+      BS_LOGW("session", "skipping incomplete frame %s (no meta.json)",
+              name.c_str());
+      continue;
+    }
     const uint32_t frame_id = static_cast<uint32_t>(std::stoul(name));
     const auto [it, inserted] = owner_.emplace(frame_id, dir);
     if (!inserted) {

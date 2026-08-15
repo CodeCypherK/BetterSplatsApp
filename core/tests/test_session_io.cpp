@@ -7,6 +7,7 @@
 #include <fstream>
 #include <iterator>
 #include <string>
+#include <vector>
 
 #include "io/session_reader.h"
 #include "io/session_writer.h"
@@ -229,6 +230,28 @@ TEST_F(SessionIoTest, ReaderEnumeratesFromDiskNotJson) {
   ASSERT_TRUE(reader.has_value());
   EXPECT_EQ(reader->info().frame_count, 0u);
   EXPECT_EQ(reader->frame_ids(), (std::vector<uint32_t>{3, 10}));
+}
+
+// A frame directory whose write did not finish is not a frame. The device
+// writes meta.json last, so its absence is the marker; the app removes the
+// debris when the write throws, but a jetsam kill or a flat battery between
+// the first file and the last leaves it with nothing running to tidy up.
+// Taking it as real puts a frame with no intrinsics, no timestamp and no pass
+// tag into the solve.
+TEST_F(SessionIoTest, IncompleteFrameDirectoryIsSkipped) {
+  SessionWriter writer;
+  ASSERT_TRUE(SessionWriter::Create(dir_, MakeInfo(), MakeCalibration(), writer));
+  ASSERT_TRUE(writer.WriteFrame(MakeMeta(1), {0xFF}, MakeDepth(1)));
+  ASSERT_TRUE(writer.WriteFrame(MakeMeta(2), {0xFF}, MakeDepth(2)));
+
+  // Frame 3 got as far as its image and then the disk filled.
+  const fs::path partial = fs::path(dir_) / "frames" / "000003";
+  fs::create_directories(partial);
+  { std::ofstream(partial / "image.jpg", std::ios::binary) << "\xFF\xD8"; }
+
+  auto reader = SessionReader::Open(dir_);
+  ASSERT_TRUE(reader.has_value());
+  EXPECT_EQ(reader->frame_ids(), (std::vector<uint32_t>{1, 2}));
 }
 
 // The `pass` key is a contract between two languages: the Swift capture code

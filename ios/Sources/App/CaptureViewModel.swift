@@ -366,6 +366,34 @@ final class CaptureViewModel {
 
     var isScouting: Bool { state == .scouting }
 
+    /// Shows the route card over a running capture.
+    ///
+    /// Raised when the detailed scan starts and lowered by the user or by
+    /// `routeCardSeconds`. Deliberately NOT a modal step before the camera
+    /// starts: the flow is three things to do while walking, and a wall of
+    /// instructions read before picking the phone up is forgotten by the
+    /// second one. The capture runs underneath it the whole time.
+    private(set) var showsRouteCard = false
+    private var routeCardTask: Task<Void, Never>?
+    static let routeCardSeconds: UInt64 = 14
+
+    func presentRouteCard(auto: Bool = true) {
+        routeCardTask?.cancel()
+        showsRouteCard = true
+        guard auto else { return }
+        routeCardTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(Self.routeCardSeconds))
+            guard !Task.isCancelled else { return }
+            self?.showsRouteCard = false
+        }
+    }
+
+    func dismissRouteCard() {
+        routeCardTask?.cancel()
+        routeCardTask = nil
+        showsRouteCard = false
+    }
+
     /// How the capture went, frozen at stop.
     ///
     /// Shown while the user is STILL IN THE ROOM, which is the entire point:
@@ -502,6 +530,7 @@ final class CaptureViewModel {
         guidance = plan == .scoutThenCapture
             ? "Walk the space — back to the walls, camera facing in"
             : "Move slowly and keep the scene in view"
+        if plan == .captureOnly { presentRouteCard() }
         startPolling()
     }
 
@@ -538,6 +567,7 @@ final class CaptureViewModel {
 
             state = .capturing
             guidance = "Move slowly and keep the scene in view"
+            presentRouteCard()
         }
     }
 

@@ -174,9 +174,11 @@ Two properties are load-bearing, both learned by measurement:
   early. For the same reason there is no inlier-*fraction* gate: a 25%
   threshold rejected a correct 6.6% alignment and made the result 8× worse.
 
-Measured on `bs_synth --two-room` (33 m closed loop through a doorway):
-registration 57% → **92%**, and geometry (RMSE after optimal alignment to
-ground truth) 0.50 m → **~0.20 m**, with global scale within 1%.
+Measured on `bs_synth --two-room` when that was a 33 m closed loop through a
+doorway: registration 57% → **92%**, and geometry (RMSE after optimal
+alignment to ground truth) 0.50 m → **~0.20 m**, with global scale within 1%.
+(`--two-room` is now the 121 m circle-and-orbit capture walk below, so these
+figures describe the change, not the current fixture.)
 
 ## The scout pass
 
@@ -207,6 +209,75 @@ Two further payoffs beyond localization: the session's world frame is
 established once, and the readiness room list exists before detail capture
 starts — finish the circuit and the dashboard already reads "Room 1…N" with
 low scores, i.e. a worklist.
+
+## The capture walk: circle, then orbit
+
+The scout circuit answers "where am I". The capture walk answers "what does
+this surface look like from every side", and that is a different shape of
+path. It is three moves per room, in order:
+
+1. **Circle the room.** One lap at the largest inset the furniture allows,
+   camera facing out at the walls. This establishes the shell — walls,
+   corners, ceiling line — that everything else sits inside.
+2. **Orbit each large object.** All the way round, object centred in frame.
+   This is what gives a surface enough distinct viewpoints to reconstruct as
+   a solid rather than as a card facing whichever way the walk happened to
+   go past it.
+3. **Orbit the doorway** — from *both* rooms. An opening is the one place
+   two captures have to agree about the same surface, and it is where a
+   splat of a house shows its seam.
+
+**Orbit distance is half the room's short dimension.** Far enough that the
+object stays whole in frame with the room behind it for context, close
+enough for texture. The short dimension, not the long one: half the long
+side of a corridor puts you through a wall. In practice the rule is a
+ceiling, not a distance — a 6×8 m room asks for 3.0 m and the walls and
+furniture cut every orbit back to 1.6–2.6 m. Where the ring is blocked the
+plan walks the arcs that *are* walkable and steps around the gap still
+looking at the object, which is what a person does.
+
+For step 3 to mean anything the test scene had to grow a real wall. The
+divider between the two synthetic rooms used to be a zero-thickness plane
+with a hole in it, so the "doorway" had no jambs and no soffit: nothing
+inside the opening to see from an angle, no depth return anywhere in it, and
+no reason for a capture path to orbit it. It is now a 16 cm partition with
+two faces, two jambs and a soffit — the surfaces that exist only because a
+wall has depth, invisible face-on and fully visible from 30 deg off-axis,
+which is exactly the geometry an orbit is walked to collect.
+
+The synthetic harness implements exactly this (`CaptureTrajectory`), because
+a movement flow that is only ever described in the UI is a movement flow
+nothing tests. It is computed from the layout rather than typed as
+waypoints: hand-typed waypoints encode one furniture arrangement and walk
+through the sofa the moment the arrangement changes. `TwoRoomWalkable()`
+exposes the same floor model to tests, which assert that no pose ends up
+inside a wall, the divider, or the furniture.
+
+Measured on the two-room scene (6×8 m each), at 1.0 m/s and 40 deg/s pan:
+
+| | value |
+|---|---|
+| path per room | 62 m / 57 m |
+| bearings each object is framed from | 4–11 of 12 thirty-degree sectors |
+| doorway bearings | 11 of 12 |
+| worst single frame | 1.33 deg (exactly the declared pan limit) |
+| **stored frames per room, 5 cm gate** | **944 / 867** |
+| stored frames per room, 10 cm / 8 deg gate | 473 / 435 |
+
+That last pair is the finding. The flow is right and the **gate is wrong for
+it**: at the shipping `store_min_translation_m = 0.05` a single room asks for
+~900 images, roughly twice the 200–500 a project is sized for. 10 cm lands in
+the middle of the band, and at 2.5 m median depth 10 cm is still only a 2.3
+deg baseline between neighbouring stored views. Changing it is an on-device
+behaviour change with its own measurement (does final-solve registration
+hold at half the density), so it is tracked in docs/BACKLOG.md rather than
+done here.
+
+Objects against a wall cannot be orbited past about 150 deg — you cannot
+walk behind a sideboard — so their bearing coverage is 7–8 sectors while a
+free-standing table reaches 11. That is a property of the room, not a defect
+of the plan, and it is why the readiness score weights view overlap per
+patch rather than per object.
 
 ## Floor calibration: measuring the floor instead of guessing it
 
@@ -468,6 +539,28 @@ percentile statistics:
   top of the camera* mid-doorway, aiming the lens at the floor where the
   roll is ill-conditioned: a 4 deg/frame change of view direction came out
   as 10 deg/frame of pose.
+
+The orbit-based capture walk turned up two more of the same family, and both
+are now structural rather than patched:
+
+- **Look targets are blended as bearing, range and height — never as
+  points.** Interpolating between "the wall 2.4 m behind me" and "the table
+  6 m ahead" sweeps a point across the room and, part-way, straight through
+  the camera, where a look target has no direction at all. Same for the
+  smoothing window: the midpoint of two targets half a metre apart on the
+  path can be the camera itself. Measured, that pointed the lens almost
+  straight down for a stretch of an otherwise unremarkable lap.
+- **The view rate limit is applied to yaw and pitch, not to the direction
+  vector.** Rotating a direction toward its target along the great circle is
+  the shortest path on a sphere, and for a turn near 180 deg that path goes
+  *over the pole*: the camera obediently pitches down through the floor,
+  spins, and comes back up facing the other way, entirely within the
+  declared rotation rate. Per-frame pose change 11 deg while every
+  consecutive pair of look directions differed by exactly the 1.33 deg cap.
+  A hand does not do that — it yaws. There is also a hard 35 deg pitch clamp
+  on the planned view, because the camera frame is built by locking roll to
+  world up and that construction degenerates as the axis approaches
+  vertical.
 
 `bs_synth` now takes `--speed` (m/s) and derives the frame count from the
 measured path length, `--pan` (deg/s) binds the per-frame view slew, and

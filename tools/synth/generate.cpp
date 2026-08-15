@@ -126,7 +126,7 @@ bool GenerateSession(const GenerateOptions& o) {
   };
   auto capture_shape = [&](int n) {
     return o.two_room
-               ? WalkthroughTrajectory(n, 1.5, o.seed ^ 0x7777u, turn_cap)
+               ? CaptureTrajectory(n, 1.5, o.seed ^ 0x7777u, turn_cap)
                : OrbitTrajectory(n, 1.6, 2.2, 1.5, o.seed ^ 0x7777u,
                                  o.sweep_deg, turn_cap);
   };

@@ -140,15 +140,30 @@ Scene MakeRoomScene(uint32_t seed, bool blank_wall) {
   return scene;
 }
 
+const TwoRoomLayout& TwoRoomLayoutSpec() {
+  static const TwoRoomLayout layout = [] {
+    TwoRoomLayout l;
+    l.furniture = {
+        // room A: a sideboard against the back wall and a table mid-floor.
+        {{-1.4, 0.0, -3.2}, 1.6, 0.9, 0.5, {0.25f, 0.35f, 0.55f}, 0.80f, 77},
+        {{0.6, 0.0, 0.8}, 1.2, 0.75, 0.8, {0.45f, 0.58f, 0.70f}, 0.85f, 91},
+        // room B: a tall cabinet and a low chest.
+        {{4.6, 0.0, -3.0}, 1.4, 1.1, 0.6, {0.52f, 0.42f, 0.34f}, 0.82f, 101},
+        {{6.4, 0.0, 1.4}, 1.0, 0.55, 1.0, {0.34f, 0.46f, 0.40f}, 0.78f, 111},
+    };
+    return l;
+  }();
+  return layout;
+}
+
 Scene MakeTwoRoomScene(uint32_t seed, bool blank_wall) {
+  const TwoRoomLayout& L = TwoRoomLayoutSpec();
   Scene scene;
-  const double H = 2.5;
-  const double z0 = -4.0, z1 = 4.0, D = z1 - z0;
-  const double ax0 = -3.0, ax1 = 3.0;  // room A
-  const double bx0 = 3.0, bx1 = 9.0;   // room B (shares the wall at x = 3)
-  // 1.6 m cased opening, 2.1 m head height — the sort of gap between two
-  // living spaces, not a 1.1 m internal door.
-  const double door_half = 0.8, door_h = 2.1;
+  const double H = L.height;
+  const double z0 = L.a.z0, z1 = L.a.z1, D = z1 - z0;
+  const double ax0 = L.a.x0, ax1 = L.a.x1;  // room A
+  const double bx0 = L.b.x0, bx1 = L.b.x1;  // room B (shares the wall at x = 3)
+  const double door_half = L.door_half, door_h = L.door_height;
 
   auto add = [&](const Eigen::Vector3d& origin, const Eigen::Vector3d& eu,
                  const Eigen::Vector3d& ev, cv::Vec3f color, float tex,
@@ -193,23 +208,39 @@ Scene MakeTwoRoomScene(uint32_t seed, bool blank_wall) {
   add({bx1, 0, z0}, {0, 0, D}, {0, H, 0}, {0.58f, 0.74f, 0.80f}, 0.78f,
       seed ^ 25);
 
-  // --- dividing wall at x = 3, split around an open doorway ---
-  add({ax1, 0, z0}, {0, 0, -door_half - z0}, {0, H, 0}, {0.78f, 0.80f, 0.82f},
-      0.45f, seed ^ 31);
-  add({ax1, 0, door_half}, {0, 0, z1 - door_half}, {0, H, 0},
-      {0.78f, 0.80f, 0.82f}, 0.45f, seed ^ 32);
-  add({ax1, door_h, -door_half}, {0, 0, 2 * door_half}, {0, H - door_h, 0},
-      {0.76f, 0.78f, 0.80f}, 0.40f, seed ^ 33);
+  // --- dividing wall at x = 3: a wall with thickness, not a paper one ---
+  // A zero-thickness divider makes the doorway a hole with nothing inside
+  // it: no jamb to see from an angle, no soffit overhead, no depth return
+  // anywhere in the opening. Both rooms then agree about the wall and about
+  // nothing in between, which is exactly where a splat of a house shows its
+  // seam. 16 cm is a stud partition boarded on both sides.
+  const double face_a = L.face_a(), face_b = L.face_b(), t = L.wall_thickness;
+  const cv::Vec3f wall_col{0.78f, 0.80f, 0.82f};
+  for (int side = 0; side < 2; ++side) {
+    const double xf = side == 0 ? face_a : face_b;
+    const uint32_t s = seed ^ (side == 0 ? 31u : 34u);
+    add({xf, 0, z0}, {0, 0, -door_half - z0}, {0, H, 0}, wall_col, 0.45f, s);
+    add({xf, 0, door_half}, {0, 0, z1 - door_half}, {0, H, 0}, wall_col, 0.45f,
+        s ^ 1);
+    add({xf, door_h, -door_half}, {0, 0, 2 * door_half}, {0, H - door_h, 0},
+        wall_col * 0.97f, 0.40f, s ^ 2);
+  }
+  // The reveal: two jambs and the soffit. These surfaces exist only because
+  // the wall has depth, they are invisible face-on and fully visible from
+  // 30 deg off-axis, and they are what orbiting the opening is for.
+  const cv::Vec3f jamb_col{0.70f, 0.74f, 0.78f};
+  add({face_a, 0, -door_half}, {t, 0, 0}, {0, door_h, 0}, jamb_col, 0.72f,
+      seed ^ 41);
+  add({face_a, 0, door_half}, {t, 0, 0}, {0, door_h, 0}, jamb_col, 0.72f,
+      seed ^ 42);
+  add({face_a, door_h, -door_half}, {t, 0, 0}, {0, 0, 2 * door_half}, jamb_col,
+      0.60f, seed ^ 43);
 
   // --- furniture, so both rooms carry parallax-rich near geometry ---
-  add_box({-1.4, 0.0, -3.2}, 1.6, 0.9, 0.5, {0.25f, 0.35f, 0.55f}, 0.80f,
-          seed ^ 77);
-  add_box({0.6, 0.0, 0.8}, 1.2, 0.75, 0.8, {0.45f, 0.58f, 0.70f}, 0.85f,
-          seed ^ 91);
-  add_box({4.6, 0.0, -3.0}, 1.4, 1.1, 0.6, {0.52f, 0.42f, 0.34f}, 0.82f,
-          seed ^ 101);
-  add_box({6.4, 0.0, 1.4}, 1.0, 0.55, 1.0, {0.34f, 0.46f, 0.40f}, 0.78f,
-          seed ^ 111);
+  for (const FurnitureBox& box : L.furniture) {
+    add_box(box.origin, box.w, box.h, box.d, box.color, box.texture,
+            seed ^ box.seed_xor);
+  }
 
   return scene;
 }
@@ -261,19 +292,6 @@ cv::Mat MotionBlurKernel(double length_px, double angle_rad) {
   return k;
 }
 
-// Rotates `from` toward `to` by at most `max_deg`.
-Eigen::Vector3d SlewToward(const Eigen::Vector3d& from,
-                           const Eigen::Vector3d& to, double max_deg) {
-  const Eigen::Vector3d a = from.normalized();
-  const Eigen::Vector3d b = to.normalized();
-  const double angle = RadToDeg(std::acos(std::clamp(a.dot(b), -1.0, 1.0)));
-  if (angle <= max_deg || angle < 1e-9) return b;
-  const Eigen::Quaterniond full = Eigen::Quaterniond::FromTwoVectors(a, b);
-  const Eigen::Quaterniond step =
-      Eigen::Quaterniond::Identity().slerp(max_deg / angle, full);
-  return (step * a).normalized();
-}
-
 // Builds world-to-camera poses from positions and the direction the camera
 // WANTS to face, rate-limited so no single frame turns further than a hand
 // could. Trajectories express intent ("look at the centre of the room you
@@ -284,6 +302,13 @@ Eigen::Vector3d SlewToward(const Eigen::Vector3d& from,
 // fixed hand-held rate and twice the sequence's own average turn, so it
 // clips discontinuities without reshaping intended motion (and leaves short,
 // deliberately coarse fixtures alone).
+//
+// The limit is applied to yaw and pitch together, not to the direction as a
+// vector. Rotating a direction toward its target along the great circle is
+// the shortest path on the sphere, and for a turn of about 180 deg that path
+// goes over the pole: the camera obediently pitches down through the floor,
+// spins, and comes back up facing the other way, all within the declared
+// rotation rate. A hand does not do that — it yaws.
 std::vector<SE3> PosesFromLookDirections(
     const std::vector<Eigen::Vector3d>& positions,
     const std::vector<Eigen::Vector3d>& desired, double cap_deg) {
@@ -304,9 +329,25 @@ std::vector<SE3> PosesFromLookDirections(
   const double max_turn =
       cap_deg > 0.0 ? cap_deg : std::max(4.0, 2.0 * mean_turn);
 
-  Eigen::Vector3d forward = desired[0].normalized();
+  const Eigen::Vector3d first = desired[0].normalized();
+  double yaw = std::atan2(first.z(), first.x());
+  double pitch = std::asin(std::clamp(first.y(), -1.0, 1.0));
+  Eigen::Vector3d forward = first;
   for (size_t i = 0; i < n; ++i) {
-    forward = i == 0 ? forward : SlewToward(forward, desired[i], max_turn);
+    const Eigen::Vector3d want = desired[i].normalized();
+    double d_yaw = std::atan2(want.z(), want.x()) - yaw;
+    while (d_yaw > M_PI) d_yaw -= 2 * M_PI;
+    while (d_yaw < -M_PI) d_yaw += 2 * M_PI;
+    double d_pitch = std::asin(std::clamp(want.y(), -1.0, 1.0)) - pitch;
+    const double mag = RadToDeg(std::hypot(d_yaw, d_pitch));
+    if (mag > max_turn) {
+      d_yaw *= max_turn / mag;
+      d_pitch *= max_turn / mag;
+    }
+    yaw += d_yaw;
+    pitch += d_pitch;
+    forward = {std::cos(pitch) * std::cos(yaw), std::sin(pitch),
+               std::cos(pitch) * std::sin(yaw)};
     const Eigen::Vector3d world_up(0, 1, 0);
     // CV camera basis (+X right, +Y down, +Z forward), det(R) = +1.
     const Eigen::Vector3d right = forward.cross(world_up).normalized();
@@ -540,82 +581,594 @@ std::vector<SE3> ScoutTrajectory(int frame_count, double eye_height,
   return PosesFromLookDirections(positions, forwards, max_turn_deg);
 }
 
-std::vector<SE3> WalkthroughTrajectory(int frame_count, double eye_height,
-                                       uint32_t seed, double max_turn_deg) {
-  // Closed loop: sweep room A, through the doorway, around room B, back
-  // through the doorway, and home to the starting viewpoint. Ending where it
-  // began is the point — that revisit is what loop closure must recognize,
-  // and the drift accumulated around the loop is what it must absorb.
-  const std::vector<Eigen::Vector3d> waypoints = {
-      {0.0, 0, 2.4},    // start, room A
-      {-1.8, 0, 0.6},   // toward the blank left wall
-      {-1.6, 0, -2.6},  // A back-left corner
-      {1.6, 0, -2.6},   // A back-right corner
-      {2.2, 0, -0.2},   // onto the opening's axis, square to the wall
-      {3.8, 0, -0.2},   // straight through into room B
-      {5.2, 0, -2.6},   // B back-left
-      {7.8, 0, -2.4},   // B back-right
-      {7.8, 0, 2.4},    // B front-right
-      {5.0, 0, 2.2},    // B front-left
-      {3.8, 0, 0.2},    // back onto the axis
-      {2.2, 0, 0.2},    // straight back through
-      {0.0, 0, 2.4},    // home — same viewpoint as frame 0
+namespace {
+
+// --- capture planning ------------------------------------------------------
+//
+// The capture walk is not a route between waypoints, it is a plan: circle the
+// room, then orbit each large object in it, treating the doorway as one of
+// those objects. Waypoints typed by hand encode a plan for one furniture
+// arrangement and quietly walk through the sofa when the arrangement changes,
+// so the path is computed from the layout instead.
+
+constexpr double kPathStep = 0.025;       // dense path sampling, metres
+constexpr double kPlanWallClear = 0.55;   // how close the plan walks to a wall
+constexpr double kPlanObjClear = 0.35;    // ... and to furniture
+constexpr double kDesiredArcDeg = 200.0;  // orbit coverage worth closing in for
+constexpr double kMinRunDeg = 25.0;       // shorter arcs are not worth walking
+constexpr double kCornerRadius = 0.5;     // rounded circuit corners
+
+struct Rect {
+  double x0, x1, z0, z1;
+  bool Contains(const Eigen::Vector3d& p) const {
+    return p.x() > x0 && p.x() < x1 && p.z() > z0 && p.z() < z1;
+  }
+  double width() const { return x1 - x0; }
+  double depth() const { return z1 - z0; }
+};
+
+struct Floorplan {
+  std::vector<Rect> open;     // walkable floor
+  std::vector<Rect> blocked;  // furniture footprints, inflated
+
+  bool Walkable(const Eigen::Vector3d& p) const {
+    bool inside = false;
+    for (const Rect& r : open) {
+      if (r.Contains(p)) {
+        inside = true;
+        break;
+      }
+    }
+    if (!inside) return false;
+    for (const Rect& r : blocked) {
+      if (r.Contains(p)) return false;
+    }
+    return true;
+  }
+
+  bool WalkableLine(const Eigen::Vector3d& a, const Eigen::Vector3d& b) const {
+    const double len = (b - a).norm();
+    const int steps = std::max(2, static_cast<int>(len / kPathStep) + 1);
+    for (int i = 0; i <= steps; ++i) {
+      const double f = static_cast<double>(i) / steps;
+      if (!Walkable(a + f * (b - a))) return false;
+    }
+    return true;
+  }
+};
+
+Floorplan MakeFloorplan(const TwoRoomLayout& L, double wall_clear,
+                        double obj_clear) {
+  Floorplan plan;
+  plan.open.push_back({L.a.x0 + wall_clear, L.face_a() - wall_clear,
+                       L.a.z0 + wall_clear, L.a.z1 - wall_clear});
+  plan.open.push_back({L.face_b() + wall_clear, L.b.x1 - wall_clear,
+                       L.b.z0 + wall_clear, L.b.z1 - wall_clear});
+  // The opening, as floor rather than as a hole in a wall. It has to overlap
+  // both rooms' rectangles or there is no way across at all, and it is the
+  // one place the camera passes within half a metre of a solid on both sides.
+  const double slot = std::max(0.35, L.door_half - obj_clear);
+  plan.open.push_back({L.face_a() - wall_clear - 0.4,
+                       L.face_b() + wall_clear + 0.4, -slot, slot});
+  for (const FurnitureBox& box : L.furniture) {
+    plan.blocked.push_back({box.origin.x() - obj_clear,
+                            box.origin.x() + box.w + obj_clear,
+                            box.origin.z() - obj_clear,
+                            box.origin.z() + box.d + obj_clear});
+  }
+  return plan;
+}
+
+// The largest loop inside `room` that stays clear of the furniture: start at
+// the walls and pull each side in until the leg it defines is walkable along
+// its whole length. A sideboard standing 1.3 m off the back wall pushes that
+// leg 1.3 m into the room, which is exactly where a person walks.
+Rect CircuitRect(const Floorplan& plan, Rect r, double y) {
+  auto leg_clear = [&](const Eigen::Vector3d& a, const Eigen::Vector3d& b) {
+    return plan.WalkableLine(a, b);
+  };
+  constexpr double kStep = 0.05;
+  constexpr double kMinSpan = 1.2;
+  r = {r.x0 + 0.02, r.x1 - 0.02, r.z0 + 0.02, r.z1 - 0.02};
+  for (int iter = 0; iter < 200; ++iter) {
+    bool moved = false;
+    const Eigen::Vector3d c00(r.x0, y, r.z0), c10(r.x1, y, r.z0);
+    const Eigen::Vector3d c01(r.x0, y, r.z1), c11(r.x1, y, r.z1);
+    if (!leg_clear(c00, c10) && r.depth() > kMinSpan) {
+      r.z0 += kStep;
+      moved = true;
+    }
+    if (!leg_clear(c01, c11) && r.depth() > kMinSpan) {
+      r.z1 -= kStep;
+      moved = true;
+    }
+    if (!leg_clear(c00, c01) && r.width() > kMinSpan) {
+      r.x0 += kStep;
+      moved = true;
+    }
+    if (!leg_clear(c10, c11) && r.width() > kMinSpan) {
+      r.x1 -= kStep;
+      moved = true;
+    }
+    if (!moved) break;
+  }
+  return r;
+}
+
+struct AngleRun {
+  double a0, a1;  // radians, a1 > a0
+  double span() const { return a1 - a0; }
+};
+
+// Contiguous walkable arcs of the ring of radius `radius` about `centre`.
+// `side` restricts to one side of the centre in x (-1 / +1), which is how a
+// doorway is orbited: the wall splits its ring into one arc per room, and
+// each room's capture owns its own.
+std::vector<AngleRun> RingRuns(const Floorplan& plan,
+                               const Eigen::Vector3d& centre, double radius,
+                               int side) {
+  constexpr int kN = 720;
+  std::vector<char> ok(kN, 0);
+  for (int i = 0; i < kN; ++i) {
+    const double a = 2.0 * M_PI * i / kN;
+    const Eigen::Vector3d p(centre.x() + radius * std::cos(a), centre.y(),
+                            centre.z() + radius * std::sin(a));
+    if (side < 0 && p.x() >= centre.x()) continue;
+    if (side > 0 && p.x() <= centre.x()) continue;
+    ok[i] = plan.Walkable(p) ? 1 : 0;
+  }
+  std::vector<AngleRun> runs;
+  bool all = true;
+  for (int i = 0; i < kN; ++i) all = all && ok[i] != 0;
+  if (all) {
+    runs.push_back({0.0, 2.0 * M_PI});
+    return runs;
+  }
+  // Both ends of a run are pulled in by a hand's width. Untrimmed, a run
+  // ends exactly ON the boundary of the walkable set — half a centimetre
+  // from a wall — and every route out of it fails on its first sample, so
+  // the plan falls back to a straight line through the furniture.
+  const double trim = radius > 1e-6 ? 0.1 / radius : 0.0;
+  for (int i = 0; i < kN; ++i) {
+    if (!ok[i] || ok[(i + kN - 1) % kN]) continue;  // not a run start
+    int len = 0;
+    while (len < kN && ok[(i + len) % kN]) ++len;
+    const double a0 = 2.0 * M_PI * i / kN;
+    const AngleRun run{a0 + trim, a0 + 2.0 * M_PI * len / kN - trim};
+    if (run.span() > 0) runs.push_back(run);
+  }
+  return runs;
+}
+
+struct OrbitPlan {
+  double radius = 0;
+  std::vector<AngleRun> runs;
+  double coverage_deg = 0;
+};
+
+// Orbit distance is half the room's short dimension — far enough that the
+// object stays whole in frame with the room behind it for context. Where
+// that ring is unwalkable the plan closes in, but only as far as it has to.
+//
+// Coverage alone picks the wrong radius: a wide ring that clears a table on
+// two opposite sides scores 230 deg in two arcs and pays for it by crossing
+// the room between them, while a ring 1 m closer sweeps 250 deg in one
+// unbroken walk. Each break is charged kGapPenaltyDeg, so a second arc has
+// to be worth the trip back.
+OrbitPlan ChooseOrbit(const Floorplan& plan, const Eigen::Vector3d& centre,
+                      double want_radius, double min_radius, int side) {
+  constexpr double kGapPenaltyDeg = 60.0;
+  OrbitPlan best;
+  double best_score = -1e9;
+  for (double r = want_radius; r >= min_radius - 1e-9; r -= 0.1) {
+    OrbitPlan p;
+    p.radius = r;
+    for (const AngleRun& run : RingRuns(plan, centre, r, side)) {
+      if (RadToDeg(run.span()) < kMinRunDeg) continue;
+      p.runs.push_back(run);
+      p.coverage_deg += RadToDeg(run.span());
+    }
+    if (p.runs.empty()) continue;
+    const double score =
+        std::min(kDesiredArcDeg, p.coverage_deg) -
+        kGapPenaltyDeg * static_cast<double>(p.runs.size() - 1);
+    if (score > best_score + 1e-9) {  // strict: larger radii come first
+      best_score = score;
+      best = std::move(p);
+    }
+  }
+  return best;
+}
+
+// Blends two look targets AS SEEN FROM p: the direction rotates, the range
+// interpolates. Interpolating the two points instead sweeps a target across
+// the room, and on the way it passes through the camera — where it has no
+// direction at all, so the view spins on the spot. Measured, that produced a
+// 4.3 deg frame while walking a wall at 0.6 deg, pointing almost straight
+// down, in the middle of an otherwise unremarkable lap.
+Eigen::Vector3d BlendLook(const Eigen::Vector3d& p, const Eigen::Vector3d& la,
+                          const Eigen::Vector3d& lb, double f);
+
+// Appends samples every kPathStep along a straight run, turning the view
+// from one target to the other as it goes. The first point is dropped when
+// it continues an existing path, so joins do not duplicate a sample.
+void EmitLine(std::vector<Eigen::Vector3d>& pos,
+              std::vector<Eigen::Vector3d>& look, const Eigen::Vector3d& a,
+              const Eigen::Vector3d& b, const Eigen::Vector3d& la,
+              const Eigen::Vector3d& lb) {
+  const int steps =
+      std::max(1, static_cast<int>((b - a).norm() / kPathStep + 0.5));
+  for (int i = pos.empty() ? 0 : 1; i <= steps; ++i) {
+    const double f = static_cast<double>(i) / steps;
+    const Eigen::Vector3d p = a + f * (b - a);
+    pos.push_back(p);
+    look.push_back(BlendLook(p, la, lb, f));
+  }
+}
+
+Eigen::Vector3d BlendLook(const Eigen::Vector3d& p, const Eigen::Vector3d& la,
+                          const Eigen::Vector3d& lb, double f) {
+  // Yaw and range blend; height comes from the targets themselves. Rotating
+  // the full 3D direction instead carries the near target's steep downward
+  // angle out to the far target's range — a metre below the floor — and the
+  // camera spends the walk staring at its own feet.
+  const Eigen::Vector2d ha(la.x() - p.x(), la.z() - p.z());
+  const Eigen::Vector2d hb(lb.x() - p.x(), lb.z() - p.z());
+  const double ra = ha.norm(), rb = hb.norm();
+  if (ra < 1e-6 || rb < 1e-6) return la + f * (lb - la);
+  double turn = std::atan2(hb.y(), hb.x()) - std::atan2(ha.y(), ha.x());
+  while (turn > M_PI) turn -= 2 * M_PI;
+  while (turn < -M_PI) turn += 2 * M_PI;
+  const double angle = std::atan2(ha.y(), ha.x()) + f * turn;
+  const double range = ra + f * (rb - ra);
+  return {p.x() + range * std::cos(angle), la.y() + f * (lb.y() - la.y()),
+          p.z() + range * std::sin(angle)};
+}
+
+}  // namespace
+
+bool TwoRoomWalkable(const Eigen::Vector3d& p, double wall_clearance,
+                     double object_clearance) {
+  return MakeFloorplan(TwoRoomLayoutSpec(), wall_clearance, object_clearance)
+      .Walkable(p);
+}
+
+std::vector<SE3> CaptureTrajectory(int frame_count, double eye_height,
+                                   uint32_t seed, double max_turn_deg) {
+  const TwoRoomLayout& L = TwoRoomLayoutSpec();
+  const Floorplan plan = MakeFloorplan(L, kPlanWallClear, kPlanObjClear);
+  const double plan_y = eye_height;
+  const double look_y = eye_height * 0.72;
+
+  // Places to step through when the direct line between two moves is
+  // blocked: every walkable point on a 30 cm grid. One hop is enough to get
+  // around a table in a room — a plan that needs two has already gone wrong,
+  // and the test for walking through walls is what says so.
+  std::vector<Eigen::Vector3d> vias;
+  for (const Rect& r : plan.open) {
+    for (double x = r.x0 + 0.15; x < r.x1; x += 0.3) {
+      for (double z = r.z0 + 0.15; z < r.z1; z += 0.3) {
+        const Eigen::Vector3d v(x, plan_y, z);
+        if (plan.Walkable(v)) vias.push_back(v);
+      }
+    }
+  }
+
+  std::vector<Eigen::Vector3d> pos, look;
+  // Moves to `to` from wherever the path is, going around anything in the
+  // way and keeping the eye on whatever it was looking at until it arrives.
+  auto route_to = [&](const Eigen::Vector3d& to, const Eigen::Vector3d& look_to,
+                      const std::vector<Eigen::Vector3d>& extra) {
+    const Eigen::Vector3d from = pos.back();
+    const Eigen::Vector3d look_from = look.back();
+    if (plan.WalkableLine(from, to)) {
+      EmitLine(pos, look, from, to, look_from, look_to);
+      return;
+    }
+    const Eigen::Vector3d* best = nullptr;
+    double best_len = 0;
+    auto consider = [&](const Eigen::Vector3d& v) {
+      const double len = (v - from).norm() + (to - v).norm();
+      if (best && len >= best_len) return;
+      if (!plan.WalkableLine(from, v) || !plan.WalkableLine(v, to)) return;
+      best = &v;
+      best_len = len;
+    };
+    for (const Eigen::Vector3d& v : extra) consider(v);
+    for (const Eigen::Vector3d& v : vias) consider(v);
+    if (best) {
+      // Halfway between two look targets can land on top of the camera —
+      // between a table and the doorway it lands squarely in the walking
+      // lane — and a look target at zero range has no direction at all: the
+      // view spins, and the frame that spins is not recoverable. When the
+      // blend falls near the path, look where you are going instead.
+      Eigen::Vector3d mid = 0.5 * (look_from + look_to);
+      const Eigen::Vector3d half = 0.5 * (from + to);
+      if ((mid - half).norm() < 1.2) {
+        Eigen::Vector3d ahead = to - from;
+        ahead.y() = 0;
+        if (ahead.norm() < 1e-6) ahead = Eigen::Vector3d(1, 0, 0);
+        mid = half + 2.0 * ahead.normalized();
+        mid.y() = look_y;
+      }
+      EmitLine(pos, look, from, *best, look_from, mid);
+      EmitLine(pos, look, *best, to, mid, look_to);
+      return;
+    }
+    EmitLine(pos, look, from, to, look_from, look_to);  // tested against
   };
 
-  // Cumulative arc length, so frames are spaced by distance travelled rather
-  // than by waypoint index (constant walking speed).
-  std::vector<double> arc(waypoints.size(), 0.0);
-  for (size_t i = 1; i < waypoints.size(); ++i) {
-    arc[i] = arc[i - 1] + (waypoints[i] - waypoints[i - 1]).norm();
+  auto ring_point = [](const Eigen::Vector3d& c, double r, double a) {
+    return Eigen::Vector3d(c.x() + r * std::cos(a), c.y(),
+                           c.z() + r * std::sin(a));
+  };
+
+  // One object, orbited: sweep every walkable arc of its ring in one
+  // rotational direction, stepping around the blocked stretches without ever
+  // taking your eyes off it.
+  auto orbit = [&](const Eigen::Vector3d& centre, const Eigen::Vector3d& target,
+                   double want_radius, int side) {
+    const OrbitPlan op =
+        ChooseOrbit(plan, {centre.x(), plan_y, centre.z()}, want_radius,
+                    std::min(0.9, want_radius), side);
+    if (op.runs.empty()) return;
+    const Eigen::Vector3d hub(centre.x(), plan_y, centre.z());
+
+    // Enter at whichever run starts nearest, then keep going the same way
+    // round: reversing mid-orbit repeats views instead of adding them.
+    size_t first = 0;
+    if (!pos.empty()) {
+      double best = std::numeric_limits<double>::max();
+      for (size_t i = 0; i < op.runs.size(); ++i) {
+        const double d =
+            (ring_point(hub, op.radius, op.runs[i].a0) - pos.back()).norm();
+        if (d < best) {
+          best = d;
+          first = i;
+        }
+      }
+    }
+    for (size_t k = 0; k < op.runs.size(); ++k) {
+      const AngleRun& run = op.runs[(first + k) % op.runs.size()];
+      const Eigen::Vector3d entry = ring_point(hub, op.radius, run.a0);
+      if (pos.empty()) {
+        pos.push_back(entry);
+        look.push_back(target);
+      } else {
+        const double gap_a = run.a0 - 0.5 * run.span();
+        route_to(entry, target,
+                 {ring_point(hub, op.radius * 0.6, gap_a),
+                  ring_point(hub, op.radius * 1.45, gap_a)});
+      }
+      const int steps = std::max(
+          2, static_cast<int>(run.span() * op.radius / kPathStep + 0.5));
+      for (int i = 1; i <= steps; ++i) {
+        const double a = run.a0 + run.span() * i / steps;
+        pos.push_back(ring_point(hub, op.radius, a));
+        look.push_back(target);
+      }
+    }
+  };
+
+  Eigen::Vector3d home, home_look;
+  for (int room = 0; room < 2; ++room) {
+    const RoomBounds& R = room == 0 ? L.a : L.b;
+    const Rect bounds =
+        room == 0 ? Rect{R.x0 + kPlanWallClear, L.face_a() - kPlanWallClear,
+                         R.z0 + kPlanWallClear, R.z1 - kPlanWallClear}
+                  : Rect{L.face_b() + kPlanWallClear, R.x1 - kPlanWallClear,
+                         R.z0 + kPlanWallClear, R.z1 - kPlanWallClear};
+    const Rect circuit = CircuitRect(plan, bounds, plan_y);
+    const Eigen::Vector3d hub(0.5 * (circuit.x0 + circuit.x1), plan_y,
+                              0.5 * (circuit.z0 + circuit.z1));
+
+    // --- 1. circle the room ---
+    // Corners in order, walked with the near wall on the outside and the
+    // camera facing it: the lap that establishes the room's shell, before
+    // any of its contents.
+    const std::vector<Eigen::Vector3d> corners = {
+        {circuit.x0, plan_y, circuit.z1},
+        {circuit.x0, plan_y, circuit.z0},
+        {circuit.x1, plan_y, circuit.z0},
+        {circuit.x1, plan_y, circuit.z1},
+    };
+    const double cr =
+        std::min({kCornerRadius, circuit.width() / 3, circuit.depth() / 3});
+    std::vector<Eigen::Vector3d> lap;
+    auto lap_line = [&](const Eigen::Vector3d& a, const Eigen::Vector3d& b) {
+      const int steps =
+          std::max(1, static_cast<int>((b - a).norm() / kPathStep + 0.5));
+      for (int i = lap.empty() ? 0 : 1; i <= steps; ++i) {
+        lap.push_back(a + (static_cast<double>(i) / steps) * (b - a));
+      }
+    };
+    for (int i = 0; i <= 4; ++i) {
+      const Eigen::Vector3d& prev = corners[(i + 3) % 4];
+      const Eigen::Vector3d& here = corners[i % 4];
+      const Eigen::Vector3d& next = corners[(i + 1) % 4];
+      const Eigen::Vector3d in = (here - prev).normalized();
+      const Eigen::Vector3d out = (next - here).normalized();
+      const Eigen::Vector3d arc_start = here - cr * in;
+      const Eigen::Vector3d arc_end = here + cr * out;
+      const Eigen::Vector3d arc_c = here + cr * (out - in);
+      if (i > 0) lap_line(lap.back(), arc_start);
+      if (i == 4) break;  // the lap closes where it opened
+      const double a0 = std::atan2(arc_start.z() - arc_c.z(),
+                                   arc_start.x() - arc_c.x());
+      double a1 = std::atan2(arc_end.z() - arc_c.z(), arc_end.x() - arc_c.x());
+      while (a1 - a0 > M_PI) a1 -= 2 * M_PI;
+      while (a1 - a0 < -M_PI) a1 += 2 * M_PI;
+      const int steps =
+          std::max(2, static_cast<int>(std::abs(a1 - a0) * cr / kPathStep));
+      for (int k = lap.empty() ? 0 : 1; k <= steps; ++k) {
+        const double a = a0 + (a1 - a0) * k / steps;
+        lap.emplace_back(arc_c.x() + cr * std::cos(a), plan_y,
+                         arc_c.z() + cr * std::sin(a));
+      }
+    }
+    // Look outward at the wall being passed, with a slow yaw sweep over it:
+    // straight-out alone leaves the ceiling and the corners unseen, and a
+    // person scanning a room does not hold the phone rigid.
+    std::vector<Eigen::Vector3d> lap_look;
+    lap_look.reserve(lap.size());
+    for (size_t i = 0; i < lap.size(); ++i) {
+      Eigen::Vector3d out = lap[i] - hub;
+      out.y() = 0;
+      if (out.norm() < 1e-6) out = Eigen::Vector3d(1, 0, 0);
+      out.normalize();
+      const double yaw =
+          DegToRad(24.0) *
+          std::sin(2.0 * M_PI * static_cast<double>(i) * kPathStep / 3.5);
+      lap_look.emplace_back(
+          lap[i].x() + 2.4 * (out.x() * std::cos(yaw) - out.z() * std::sin(yaw)),
+          look_y,
+          lap[i].z() + 2.4 * (out.x() * std::sin(yaw) + out.z() * std::cos(yaw)));
+    }
+    if (pos.empty()) {
+      home = lap.front();
+      home_look = lap_look.front();
+    } else {
+      route_to(lap.front(), lap_look.front(), {});
+    }
+    for (size_t i = pos.empty() ? 0 : 1; i < lap.size(); ++i) {
+      pos.push_back(lap[i]);
+      look.push_back(lap_look[i]);
+    }
+
+    // --- 2. orbit each object in the room ---
+    // Half the room's short side, which is the user-facing rule too: stand
+    // back about half the room to go round something. Nearest first, from
+    // wherever the lap left off — the order is free, and taking it in
+    // declaration order walks the length of the room between objects.
+    const double want = 0.5 * R.scale();
+    std::vector<const FurnitureBox*> todo;
+    for (const FurnitureBox& box : L.furniture) {
+      if ((box.centre().x() < L.door_x) == (room == 0)) todo.push_back(&box);
+    }
+    while (!todo.empty()) {
+      auto next = todo.begin();
+      double best = std::numeric_limits<double>::max();
+      for (auto it = todo.begin(); it != todo.end(); ++it) {
+        Eigen::Vector3d d = (*it)->centre() - pos.back();
+        d.y() = 0;
+        if (d.norm() < best) {
+          best = d.norm();
+          next = it;
+        }
+      }
+      const Eigen::Vector3d c = (*next)->centre();
+      todo.erase(next);
+      orbit(c, {c.x(), std::max(look_y * 0.8, c.y()), c.z()}, want, 0);
+    }
+
+    // --- 3. the doorway is an object too ---
+    // Orbited from this room's side, which is all the wall leaves of its
+    // ring. An opening is where two rooms have to agree about the same
+    // surface, so it earns a full orbit from each of them rather than the
+    // glance you get walking through.
+    orbit(L.door_centre(), L.door_centre(), want, room == 0 ? -1 : 1);
+
+    // --- 4. through the opening (and, from room B, home) ---
+    const double dir = room == 0 ? 1.0 : -1.0;
+    const double lane = room == 0 ? -0.25 : 0.25;  // not a retrace
+    const Eigen::Vector3d near_side(L.door_x - dir * 0.95, plan_y, lane);
+    const Eigen::Vector3d far_side(L.door_x + dir * 0.95, plan_y, lane);
+    const Eigen::Vector3d through(L.door_x + dir * 1.6, look_y, 0.0);
+    route_to(near_side, through, {});
+    const RoomBounds& next = room == 0 ? L.b : L.a;
+    EmitLine(pos, look, near_side, far_side, through, next.centre(look_y));
+    // Home, looking the way the first frame looked. A revisit that matches
+    // in position but not in view direction is one loop closure has to work
+    // to recognize; matching both is the whole point of ending where you
+    // started. It also keeps the last target off the room centre, which is
+    // where the camera is standing.
+    if (room == 1) route_to(home, home_look, {});
+  }
+
+  // Resample the plan at constant speed. Every trajectory here covers a
+  // fixed physical path, so the frame count IS the walking speed.
+  if (pos.size() < 2) return {};
+  std::vector<double> arc(pos.size(), 0.0);
+  for (size_t i = 1; i < pos.size(); ++i) {
+    arc[i] = arc[i - 1] + (pos[i] - pos[i - 1]).norm();
   }
   const double total = arc.back();
+
+  // Smooth the look target over half a metre of walking. Where one move ends
+  // and the next begins the target jumps — from a wall to a table, from a
+  // table to the doorway — and a jump is a turn no wrist makes. The rate
+  // limiter downstream would clip it, but clipping leaves the camera lagging
+  // its target for a second afterwards; smoothing turns early instead.
+  // Averaged as bearing, range and height about each sample's own position
+  // — never as points. Two targets half a metre apart on the path can lie on
+  // opposite sides of the camera, and the midpoint of those two points is
+  // the camera itself.
+  const int kSmooth = static_cast<int>(0.25 / kPathStep);
+  std::vector<Eigen::Vector3d> look_s(look.size());
+  for (size_t i = 0; i < look.size(); ++i) {
+    double cx = 0, cz = 0, range = 0, height = 0;
+    int n = 0;
+    for (int d = -kSmooth; d <= kSmooth; ++d) {
+      const long j = static_cast<long>(i) + d;
+      if (j < 0 || j >= static_cast<long>(look.size())) continue;
+      const double dx = look[static_cast<size_t>(j)].x() - pos[i].x();
+      const double dz = look[static_cast<size_t>(j)].z() - pos[i].z();
+      const double r = std::hypot(dx, dz);
+      if (r < 1e-6) continue;
+      cx += dx / r;
+      cz += dz / r;
+      range += r;
+      height += look[static_cast<size_t>(j)].y();
+      ++n;
+    }
+    if (n == 0 || cx * cx + cz * cz < 1e-9) {
+      look_s[i] = look[i];
+      continue;
+    }
+    const double a = std::atan2(cz, cx);
+    const double r = range / n;
+    look_s[i] = {pos[i].x() + r * std::cos(a), height / n,
+                 pos[i].z() + r * std::sin(a)};
+  }
 
   std::mt19937 rng(seed);
   std::normal_distribution<double> gauss(0.0, 1.0);
   double jitter_y = 0.0;
 
-  auto sample = [&](double s) {  // position at normalized arc length
-    const double target = std::clamp(s, 0.0, 1.0) * total;
-    size_t seg = 1;
-    while (seg + 1 < arc.size() && arc[seg] < target) ++seg;
-    const double span = std::max(1e-9, arc[seg] - arc[seg - 1]);
-    const double f = std::clamp((target - arc[seg - 1]) / span, 0.0, 1.0);
-    return waypoints[seg - 1] + f * (waypoints[seg] - waypoints[seg - 1]);
-  };
-
   std::vector<Eigen::Vector3d> positions, forwards;
   positions.reserve(frame_count);
   forwards.reserve(frame_count);
-  Eigen::Vector3d last_ahead(0, 0, -1);
+  size_t seg = 1;
   for (int i = 0; i < frame_count; ++i) {
     const double s = static_cast<double>(i) / std::max(1, frame_count - 1);
+    const double want = std::clamp(s, 0.0, 1.0) * total;
+    while (seg + 1 < arc.size() && arc[seg] < want) ++seg;
+    const double span = std::max(1e-9, arc[seg] - arc[seg - 1]);
+    const double f = std::clamp((want - arc[seg - 1]) / span, 0.0, 1.0);
+    Eigen::Vector3d p = pos[seg - 1] + f * (pos[seg] - pos[seg - 1]);
+    const Eigen::Vector3d t = look_s[seg - 1] + f * (look_s[seg] - look_s[seg - 1]);
+
     jitter_y = 0.97 * jitter_y + 0.004 * gauss(rng);
-
-    Eigen::Vector3d position = sample(s);
-    position.y() = eye_height + jitter_y;
-
-    // Heading follows travel; a slow yaw sweep covers the walls to either
-    // side the way a person turns their phone while walking a space. At the
-    // very end the forward difference vanishes, so travel direction carries
-    // over instead of snapping to a fixed axis — that fallback used to spin
-    // the last frame of the loop by 134 deg.
-    Eigen::Vector3d ahead = sample(std::min(1.0, s + 0.02)) - sample(s);
-    ahead.y() = 0;
-    if (ahead.norm() < 1e-6) {
-      ahead = last_ahead;
-    } else {
-      ahead.normalize();
-      last_ahead = ahead;
+    p.y() = eye_height + jitter_y;
+    Eigen::Vector3d forward = t - p;
+    // A look target closer than this carries almost no direction: a 3 cm
+    // step past it swings the view through 90 deg, which no rate limiter
+    // downstream can make physical because the intent itself is the flip.
+    // Hold the previous heading through the near pass instead.
+    if (Eigen::Vector2d(forward.x(), forward.z()).norm() < 0.35) {
+      forward = forwards.empty() ? Eigen::Vector3d(1, 0, 0) : forwards.back();
     }
-    const double yaw = DegToRad(38.0) * std::sin(2.0 * M_PI * 2.5 * s);
-    const Eigen::Vector3d dir(
-        ahead.x() * std::cos(yaw) - ahead.z() * std::sin(yaw), 0.0,
-        ahead.x() * std::sin(yaw) + ahead.z() * std::cos(yaw));
-    const Eigen::Vector3d target =
-        position + 3.0 * dir - Eigen::Vector3d(0, eye_height * 0.22, 0);
-
-    positions.push_back(position);
-    forwards.push_back((target - position).normalized());
+    // Never pitch further than a person walking would. Past this the camera
+    // frame — which is built by locking roll to world up — turns ill
+    // conditioned, and a 1.3 deg pan comes out as an 11 deg roll: the
+    // trajectory obeys its own rotation limit and the poses do not.
+    const double horiz = std::hypot(forward.x(), forward.z());
+    const double max_rise = horiz * std::tan(DegToRad(35.0));
+    if (horiz > 1e-9 && std::abs(forward.y()) > max_rise) {
+      forward.y() = std::copysign(max_rise, forward.y());
+    }
+    positions.push_back(p);
+    forwards.push_back(forward.normalized());
   }
   return PosesFromLookDirections(positions, forwards, max_turn_deg);
 }
@@ -651,6 +1204,21 @@ TrajectoryMotion MeasureMotion(const std::vector<SE3>& poses) {
   m.p95_step_m = percentile(steps, 0.95);
   m.p95_turn_deg = percentile(turns, 0.95);
   return m;
+}
+
+int GatedFrameCount(const std::vector<SE3>& poses, double min_step_m,
+                    double min_turn_deg) {
+  if (poses.empty()) return 0;
+  int stored = 1;
+  SE3 last = poses.front();
+  for (size_t i = 1; i < poses.size(); ++i) {
+    const double step = (poses[i].CameraCenter() - last.CameraCenter()).norm();
+    const double turn = RadToDeg(poses[i].q.angularDistance(last.q));
+    if (step < min_step_m && turn < min_turn_deg) continue;
+    ++stored;
+    last = poses[i];
+  }
+  return stored;
 }
 
 }  // namespace bs::synth

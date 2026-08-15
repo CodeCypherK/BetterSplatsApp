@@ -43,7 +43,9 @@ void PrintUsage() {
                "                    it in session.json, as the app does when the\n"
                "                    user points the phone at the floor first\n"
                "  --two-room        two rooms joined by a doorway, walked as a\n"
-               "                    closed loop that revisits its start\n"
+               "                    capture: circle each room, orbit every big\n"
+               "                    object in it and the doorway from both\n"
+               "                    sides, ending where it started\n"
                "  --scout N         prepend an N-frame scout circuit (localization\n"
                "                    scaffold only; excluded from the final solve).\n"
                "                    With --speed, N only switches it on.\n");

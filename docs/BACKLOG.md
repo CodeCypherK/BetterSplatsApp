@@ -102,6 +102,24 @@ non-expert to that data on the first try.
 
 ## Next
 
+- [ ] **The store gate is too dense for the capture flow: ~900 frames per
+      room where the budget is 200-500.** Now that the capture walk is
+      circle-then-orbit (ARCHITECTURE.md), a 6×8 m room is 62 m of walking,
+      and at the shipping `store_min_translation_m = 0.05` that stores
+      **944 frames** — about double what a project is sized for, and a house
+      of 10 rooms would be 9,000 images. At a 10 cm / 8 deg gate the same
+      room stores **473**, mid-band. 10 cm at 2.5 m median depth is a 2.3 deg
+      baseline between neighbouring stored views, which is still dense for a
+      final solve.
+      Before changing it, measure what it costs: `bs_replay --decimate 2` on
+      a capture-flow session, comparing final-solve registration %, point
+      count and reprojection RMSE against full density. If those hold, change
+      the gate; consider making it depth-scaled — `max(0.05, 0.04 * median
+      depth)` — the way `kf_translation_depth_frac` already is, so a tight
+      orbit at 1.5 m keeps storing at 6 cm while a room-scale lap relaxes.
+      DO NOT shorten the capture walk to fit the gate: the walk is the thing
+      that makes objects reconstruct as solids rather than cards.
+
 - [ ] **Do the seams show between separately-solved sessions?** A house is
       ~10 captures / 2,000-5,000 images, which **cannot be one on-device
       global solve** — resident features measure 1.24 MB/frame, so 5,000
@@ -234,6 +252,48 @@ These cannot be settled on synthetic data. Each names what to look for.
 ## Log
 
 Newest first. One line per session: what changed, what it measured.
+
+- **The capture walk is now circle-then-orbit, and the doorway is a real
+  wall.** Two changes that only make sense together. The test scene's divider
+  was a zero-thickness plane with a hole in it, so the "doorway" had no
+  jambs and no soffit — nothing inside the opening to see from an angle,
+  nothing for LiDAR to return, and no reason to orbit it. It is now a 16 cm
+  partition with two faces, two jambs and a soffit. And `CaptureTrajectory`
+  (was `WalkthroughTrajectory`) replaces a hand-typed 33 m loop with a plan
+  computed from the layout: circle each room at the largest inset the
+  furniture allows, then orbit every large object in it, then orbit the
+  doorway from that room's side, then cross. Orbit radius is half the room's
+  short dimension, cut back to what is walkable. Hand-typed waypoints encode
+  one furniture arrangement and walk through the sofa when it moves; this
+  re-plans, and `TwoRoomWalkable()` lets tests assert no pose ends up inside
+  a solid.
+
+  | | value |
+  |---|---|
+  | path per room | 62 m / 57 m (was 33 m for both) |
+  | orbit radius asked / achieved | 3.0 m / 1.6–2.6 m |
+  | bearings per object | 4–11 of 12 sectors; doorway 11 |
+  | worst single frame | 1.33 deg = exactly the declared pan cap |
+  | poses inside a solid | 0 of 3645 |
+
+  Three harness defects fell out of it, all of the "obeys its own limit and
+  is still impossible" family (detail in ARCHITECTURE.md): look targets
+  blended as POINTS sweep through the camera; the same for the smoothing
+  window; and the view rate limiter slewed along the great circle, so a
+  ~180 deg pan went **over the pole** — 11 deg/frame of pose while every
+  consecutive pair of look directions differed by exactly the 1.33 deg cap.
+  Now blended as bearing/range/height and limited in yaw and pitch, with a
+  35 deg pitch clamp because the roll-locked camera frame degenerates near
+  vertical.
+
+  Two consequences recorded above as work items: the **store gate is now too
+  dense** (944 frames for one room against a 200-500 budget), and the
+  **CI split fixture is under-sampled** — 110 frames over a 121 m path is
+  0.94 m between images, where it used to be 0.30 m. Measured: 180 frames
+  fragments into six components, S7b recovers three of them on as few as
+  27/61 alignment inliers, and the result is 7.0 m ATE. That is the sparse
+  input failure mode, not a geometry regression, but the fixture has to be
+  re-sampled or it cannot detect a real one.
 
 - **End of capture is no longer a dead end.** It said "Saved:
   session_20260814-142230_a3f2c1" with a Done button — a filename and an

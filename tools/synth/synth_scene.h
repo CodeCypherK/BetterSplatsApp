@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <cstdint>
 #include <vector>
 
@@ -37,9 +38,60 @@ struct RayHit {
 // floor/ceiling, and two interior boxes.
 Scene MakeRoomScene(uint32_t seed, bool blank_wall = true);
 
-// Two rooms sharing a dividing wall with an open doorway: room A spans
-// x in [-3, 3], room B x in [3, 9], both z in [-4, 4]. Exercises multi-room
-// region clustering and the drift that accumulates walking between spaces.
+struct RoomBounds {
+  double x0, x1, z0, z1;
+  double width() const { return x1 - x0; }
+  double depth() const { return z1 - z0; }
+  // The room's scale for capture planning: the SHORT side. Orbits are flown
+  // at half of this, and half the long side of a corridor puts the camera
+  // through a wall.
+  double scale() const { return std::min(width(), depth()); }
+  Eigen::Vector3d centre(double y) const {
+    return {0.5 * (x0 + x1), y, 0.5 * (z0 + z1)};
+  }
+};
+
+// One piece of furniture: a box standing on the floor. Large enough to be
+// worth walking around, which makes it an orbit target for the capture plan.
+struct FurnitureBox {
+  Eigen::Vector3d origin;  // minimum corner, y = floor
+  double w, h, d;
+  cv::Vec3f color;
+  float texture;
+  uint32_t seed_xor;
+  Eigen::Vector3d centre() const {
+    return {origin.x() + w / 2, origin.y() + h / 2, origin.z() + d / 2};
+  }
+};
+
+// The two-room layout in one place. The scene builder walls it in and the
+// trajectories walk it; keeping two copies of these numbers is how a capture
+// path ends up strolling through a divider that moved 20 cm.
+struct TwoRoomLayout {
+  double height = 2.5;
+  RoomBounds a{-3.0, 3.0, -4.0, 4.0};  // room A
+  RoomBounds b{3.0, 9.0, -4.0, 4.0};   // room B, sharing the wall at x = 3
+  double door_x = 3.0;                 // centre plane of the divider
+  double door_half = 0.8;              // 1.6 m cased opening
+  double door_height = 2.1;
+  // The divider is a real wall with two faces, so the opening has jambs and
+  // a soffit — surfaces that only exist because the wall has depth, and the
+  // reason orbiting a doorway returns anything at all.
+  double wall_thickness = 0.16;
+  std::vector<FurnitureBox> furniture;  // room A first, then room B
+
+  double face_a() const { return door_x - wall_thickness / 2; }
+  double face_b() const { return door_x + wall_thickness / 2; }
+  // Middle of the opening, at the height a person's eye crosses it.
+  Eigen::Vector3d door_centre() const {
+    return {door_x, door_height * 0.5, 0.0};
+  }
+};
+const TwoRoomLayout& TwoRoomLayoutSpec();
+
+// Two rooms sharing a dividing wall with an open doorway, per
+// TwoRoomLayoutSpec(). Exercises multi-room region clustering and the drift
+// that accumulates walking between spaces.
 Scene MakeTwoRoomScene(uint32_t seed, bool blank_wall = true);
 
 // Nearest intersection of the pixel ray with the scene. `dir_world` must be
@@ -94,13 +146,22 @@ std::vector<SE3> OrbitTrajectory(int frame_count, double radius_x, double radius
                                  double sweep_deg = 140.0,
                                  double max_turn_deg = 0.0);
 
-// Walks a closed loop through both rooms of MakeTwoRoomScene and returns to
-// the starting viewpoint, so the sequence ends with a genuine revisit for
-// loop closure to find (and for drift to be measured against). The camera
-// looks along travel with a slow yaw sweep, as a person scanning would.
-std::vector<SE3> WalkthroughTrajectory(int frame_count, double eye_height,
-                                       uint32_t seed,
-                                       double max_turn_deg = 0.0);
+// The capture walk through MakeTwoRoomScene: for each room, circle the room
+// once, then orbit every large object in it — and the doorway is an object
+// like any other, orbited from both rooms, because an opening is where two
+// spaces have to agree and it is the one place a splat shows the seam.
+//
+// Orbits are flown at half the room's short dimension, which is the distance
+// that keeps an object's whole surface in frame with the room behind it for
+// context. Where a wall or another object is in the way the ring is cut to
+// the arcs that are actually walkable and the camera steps around the gap
+// still looking at the object, which is what a person does.
+//
+// The walk closes: it ends at the viewpoint it started from, so the sequence
+// contains a genuine revisit for loop closure to find and for drift to be
+// measured against.
+std::vector<SE3> CaptureTrajectory(int frame_count, double eye_height,
+                                   uint32_t seed, double max_turn_deg = 0.0);
 
 // The optional opening circuit: one fast lap of both rooms hugging the
 // walls with the camera aimed INWARD across each space. Deliberately unlike
@@ -130,5 +191,25 @@ struct TrajectoryMotion {
   double max_turn_deg = 0;
 };
 TrajectoryMotion MeasureMotion(const std::vector<SE3>& poses);
+
+// How many frames the app's storage gate would keep along this path.
+//
+// The number that decides whether a capture plan is usable is not its length
+// in metres but how many stored images it asks for: the target is 200-500 per
+// room, above which a house does not fit in one project and below which the
+// final solve runs out of baseline. A plan is only "done" once this has been
+// counted against the same thresholds the engine ships with
+// (EngineConfig::store_min_translation_m / store_min_rotation_deg).
+int GatedFrameCount(const std::vector<SE3>& poses, double min_step_m,
+                    double min_turn_deg);
+
+// True when the camera centre is inside walkable floor: within a room, clear
+// of the walls, out of the furniture, and — at the divider — inside the
+// doorway rather than in the wall. `clearance` is how far from a solid the
+// point must stay, so tests can ask the strict question ("did the path pass
+// through a wall") separately from the planning question ("would a person
+// walk here").
+bool TwoRoomWalkable(const Eigen::Vector3d& p, double wall_clearance,
+                     double object_clearance);
 
 }  // namespace bs::synth

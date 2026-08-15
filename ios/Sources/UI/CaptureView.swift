@@ -39,6 +39,8 @@ struct CaptureView: View {
                 floorCalibrationPrompt(phase)
             }
 
+            if model.showsRouteCard { routeCard }
+
             if model.state == .idle {
                 // A rescan is always one room by definition, so asking "one
                 // room or several" would be a question with a known answer.
@@ -130,7 +132,8 @@ struct CaptureView: View {
                 } label: {
                     planOption(
                         title: "One room",
-                        detail: "Start scanning straight away.",
+                        detail: "Start scanning straight away — a lap of the "
+                              + "room, then round each big thing in it.",
                         icon: "square.dashed")
                 }
                 Button {
@@ -151,6 +154,78 @@ struct CaptureView: View {
         .frame(maxWidth: 380)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 20))
         .padding(24)
+    }
+
+    /// What to actually do with the phone, over a capture that is already
+    /// running. Three moves, in order, with the one number that decides how
+    /// good the result is: how far back to stand while going round something.
+    ///
+    /// Circling first establishes the room's shell — the walls, the corners,
+    /// the shape everything else sits inside. The orbits are what give an
+    /// object enough distinct viewpoints to come out solid instead of as a
+    /// flat card facing the way you happened to walk. Doorways get an orbit
+    /// of their own because an opening is where two rooms have to agree about
+    /// the same surface, and it is where a scan of a house shows its seam.
+    private var routeCard: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 10) {
+                Image(systemName: "figure.walk.motion")
+                    .foregroundStyle(.tint)
+                Text("How to move")
+                    .font(.subheadline.weight(.semibold))
+                Spacer(minLength: 0)
+                Button { model.dismissRouteCard() } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(.bottom, 12)
+
+            routeStep(1, "Circle the room",
+                      "One lap, camera facing out at the walls.")
+            routeStep(2, "Orbit each big thing",
+                      "Go right round it, keeping it in the middle of frame.")
+            routeStep(3, "Orbit every doorway",
+                      "From both rooms. Openings need the most looks.")
+
+            Text("Stand back about half the room's width to go round "
+               + "something — close enough for detail, far enough to keep it "
+               + "whole in frame.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.top, 10)
+        }
+        .padding(16)
+        .frame(maxWidth: 340)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+        .padding(.horizontal, 20)
+        // Above the shutter, not over it: the card must never be the reason
+        // a capture cannot be stopped.
+        .frame(maxHeight: .infinity, alignment: .center)
+        .transition(.opacity)
+        .animation(.easeInOut(duration: 0.25), value: model.showsRouteCard)
+    }
+
+    private func routeStep(_ n: Int, _ title: String,
+                           _ detail: String) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            Text("\(n)")
+                .font(.caption.weight(.bold))
+                .foregroundStyle(.white)
+                .frame(width: 20, height: 20)
+                .background(Circle().fill(.tint))
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title).font(.subheadline.weight(.medium))
+                Text(detail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.bottom, 10)
     }
 
     private func planOption(title: String, detail: String,
@@ -395,6 +470,20 @@ struct CaptureView: View {
                     MapView(model: model)
                 } label: {
                     Label("3D Map", systemImage: "cube.transparent")
+                }
+                // The route card times out so it cannot sit over the scene
+                // for a whole capture; it has to be recallable, or the three
+                // steps are gone the moment someone looks away.
+                if model.isCapturing {
+                    Button {
+                        if model.showsRouteCard {
+                            model.dismissRouteCard()
+                        } else {
+                            model.presentRouteCard(auto: false)
+                        }
+                    } label: {
+                        Label("Route", systemImage: "figure.walk.motion")
+                    }
                 }
             }
             .font(.caption)

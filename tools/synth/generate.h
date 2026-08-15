@@ -38,8 +38,11 @@ struct GenerateOptions {
   bool motion_blur = false;      // blur scaled by inter-frame image motion
   double rgb_noise_scale = 1.0;  // multiplies base RGB sensor noise
 
-  // Two connected rooms walked as a closed loop instead of a single-room
-  // orbit: exercises region clustering, inter-room drift and loop closure.
+  // Two connected rooms walked the way a capture is meant to be walked —
+  // circle each room, then orbit every large object in it, treating the
+  // doorway as one of those objects — instead of a single-room orbit. The
+  // walk closes, so it exercises region clustering, inter-room drift and
+  // loop closure as well as the movement flow itself.
   bool two_room = false;
 
   // Write a floor calibration into session.json, as the app does when the

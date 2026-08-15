@@ -6,6 +6,7 @@
 #include <cmath>
 #include <filesystem>
 #include <functional>
+#include <set>
 #include <utility>
 
 #include <opencv2/features2d.hpp>
@@ -199,13 +200,13 @@ TEST_F(SynthTest, GroundTruthPosesAreValidRotations) {
   }
 }
 
-TEST_F(SynthTest, WalkthroughClosesItsLoopAcrossBothRooms) {
+TEST_F(SynthTest, CaptureWalkClosesItsLoopAcrossBothRooms) {
   // The two-room harness is only meaningful if the walk actually visits both
   // rooms and comes back to where it started — that revisit is what loop
   // closure has to recognize.
   const std::vector<SE3> poses =
-      synth::WalkthroughTrajectory(200, 1.5, /*seed=*/4);
-  ASSERT_EQ(poses.size(), 200u);
+      synth::CaptureTrajectory(600, 1.5, /*seed=*/4);
+  ASSERT_EQ(poses.size(), 600u);
 
   bool in_room_a = false, in_room_b = false, through_door = false;
   for (const auto& p : poses) {
@@ -224,10 +225,103 @@ TEST_F(SynthTest, WalkthroughClosesItsLoopAcrossBothRooms) {
   EXPECT_TRUE(in_room_b);
   EXPECT_TRUE(through_door);
 
-  // Closed loop: the last pose returns to the first.
+  // Closed loop: the last pose returns to the first, facing the same way.
+  // Position alone is a weaker revisit than it looks — two frames a metre
+  // apart in view direction share almost no features — so the walk ends
+  // aimed where it started as well as standing where it started.
   const double gap =
       (poses.back().CameraCenter() - poses.front().CameraCenter()).norm();
-  EXPECT_LT(gap, 0.35) << "walkthrough must revisit its starting viewpoint";
+  EXPECT_LT(gap, 0.35) << "capture walk must revisit its starting viewpoint";
+  const Eigen::Vector3d first =
+      poses.front().Inverse().q * Eigen::Vector3d(0, 0, 1);
+  const Eigen::Vector3d last =
+      poses.back().Inverse().q * Eigen::Vector3d(0, 0, 1);
+  EXPECT_GT(first.dot(last), 0.85) << "revisit faces a different direction";
+}
+
+// The capture plan is a plan, not a route: circle the room, then go round
+// each large object in it. What makes it worth walking is the spread of
+// BEARINGS each object is seen from — a splat trained on one side of a
+// cabinet reconstructs a flat card — so that is what is measured, in 30 deg
+// sectors around each object.
+TEST_F(SynthTest, CaptureWalkOrbitsEveryObjectAndTheDoorway) {
+  // 1.0 m/s at 30 fps over the plan's ~120 m: the density the flow is meant
+  // to be walked at. Sparser and the rate-limited view lags its target
+  // through every turn, which is a statement about the frame count and not
+  // about the plan.
+  const std::vector<SE3> poses =
+      synth::CaptureTrajectory(3645, 1.5, /*seed=*/4, 40.0 / 30.0);
+  const synth::TwoRoomLayout& layout = synth::TwoRoomLayoutSpec();
+
+  auto sectors_seen = [&poses](const Eigen::Vector3d& target) {
+    std::set<int> sectors;
+    for (const SE3& p : poses) {
+      const Eigen::Vector3d c = p.CameraCenter();
+      const Eigen::Vector3d to = target - c;
+      if (to.norm() > 4.0) continue;  // too far to be the subject
+      const Eigen::Vector3d forward = p.Inverse().q * Eigen::Vector3d(0, 0, 1);
+      if (forward.dot(to.normalized()) < 0.75) continue;  // not in frame
+      sectors.insert(static_cast<int>(std::floor(
+          RadToDeg(std::atan2(c.z() - target.z(), c.x() - target.x())) / 30.0)));
+    }
+    return sectors.size();
+  };
+
+  for (const synth::FurnitureBox& box : layout.furniture) {
+    const size_t n = sectors_seen(box.centre());
+    EXPECT_GE(n, 4u) << "object at x=" << box.centre().x()
+                     << " is only framed from " << n << " of 12 bearings";
+  }
+  // The doorway is an object like any other, and it is orbited from BOTH
+  // rooms: an opening is where two captures have to agree about the same
+  // surface, and it is where a splat of a house shows its seam.
+  EXPECT_GE(sectors_seen(layout.door_centre()), 8u);
+}
+
+// A capture plan is only usable if the number of images it asks for fits a
+// project: 200-500 per room. Path length is the wrong unit — what the app
+// stores is decided by its own motion gate, so the plan is counted through
+// that gate, at the thresholds the engine actually ships.
+TEST_F(SynthTest, CaptureWalkStoresARoomsWorthOfFrames) {
+  const EngineConfig cfg;
+  const std::vector<SE3> poses =
+      synth::CaptureTrajectory(3645, 1.5, /*seed=*/4, 40.0 / 30.0);
+
+  const synth::TwoRoomLayout& layout = synth::TwoRoomLayoutSpec();
+  std::vector<SE3> room_a;
+  for (const SE3& p : poses) {
+    if (p.CameraCenter().x() < layout.door_x) room_a.push_back(p);
+  }
+  const int stored = synth::GatedFrameCount(room_a, cfg.store_min_translation_m,
+                                            cfg.store_min_rotation_deg);
+  // Two rooms of this size are two captures, and each one has to land inside
+  // the project budget on its own. The 5 cm gate puts a 6x8 m room at the
+  // very top of it; see docs/BACKLOG.md — the gate, not the plan, is the
+  // thing to change if this needs to come down.
+  EXPECT_GE(stored, 200) << "a room's capture is too thin to reconstruct";
+  EXPECT_LE(stored, 1000) << "a room's capture will not fit a project";
+}
+
+// Nothing in the plan may pass through a solid. The clearances used to walk
+// the plan are generous — half a metre off a wall — so this asks the strict
+// question instead: did the camera end up inside a wall, inside the divider,
+// or inside the furniture.
+TEST_F(SynthTest, CaptureWalkNeverPassesThroughAnything) {
+  const std::vector<SE3> poses =
+      synth::CaptureTrajectory(3645, 1.5, /*seed=*/4, 40.0 / 30.0);
+  int inside = 0;
+  Eigen::Vector3d worst = Eigen::Vector3d::Zero();
+  for (const SE3& p : poses) {
+    const Eigen::Vector3d c = p.CameraCenter();
+    if (synth::TwoRoomWalkable(c, /*wall_clearance=*/0.10,
+                               /*object_clearance=*/0.05)) {
+      continue;
+    }
+    ++inside;
+    worst = c;
+  }
+  EXPECT_EQ(inside, 0) << "path enters a solid, e.g. at (" << worst.x() << ", "
+                       << worst.z() << ")";
 }
 
 TEST_F(SynthTest, ScoutCircuitHugsWallsAndFacesInward) {
@@ -333,6 +427,48 @@ TEST_F(SynthTest, TwoRoomSceneHasAnOpenDoorway) {
   EXPECT_LT(blocked.t, 3.5) << "divider should block off-doorway rays";
 }
 
+// The divider is a wall, which means the doorway has a reveal: two jambs and
+// a soffit, the surfaces that exist only because the wall has depth. A
+// zero-thickness divider makes the opening a hole with nothing inside it —
+// both rooms agree about the wall and about nothing in between, which is
+// exactly where a splat of a house shows its seam, and it makes orbiting the
+// opening pointless because there is nothing there to see.
+TEST_F(SynthTest, DoorwayHasThicknessWithJambsAndASoffit) {
+  const synth::Scene scene = synth::MakeTwoRoomScene(4);
+  const synth::TwoRoomLayout& L = synth::TwoRoomLayoutSpec();
+  ASSERT_GT(L.wall_thickness, 0.05);
+
+  // Both faces of the divider are real surfaces, at their own depths.
+  const synth::RayHit a_face = synth::CastRay(
+      scene, Eigen::Vector3d(0.0, 1.4, 2.5), Eigen::Vector3d(1, 0, 0));
+  const synth::RayHit b_face = synth::CastRay(
+      scene, Eigen::Vector3d(6.0, 1.4, 2.5), Eigen::Vector3d(-1, 0, 0));
+  ASSERT_GT(a_face.t, 0.0);
+  ASSERT_GT(b_face.t, 0.0);
+  EXPECT_NEAR(a_face.t, L.face_a() - 0.0, 0.02);
+  EXPECT_NEAR(b_face.t, 6.0 - L.face_b(), 0.02);
+
+  // Standing off to one side of the opening, a ray aimed across it lands on
+  // the far jamb — the surface an orbit of the doorway is walked to see.
+  // Straight on, that same jamb is edge-on and invisible.
+  const Eigen::Vector3d oblique(1.2, 1.4, -1.6);
+  const Eigen::Vector3d at_jamb(L.door_x + L.wall_thickness / 2, 1.4,
+                                L.door_half);
+  const synth::RayHit jamb = synth::CastRay(scene, oblique, at_jamb - oblique);
+  ASSERT_GT(jamb.t, 0.0);
+  const Eigen::Vector3d hit = oblique + jamb.t * (at_jamb - oblique);
+  EXPECT_NEAR(hit.x(), L.door_x, L.wall_thickness)
+      << "no jamb inside the opening — the divider has no depth";
+  EXPECT_NEAR(hit.z(), L.door_half, 0.05);
+
+  // And the soffit: looking up through the opening from underneath finds the
+  // head of the reveal, not the ceiling of the next room.
+  const synth::RayHit soffit = synth::CastRay(
+      scene, Eigen::Vector3d(L.door_x, 1.4, 0.0), Eigen::Vector3d(0, 1, 0));
+  ASSERT_GT(soffit.t, 0.0);
+  EXPECT_NEAR(1.4 + soffit.t, L.door_height, 0.02) << "opening has no soffit";
+}
+
 // A frame count over a fixed path IS a speed. Choosing the count for render
 // cost produced a 9 m/s "walkthrough" that the tracker's own motion gate
 // rejects — which looked for a long time like a tracker defect rather than a
@@ -346,7 +482,7 @@ TEST_F(SynthTest, SpeedDerivedFrameCountsStayWithinHandHeldMotion) {
     std::vector<SE3> (*shape)(int);
   };
   const auto walk = [](int n) {
-    return synth::WalkthroughTrajectory(n, 1.5, 4u);
+    return synth::CaptureTrajectory(n, 1.5, 4u);
   };
   const auto scout = [](int n) { return synth::ScoutTrajectory(n, 1.5, 4u); };
   const auto orbit = [](int n) {
@@ -355,7 +491,7 @@ TEST_F(SynthTest, SpeedDerivedFrameCountsStayWithinHandHeldMotion) {
 
   for (const auto& [name, shape] :
        std::vector<std::pair<const char*, std::function<std::vector<SE3>(int)>>>{
-           {"walkthrough", walk}, {"scout", scout}, {"orbit", orbit}}) {
+           {"capture walk", walk}, {"scout", scout}, {"orbit", orbit}}) {
     const synth::TrajectoryMotion probe = synth::MeasureMotion(shape(256));
     const double seconds =
         std::max(probe.path_m / speed, probe.turn_deg / pan);

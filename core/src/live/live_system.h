@@ -186,6 +186,13 @@ class LiveSystem {
   uint32_t frames_processed_ = 0;
   // Mean reprojection error of the last frame's PnP inliers, px.
   double last_px_error_ = 0.0;
+  // Interval the gyro delta was integrated over, so it can be read as a rate.
+  double last_gyro_dt_ = 0.0;
+  // Leaky counters behind the SLOW DOWN / RECAPTURE pills: they rise twice
+  // as fast as they fall, so the message appears promptly and leaves only
+  // once the condition has genuinely cleared.
+  int slow_down_run_ = 0;
+  int recapture_run_ = 0;
   uint32_t last_frame_id_ = 0;
   int last_inliers_ = 0;
   int last_matches_ = 0;

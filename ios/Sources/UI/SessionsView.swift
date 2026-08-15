@@ -4,6 +4,17 @@ import SwiftUI
 /// Sessions are also visible in the Files app (On My iPhone → BetterSplats)
 /// — copy finished work off the phone regularly, especially on a free
 /// Apple ID where deleting the app deletes its data.
+///
+/// Layout note, learned from a device: rows must contain **at most one**
+/// navigation target. The first version put two `NavigationLink`s (Quality
+/// and Fast) plus two share buttons in one `List` row, which SwiftUI turns
+/// into a row-sized tap target for the links — so tapping anywhere on the
+/// row, including the share buttons, pushed a reconstruction screen, and
+/// going back revealed the *second* push underneath. Four bordered controls
+/// crammed into one caption-sized row also left the card looking squashed.
+///
+/// So: the row is inert, the primary action is one obvious button, and
+/// everything else lives in a menu where each item can afford a full label.
 struct SessionsView: View {
     struct Entry: Identifiable {
         let id: String
@@ -23,6 +34,8 @@ struct SessionsView: View {
     @State private var shareURL: URL?
     @State private var shareError: String?
     @State private var isSharing = false
+    @State private var solveRequest: SolveRequest?
+    @State private var pendingDelete: Entry?
 
     var body: some View {
         List {
@@ -33,70 +46,15 @@ struct SessionsView: View {
                     description: Text("Captured sessions appear here and in the Files app."))
             }
             ForEach(entries) { entry in
-                VStack(alignment: .leading, spacing: 6) {
-                    HStack {
-                        Text(entry.id)
-                            .font(.subheadline.weight(.medium))
-                            .lineLimit(1)
-                        if entry.hasColmap {
-                            Image(systemName: "checkmark.seal.fill")
-                                .foregroundStyle(.green)
-                                .font(.caption)
-                        }
-                    }
-                    HStack {
-                        Label("\(entry.frames) frames", systemImage: "photo.stack")
-                        Label(String(format: "%.0f MB", entry.megabytes),
-                              systemImage: "internaldrive")
-                    }
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-
-                    HStack(spacing: 10) {
-                        NavigationLink(
-                            value: SolveRequest(path: entry.url.path,
-                                                preset: "quality")) {
-                            Label(entry.hasColmap ? "Re-solve" : "Reconstruct",
-                                  systemImage: "gearshape.2")
-                        }
-                        NavigationLink(
-                            value: SolveRequest(path: entry.url.path,
-                                                preset: "fast")) {
-                            Label("Fast", systemImage: "hare")
-                        }
-                        if entry.hasColmap {
-                            Button {
-                                share(folder: entry.url
-                                    .appendingPathComponent("final/colmap"),
-                                    name: "colmap_export.zip")
-                            } label: {
-                                Label("COLMAP", systemImage: "square.and.arrow.up")
-                            }
-                            .disabled(isSharing)
-                        }
-                        Button {
-                            share(folder: entry.url,
-                                  name: entry.id + ".zip")
+                row(entry)
+                    .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                        Button(role: .destructive) {
+                            pendingDelete = entry
                         } label: {
-                            Label("Session", systemImage: "shippingbox")
-                        }
-                        .disabled(isSharing)
-                        if isSharing {
-                            // Archiving a capture is half a gigabyte of
-                            // work. Saying so beats the app looking hung.
-                            HStack(spacing: 6) {
-                                ProgressView().controlSize(.mini)
-                                Text("Preparing…")
-                            }
+                            Label("Delete", systemImage: "trash")
                         }
                     }
-                    .font(.caption)
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                }
-                .padding(.vertical, 2)
             }
-            .onDelete(perform: delete)
 
             if let shareError {
                 Text(shareError)
@@ -105,7 +63,7 @@ struct SessionsView: View {
             }
         }
         .navigationTitle("Sessions")
-        .navigationDestination(for: SolveRequest.self) { request in
+        .navigationDestination(item: $solveRequest) { request in
             ProcessingView(sessionURL: URL(fileURLWithPath: request.path),
                            preset: request.preset)
         }
@@ -114,6 +72,117 @@ struct SessionsView: View {
         .sheet(item: $shareURL) { url in
             ShareSheet(items: [url])
         }
+        // A capture is minutes of walking and cannot be recovered, so the
+        // delete is confirmed and says exactly what is going away.
+        .confirmationDialog(
+            "Delete this capture?",
+            isPresented: Binding(get: { pendingDelete != nil },
+                                 set: { if !$0 { pendingDelete = nil } }),
+            titleVisibility: .visible,
+            presenting: pendingDelete
+        ) { entry in
+            Button("Delete \(entry.frames) photos", role: .destructive) {
+                delete(entry)
+                pendingDelete = nil
+            }
+            Button("Keep", role: .cancel) { pendingDelete = nil }
+        } message: { entry in
+            Text("\(entry.id)\n\(String(format: "%.0f MB", entry.megabytes)) "
+                 + "will be removed from this iPhone. This cannot be undone.")
+        }
+    }
+
+    @ViewBuilder
+    private func row(_ entry: Entry) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 6) {
+                Text(entry.id)
+                    .font(.subheadline.weight(.medium))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                if entry.hasColmap {
+                    Image(systemName: "checkmark.seal.fill")
+                        .foregroundStyle(.green)
+                        .font(.caption)
+                        .accessibilityLabel("Reconstructed")
+                }
+            }
+
+            Text(subtitle(entry))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            HStack(spacing: 12) {
+                Button {
+                    solveRequest = SolveRequest(path: entry.url.path,
+                                                preset: "quality")
+                } label: {
+                    Label(entry.hasColmap ? "Re-solve" : "Reconstruct",
+                          systemImage: "gearshape.2")
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+
+                Spacer(minLength: 0)
+
+                Menu {
+                    Button {
+                        solveRequest = SolveRequest(path: entry.url.path,
+                                                    preset: "fast")
+                    } label: {
+                        Label("Reconstruct (fast preset)", systemImage: "hare")
+                    }
+                    if entry.hasColmap {
+                        Button {
+                            share(folder: entry.url
+                                .appendingPathComponent("final/colmap"),
+                                name: "colmap_export.zip")
+                        } label: {
+                            Label("Share COLMAP dataset",
+                                  systemImage: "square.and.arrow.up")
+                        }
+                    }
+                    Button {
+                        share(folder: entry.url, name: entry.id + ".zip")
+                    } label: {
+                        Label("Share full session", systemImage: "shippingbox")
+                    }
+                    Divider()
+                    Button(role: .destructive) {
+                        pendingDelete = entry
+                    } label: {
+                        Label("Delete capture", systemImage: "trash")
+                    }
+                } label: {
+                    Label("More", systemImage: "ellipsis.circle")
+                        .labelStyle(.iconOnly)
+                        .font(.title3)
+                }
+                .disabled(isSharing)
+            }
+
+            if isSharing {
+                // Archiving a capture is half a gigabyte of work. Saying so
+                // beats the app looking hung.
+                HStack(spacing: 6) {
+                    ProgressView().controlSize(.mini)
+                    Text("Preparing export…")
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            }
+        }
+        .padding(.vertical, 4)
+    }
+
+    private func subtitle(_ entry: Entry) -> String {
+        var parts = ["\(entry.frames) photos",
+                     String(format: "%.0f MB", entry.megabytes)]
+        if let created = entry.created {
+            parts.append(created.formatted(date: .abbreviated,
+                                           time: .shortened))
+        }
+        return parts.joined(separator: " · ")
     }
 
     private func share(folder: URL, name: String) {
@@ -158,10 +227,8 @@ struct SessionsView: View {
             .sorted { ($0.created ?? .distantPast) > ($1.created ?? .distantPast) }
     }
 
-    private func delete(at offsets: IndexSet) {
-        for index in offsets {
-            try? FileManager.default.removeItem(at: entries[index].url)
-        }
+    private func delete(_ entry: Entry) {
+        try? FileManager.default.removeItem(at: entry.url)
         reload()
     }
 

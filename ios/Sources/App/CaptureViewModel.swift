@@ -544,7 +544,6 @@ final class CaptureViewModel {
     private let manager = CaptureManager()
     private var context: FrameFeedContext?
     private var pollTask: Task<Void, Never>?
-    private var snapshotTick = 0
 
     let previewRenderer = VideoPreviewRenderer()
     let mapRenderer = MapRenderer()
@@ -735,24 +734,89 @@ final class CaptureViewModel {
     }
     private var photometryLocked = false
 
+    /// The little bit of main-actor state a poll needs before it can run.
+    private struct PollInput {
+        let context: FrameFeedContext
+        let isScouting: Bool
+        let regions: [CoreEngine.Snapshot.Region]
+    }
+
+    /// Everything a poll produces, ready to assign. A plain value type so it
+    /// can cross back to the main actor in one hop.
+    private struct PollResult {
+        var viewer: ViewerPose?
+        var recovery: RecoveryHint?
+        var guidance: String
+        var framesSeen: UInt32
+        var keyframes: UInt32
+        var readiness: Float
+        var framesStored: UInt32
+        var megabytesWritten: Double
+        var trackerNote: String?
+        var storageNote: String?
+        var storageNoteLevel: StorageNoteLevel
+        var walkedCentre: SIMD3<Double>?
+    }
+
+    @MainActor
+    private func pollInput() -> PollInput? {
+        guard isRunning, let context else { return nil }
+        return PollInput(context: context, isScouting: isScouting,
+                         regions: snapshot.regions)
+    }
+
+    @MainActor
+    private func apply(_ r: PollResult) {
+        viewer = r.viewer
+        recovery = r.recovery
+        guidance = r.guidance
+        framesSeen = r.framesSeen
+        readinessOverall = r.readiness
+        framesStored = r.framesStored
+        megabytesWritten = r.megabytesWritten
+        trackerNote = r.trackerNote
+        storageNote = r.storageNote
+        storageNoteLevel = r.storageNoteLevel
+        if isScouting { scaffoldKeyframes = r.keyframes }
+        if let centre = r.walkedCentre { extendWalked(centre) }
+    }
+
+    /// Polls the engine for status, storage directives and readiness.
+    ///
+    /// **Detached, and that is the whole point.** This class is `@MainActor`,
+    /// so a bare `Task` inherited main-actor isolation and every one of these
+    /// calls ran on the main thread — including `bs_live_poll_status`, which
+    /// takes the engine mutex, and that mutex is held for the ENTIRE duration
+    /// of a `bs_live_feed`: ORB extraction, guided matching, PnP RANSAC, a
+    /// Ceres refine. So ten times a second the UI thread blocked for as long
+    /// as a tracking frame took. On a device that is visible hitching, and it
+    /// compounds — a stalled main thread delays the capture pipeline, the
+    /// feeder drops frames, the gap between frames the tracker sees grows,
+    /// apparent motion between them rises, and the tracker starts reporting
+    /// SLOW DOWN and losing tracking on a user who is walking normally.
+    /// The snapshot copy at 2 Hz took the same mutex on the same thread.
     private func startPolling() {
         pollTask?.cancel()
-        pollTask = Task { [weak self] in
+        pollTask = Task.detached(priority: .userInitiated) { [weak self] in
+            var pill = GuidanceStabilizer()
+            var tick = 0
             while !Task.isCancelled {
                 try? await Task.sleep(for: .milliseconds(100))
-                guard let self, self.isRunning, let context = self.context
-                else { continue }
+                guard let self else { return }
+                guard let input = await self.pollInput() else { continue }
+                let context = input.context
+
+                // Off the main actor from here down.
                 let status = CoreEngine.shared.livePollStatus()
-                self.viewer = ViewerPose(status: status)
+                let viewer = ViewerPose(status: status)
                 // The storage gate needs both of these on the capture queue:
                 // where the camera is, and how far it has to move before
-                // another frame is worth keeping — which the engine works out
-                // from how far away the scene is.
+                // another frame is worth keeping — which the engine works
+                // out from how far away the scene is.
                 context.publishPose(
-                    self.viewer,
+                    viewer,
                     storeSpacingM: Double(status.store_spacing_m),
                     storeRotationDeg: Double(status.store_rotation_deg))
-                if let centre = self.viewer?.center { self.extendWalked(centre) }
 
                 // Drain the engine's storage directives. Polling consumes
                 // them, so ignoring them loses them — which is how
@@ -767,83 +831,92 @@ final class CaptureViewModel {
                 if !keyframed.isEmpty {
                     await context.store.addKeyframeIds(keyframed)
                 }
-                // Name the place the arrow points at, when there is more
-                // than one place to mean. `guide_region_id` had been
-                // published by the engine and read by nothing since M4.
-                let regions = self.snapshot.regions
-                let guideRegion = regions.count > 1
-                    ? regions.first { $0.id == status.guide_region_id }?.name
+
+                // Name the place the arrow points at, when there is more than
+                // one place to mean.
+                let guideRegion = input.regions.count > 1
+                    ? input.regions.first { $0.id == status.guide_region_id }?.name
                     : nil
-                self.recovery = RecoveryHint(status: status,
-                                             regionName: guideRegion)
-                self.framesSeen = status.frames_fed
+                let recovery = RecoveryHint(status: status,
+                                            regionName: guideRegion)
+
+                // Steady the pill before anyone reads it.
+                let code = pill.settle(rawCode: status.guidance,
+                                       state: status.state)
+                let text = recovery?.text
+                    ?? (input.isScouting
+                        ? Self.scoutGuidanceText(for: code, status: status)
+                        : Self.guidanceText(for: code, status: status))
+
                 // The tracker's share of the camera. Some dropping is normal
                 // and harmless — a relocalization sweep costs several frames
                 // and recovers — so this reports a SUSTAINED shortfall, over
                 // the whole session, and only once there is enough of a
                 // session for the fraction to mean anything.
                 let counts = context.feeder.counts
-                self.trackerNote = counts.delivered >= 150
+                let trackerNote = counts.delivered >= 150
                     && counts.dropFraction > 0.35
                     ? String(format: "Tracking is behind the camera (%.0f%% of "
                              + "frames skipped) — move slower",
                              counts.dropFraction * 100)
                     : nil
-                // The recovery hint is a better version of the same message,
-                // so it replaces the generic pill rather than sitting beside
-                // it repeating itself.
-                self.guidance = self.recovery?.text
-                    ?? (self.isScouting
-                        ? Self.scoutGuidanceText(for: status)
-                        : Self.guidanceText(for: status))
-                if self.isScouting { self.scaffoldKeyframes = status.keyframes }
-                self.readinessOverall = status.readiness_overall
-                self.framesStored = await context.store.storedFrames
-                self.megabytesWritten =
-                    Double(await context.store.storedBytes) / 1_048_576.0
-                let stored = Int(self.framesStored)
+
+                let stored = Int(await context.store.storedFrames)
+                let bytes = await context.store.storedBytes
                 let free = Self.freeDiskBytes()
                 let failed = context.failedWrites
+                var note: String?
+                var level: StorageNoteLevel = .progress
                 if failed > 0 {
                     // Above everything else, including "nearly full". A frame
                     // that did not reach disk is gone — the ring buffer moved
                     // on — so this is the one storage message the user can
                     // still act on, by re-walking what they just covered.
-                    self.storageNote = failed == 1
+                    note = failed == 1
                         ? "1 photo could not be saved — check free space"
                         : "\(failed) photos could not be saved — check free space"
-                    self.storageNoteLevel = .critical
+                    level = .critical
                 } else if free < FrameFeedContext.minFreeBytes {
                     // Disk beats the frame count: a capture that dies on a
                     // write halfway through a room loses the room.
-                    self.storageNote = String(
+                    note = String(
                         format: "iPhone almost full (%.1f GB left) — stop soon",
                         Double(free) / 1_073_741_824)
-                    self.storageNoteLevel = .critical
+                    level = .critical
                 } else if stored >= FrameFeedContext.storedFrameCap {
-                    self.storageNote =
-                        "Capture full — stop here, then continue this project "
-                        + "in a new capture"
-                    self.storageNoteLevel = .critical
+                    note = "Capture full — stop here, then continue this "
+                         + "project in a new capture"
+                    level = .critical
                 } else if stored >= FrameFeedContext.storedFrameWarn {
-                    self.storageNote = "Nearly full: \(stored)/"
-                        + "\(FrameFeedContext.storedFrameCap) — finish up"
-                    self.storageNoteLevel = .warning
+                    note = "Nearly full: \(stored)/"
+                         + "\(FrameFeedContext.storedFrameCap) — finish up"
+                    level = .warning
                 } else if stored < FrameFeedContext.storedFrameTarget {
                     // The under-covered case is the one people actually hit,
                     // and it is invisible without being told: the capture
                     // looks fine, and the thinness only shows up as holes in
                     // the trained splat hours later.
-                    self.storageNote = "\(stored)/"
-                        + "\(FrameFeedContext.storedFrameTarget) frames — keep "
-                        + "going for full coverage"
-                    self.storageNoteLevel = .progress
-                } else {
-                    self.storageNote = nil
+                    note = "\(stored)/\(FrameFeedContext.storedFrameTarget) "
+                         + "frames — keep going for full coverage"
+                    level = .progress
                 }
-                self.snapshotTick += 1
-                if self.snapshotTick % 5 == 0 {  // ~2 Hz snapshot refresh
-                    self.refreshSnapshot()
+
+                await self.apply(PollResult(
+                    viewer: viewer, recovery: recovery, guidance: text,
+                    framesSeen: status.frames_fed, keyframes: status.keyframes,
+                    readiness: status.readiness_overall,
+                    framesStored: UInt32(stored),
+                    megabytesWritten: Double(bytes) / 1_048_576.0,
+                    trackerNote: trackerNote, storageNote: note,
+                    storageNoteLevel: level, walkedCentre: viewer?.center))
+
+                // Snapshot copy also takes the engine mutex, so it stays off
+                // the main actor too; only the handoff to the renderer runs
+                // there.
+                tick += 1
+                if tick % 5 == 0 {  // ~2 Hz
+                    let snap = CoreEngine.shared.snapshot()
+                    await self.applySnapshot(snap)
                 }
             }
         }
@@ -852,7 +925,9 @@ final class CaptureViewModel {
     /// Free space on the volume the sessions live on. 0 when it cannot be
     /// read, which reads as "almost full" and warns — the safe direction,
     /// since the alternative is discovering it mid-capture.
-    private static func freeDiskBytes() -> Int64 {
+    ///
+    /// `nonisolated` because the poll loop reads it off the main actor.
+    nonisolated private static func freeDiskBytes() -> Int64 {
         let url = FileManager.default.urls(for: .documentDirectory,
                                            in: .userDomainMask)[0]
         let values = try? url.resourceValues(
@@ -886,9 +961,20 @@ final class CaptureViewModel {
         return (low - margin, high + margin)
     }
 
+    @MainActor
+    private func applySnapshot(_ snap: CoreEngine.Snapshot) {
+        snapshot = snap
+        mapRenderer.update(with: snap)
+    }
+
+    /// One-shot refresh for screens that appear between polls. The acquire
+    /// takes the engine mutex, so it happens off the main actor for the same
+    /// reason the poll loop does.
     func refreshSnapshot() {
-        snapshot = CoreEngine.shared.snapshot()
-        mapRenderer.update(with: snapshot)
+        Task.detached(priority: .userInitiated) { [weak self] in
+            let snap = CoreEngine.shared.snapshot()
+            await self?.applySnapshot(snap)
+        }
     }
 
     func renameRegion(id: UInt32, name: String) {
@@ -902,8 +988,9 @@ final class CaptureViewModel {
         refreshSnapshot()
     }
 
-    private static func guidanceText(for status: bs_live_status) -> String {
-        switch bs_guidance(rawValue: bs_guidance.RawValue(max(0, status.guidance))) {
+    nonisolated private static func guidanceText(for code: Int32,
+                                     status: bs_live_status) -> String {
+        switch bs_guidance(rawValue: bs_guidance.RawValue(max(0, code))) {
         case BS_GUIDE_GOOD: return "Good — keep going"
         case BS_GUIDE_MOVE_CLOSER: return "Move closer"
         case BS_GUIDE_MOVE_SIDEWAYS: return "Step sideways to add parallax"
@@ -920,8 +1007,9 @@ final class CaptureViewModel {
     /// needed" would send someone to do the scan they have not started yet;
     /// the circuit wants distance and speed, not proximity and dwell. Only
     /// the two failures that actually break a scaffold are surfaced.
-    private static func scoutGuidanceText(for status: bs_live_status) -> String {
-        switch bs_guidance(rawValue: bs_guidance.RawValue(max(0, status.guidance))) {
+    nonisolated private static func scoutGuidanceText(for code: Int32,
+                                          status: bs_live_status) -> String {
+        switch bs_guidance(rawValue: bs_guidance.RawValue(max(0, code))) {
         case BS_GUIDE_SLOW_DOWN:
             return "Turn more slowly"
         case BS_GUIDE_TRACKING_LOST:

@@ -191,3 +191,78 @@ enum WeakAreaGuidance {
         }
     }
 }
+
+/// Keeps the status pill readable.
+///
+/// The engine re-decides guidance on every frame and the app polls at 10 Hz,
+/// so the raw code can change faster than anyone can read it. On a device
+/// this showed up as the pill flipping between "Tracking lost", "Good" and
+/// "Recapture" almost instantly while the user walked slowly across a room —
+/// which is worse than useless, because a message that changes five times a
+/// second is one the user learns to ignore.
+///
+/// Two rules, and they are not symmetric:
+///
+///  * **Escalate immediately.** A more serious state is shown the moment the
+///    engine reports it. Delaying "tracking lost" to look calm would be
+///    withholding the one thing the user needs in time to act on it.
+///  * **De-escalate slowly.** A less serious state has to hold for
+///    `minDwell` before it is believed. Recovery that does not stick is not
+///    recovery, and this is where the flicker actually came from — a single
+///    good frame between two bad ones would clear the warning.
+///
+/// The severity order is the priority order from the plan: what to say when
+/// the engine could justify saying several things.
+struct GuidanceStabilizer {
+    /// How long a calmer state must persist before it is shown.
+    var minDwell: TimeInterval = 0.5
+
+    private var shown: Int32 = Int32(BS_GUIDE_NONE.rawValue)
+    private var candidate: Int32 = Int32(BS_GUIDE_NONE.rawValue)
+    private var candidateSince: TimeInterval = 0
+
+    /// Higher is more serious. Ordering, worst first: lost tracking, then
+    /// the two "what you are doing now is not working" states, then the
+    /// "do something else next" states, then all-clear.
+    private static func severity(_ code: Int32) -> Int {
+        switch bs_guidance(rawValue: bs_guidance.RawValue(max(0, code))) {
+        case BS_GUIDE_TRACKING_LOST: return 6
+        case BS_GUIDE_RECAPTURE: return 5
+        case BS_GUIDE_SLOW_DOWN: return 4
+        case BS_GUIDE_COVERAGE_NEEDED: return 3
+        case BS_GUIDE_MOVE_CLOSER, BS_GUIDE_MOVE_SIDEWAYS: return 2
+        case BS_GUIDE_GOOD: return 1
+        default: return 0
+        }
+    }
+
+    /// `state` is consulted so a genuinely lost tracker is never softened:
+    /// the dwell rule applies to advice, not to facts about whether there is
+    /// a pose at all.
+    mutating func settle(rawCode: Int32, state: Int32,
+                         now: TimeInterval = ProcessInfo.processInfo.systemUptime)
+        -> Int32 {
+        let raw = state == Int32(BS_LIVE_LOST.rawValue)
+            ? Int32(BS_GUIDE_TRACKING_LOST.rawValue)
+            : rawCode
+        if raw == shown {
+            candidate = raw
+            return shown
+        }
+        if Self.severity(raw) > Self.severity(shown) {
+            shown = raw
+            candidate = raw
+            candidateSince = now
+            return shown
+        }
+        if raw != candidate {
+            candidate = raw
+            candidateSince = now
+            return shown
+        }
+        if now - candidateSince >= minDwell {
+            shown = raw
+        }
+        return shown
+    }
+}

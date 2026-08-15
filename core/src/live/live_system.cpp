@@ -700,6 +700,10 @@ bool LiveSystem::TrackFrame(const LiveFrameInput& input,
   // re-acquire by tracking. A held camera has bounded speed, so a pose that
   // violates it is rejected here and relocalization takes over instead.
   double turn_rate_dps = 0.0;
+  last_gyro_dt_ = last_track_time_ >= 0.0
+                      ? std::clamp(input.t_capture - last_track_time_,
+                                   1.0 / 60.0, 0.5)
+                      : 0.0;
   if (last_track_time_ >= 0.0 && consecutive_lost_ == 0) {
     const double dt =
         std::clamp(input.t_capture - last_track_time_, 1.0 / 60.0, 0.5);
@@ -759,10 +763,40 @@ bool LiveSystem::TrackFrame(const LiveFrameInput& input,
   // is the one moment the user can still be told to slow down.
   const double inlier_ratio =
       static_cast<double>(inliers.size()) / std::max(1, last_matches_);
-  if (features.lap_var < BlurThreshold(0.4) || last_gyro_mag_ > 0.6 ||
-      turn_rate_dps > config_.track_warn_rot_dps) {
+
+  // Gyro as a RATE, which is what the threshold means. The app hands over
+  // the rotation integrated across the interval since the last frame — an
+  // ANGLE in radians — and this compared it against 0.6 as though it were
+  // rad/s. At 30 fps a brisk 60 deg/s pan integrates to 0.035 rad, so the
+  // branch needed roughly 1000 deg/s to fire and never did. It earns its
+  // place only while there is no pose delta to measure from (just
+  // relocalized, or lost), which is exactly when it is the only rotation
+  // signal available.
+  double gyro_dps = 0.0;
+  if (last_gyro_dt_ > 1e-4) {
+    gyro_dps = RadToDeg(last_gyro_mag_) / last_gyro_dt_;
+  }
+  const double rotation_dps = turn_rate_dps > 0.0 ? turn_rate_dps : gyro_dps;
+
+  // These conditions decide a message on the user's screen, so they are
+  // judged over a few frames rather than one. Real handheld blur is
+  // intermittent — a single frame dipping below the recent norm is a
+  // footfall, not a problem — and a per-frame test turns that into a pill
+  // that flickers between GOOD and SLOW DOWN faster than anyone can read.
+  // Rising fast and falling slowly is deliberate: tell someone promptly
+  // that they are outrunning the tracker, and stop telling them only once
+  // they have actually settled.
+  const bool too_fast = features.lap_var < BlurThreshold(0.4) ||
+                        rotation_dps > config_.track_warn_rot_dps;
+  slow_down_run_ = too_fast ? std::min(slow_down_run_ + 2, 12)
+                            : std::max(slow_down_run_ - 1, 0);
+  const bool thin = inlier_ratio < 0.4;
+  recapture_run_ = thin ? std::min(recapture_run_ + 2, 12)
+                        : std::max(recapture_run_ - 1, 0);
+
+  if (slow_down_run_ >= 4) {
     guidance_ = BS_GUIDE_SLOW_DOWN;
-  } else if (inlier_ratio < 0.4) {
+  } else if (recapture_run_ >= 4) {
     guidance_ = BS_GUIDE_RECAPTURE;
   } else {
     guidance_ = BS_GUIDE_GOOD;

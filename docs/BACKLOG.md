@@ -196,6 +196,15 @@ These cannot be settled on synthetic data. Each names what to look for.
 
 ## Ideas (unranked, unvalidated)
 
+- **ARKit poses for the LIVE VIEW ONLY** — keeps the map view and recovery
+  arrow alive through a tracking loss, which is when they are most needed and
+  least available. Display layer only: never through the C ABI, never in RAW,
+  and above all never in `live/poses.jsonl`, which looks like a log but is
+  read by the final solve as pose init and as the position source for rescan
+  supersession. Needs an engine-to-ARKit frame alignment that goes stale
+  during the loss it exists to cover, so it must fade rather than lie. See
+  ARCHITECTURE.md for the guardrails.
+
 - **ARKit capture backend (depth + confidence only, poses still image-first).**
   Engine seam is DONE and tested (`DepthImage.confidence`). What remains is
   iOS-side and unverifiable without hardware — see the table in

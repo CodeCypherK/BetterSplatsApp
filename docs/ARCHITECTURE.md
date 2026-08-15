@@ -717,6 +717,53 @@ behind one interface**, with the AVFoundation path left intact — so the field
 test can A/B them on the same room rather than betting the capture path on
 untested API behaviour.
 
+### ARKit poses for the live view only
+
+There is one further ARKit use that is genuinely safe, and it earns its keep
+at exactly the moment the engine cannot help: **rendering the user's position
+in 3D while tracking is LOST.**
+
+The live map view and the recovery arrow both run on the engine's own pose,
+which by definition does not exist when tracking is lost — precisely when the
+user most needs to know where they are relative to what they have already
+captured. ARKit's VIO is IMU-backed and keeps producing a pose through fast
+turns and blank walls, so a display-only overlay would stay alive across the
+gap and go quiet only when ARKit itself gives up.
+
+**The rule: ARKit poses exist in the app's render layer and nowhere else.**
+Not through the C ABI, not in RAW, and above all not in `live/poses.jsonl`.
+
+That last one is the specific danger and it is not obvious. `poses.jsonl`
+looks like a log — it is named like one and lives in the disposable LIVE
+layer — but the final solve READS it (`LoadLivePoses`, `final_solve.cpp`) as
+pose initialization for every frame, and as the position source for deciding
+which frames a rescan supersedes. An ARKit pose written there would not sit
+inertly in a debug file; it would seed the bundle adjustment and decide which
+of the user's frames get discarded. That is a one-line mistake with no
+symptom until the geometry is wrong.
+
+Two further honesty notes for whoever builds this:
+
+**It needs a frame alignment, and the alignment can be wrong.** The engine's
+world frame is anchored at its first keyframe; ARKit's is anchored at session
+start and gravity-aligned. Displaying an ARKit-derived camera position beside
+engine-derived geometry means estimating a transform between the two from the
+frames where both exist. During a tracking loss that transform cannot be
+updated, so it is only as good as it was at the moment of the loss. Over the
+seconds a loss usually lasts that is fine; over a long one it drifts, and a
+confidently-wrong position overlay is worse than a frozen one — the same
+argument that governs the recovery arrow. It should fade out rather than lie.
+
+**The real risk is not technical, it is the temptation gradient.** Once ARKit
+poses exist in the app in the same coordinate frame as the engine's, the
+distance to "just use them while tracking is lost" or "use them to seed
+relocalization" is one small, reasonable-looking commit. That is how a
+mandate erodes — not by decision but by convenience. The mitigation has to be
+mechanical rather than cultural: a distinct type that cannot be passed where
+an engine pose is expected, and a CI gate that permits ARKit's depth and
+camera-image symbols while still failing on `camera.transform` reaching
+anything but the renderer.
+
 ## Camera: locked to the wide, by device not by depth
 
 `AVCaptureDevice.default(.builtInLiDARDepthCamera, ...)` is a virtual device

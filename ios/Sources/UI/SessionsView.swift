@@ -202,18 +202,30 @@ struct SessionsView: View {
         }
     }
 
+    /// Scanning sessions means stat-ing every file in every one of them —
+    /// ten captures of 500 frames is fifteen thousand syscalls — so it does
+    /// not happen on the main thread while the screen is trying to draw.
     private func reload() {
+        Task { @MainActor in
+            let found = await Task.detached(priority: .userInitiated) {
+                Self.scan()
+            }.value
+            entries = found
+        }
+    }
+
+    nonisolated private static func scan() -> [Entry] {
         let fm = FileManager.default
         let docs = fm.urls(for: .documentDirectory, in: .userDomainMask)[0]
         let dirs = (try? fm.contentsOfDirectory(
             at: docs, includingPropertiesForKeys: [.creationDateKey])) ?? []
-        entries = dirs
+        return dirs
             .filter { $0.lastPathComponent.hasPrefix("session_") }
             .map { url in
                 let frames = (try? fm.contentsOfDirectory(
                     at: url.appendingPathComponent("frames"),
                     includingPropertiesForKeys: nil))?.count ?? 0
-                let size = directorySize(url)
+                let size = Self.directorySize(url)
                 let created = try? url.resourceValues(forKeys: [.creationDateKey])
                     .creationDate
                 let hasColmap = fm.fileExists(
@@ -232,7 +244,7 @@ struct SessionsView: View {
         reload()
     }
 
-    private func directorySize(_ url: URL) -> Int64 {
+    nonisolated private static func directorySize(_ url: URL) -> Int64 {
         let fm = FileManager.default
         guard let enumerator = fm.enumerator(
             at: url, includingPropertiesForKeys: [.fileSizeKey]) else { return 0 }

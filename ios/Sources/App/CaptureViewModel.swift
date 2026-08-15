@@ -683,13 +683,27 @@ final class CaptureViewModel {
             // is exactly where the capture pass has to relocalize.
             await context.feeder.finish()
 
-            let engine = CoreEngine.shared
-            engine.liveEnd()
-            scaffoldKeyframes = engine.livePollStatus().keyframes
+            // Off the main actor, and not for tidiness: `liveEnd` SERIALIZES
+            // the whole scaffold — a two-room circuit measures 41 MB — and
+            // `liveBegin` reads it straight back to localize into. Run
+            // inline this froze the UI for as long as tens of megabytes take,
+            // at the exact moment the user has just pressed a button and is
+            // watching for it to do something.
+            let dir = context.store.directory.path
+            let handover = await Task.detached(priority: .userInitiated) {
+                () -> (keyframes: UInt32, ok: Bool, error: String) in
+                let engine = CoreEngine.shared
+                engine.liveEnd()
+                let keyframes = engine.livePollStatus().keyframes
+                let ok = engine.liveBegin(sessionDir: dir,
+                                          pass: BS_PASS_CAPTURE) == BS_OK
+                return (keyframes, ok, engine.lastError)
+            }.value
 
-            guard engine.liveBegin(sessionDir: context.store.directory.path,
-                                   pass: BS_PASS_CAPTURE) == BS_OK else {
-                state = .failed("Engine rejected capture pass: \(engine.lastError)")
+            scaffoldKeyframes = handover.keyframes
+            guard handover.ok else {
+                state = .failed("Engine rejected capture pass: "
+                                + handover.error)
                 return
             }
             context.pass = "capture"
@@ -1125,7 +1139,12 @@ final class CaptureViewModel {
             // the user stopped walking.
             try? await Task.sleep(for: .milliseconds(600))
             await context?.feeder.finish()
-            CoreEngine.shared.liveEnd()
+            // Same reason as the scout handover: ending a live session writes
+            // the map out, and that is tens of megabytes of serialization on
+            // whatever thread asks for it.
+            await Task.detached(priority: .userInitiated) {
+                CoreEngine.shared.liveEnd()
+            }.value
             if let context {
                 // Record the rescan volume BEFORE finalize, which is what
                 // writes session.json out.

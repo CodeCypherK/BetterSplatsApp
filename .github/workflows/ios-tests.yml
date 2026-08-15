@@ -1,0 +1,41 @@
+name: ios-tests
+
+# Host-side unit tests for the app's pure logic. Deliberately a SEPARATE
+# workflow from ios-app: that one produces the IPA the user side-loads, and
+# nothing here may be able to stop it. This job needs no simulator, no
+# signing and no engine build, so it finishes in about a minute while the
+# IPA build takes tens.
+#
+# Everything in the AppLogic target is arithmetic that a phone would be a
+# ridiculous place to check. The preview-orientation mapping shipped as a
+# reflection where a rotation belonged, and the only reason it took a device
+# and a bug report to find is that nothing could run it anywhere else.
+
+on:
+  push:
+    paths:
+      - "ios/Sources/**"
+      - "ios/Tests/**"
+      - "ios/Package.swift"
+      - ".github/workflows/ios-tests.yml"
+  pull_request:
+    paths:
+      - "ios/Sources/**"
+      - "ios/Tests/**"
+      - "ios/Package.swift"
+  workflow_dispatch:
+
+jobs:
+  swift-tests:
+    name: app logic
+    runs-on: macos-15
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show toolchain
+        run: swift --version
+
+      - name: Test
+        working-directory: ios
+        run: swift test

@@ -64,6 +64,13 @@ struct SolveReport: Decodable {
     var imageFlags: ImageFlags?
     var images: [Image]?
     var readiness: Readiness?
+    /// Camera model the solve exported: "OPENCV" (lens corrected) or
+    /// "PINHOLE" (uncorrected).
+    var cameraModel: String?
+    /// Where the lens model came from, and whether it was accepted. A value
+    /// ending in "_rejected" means the coefficients on hand described
+    /// something no lens could do, so the geometry was solved uncorrected.
+    var lensSource: String?
 
     /// Splat readiness recomputed from the FINAL reconstruction — the same
     /// five axes shown live, but from globally adjusted geometry with the
@@ -125,6 +132,8 @@ struct SolveReport: Decodable {
         case imageFlags = "image_flags"
         case images
         case readiness
+        case cameraModel = "camera_model"
+        case lensSource = "lens_source"
     }
 
     static func read(sessionURL: URL) -> SolveReport? {
@@ -231,6 +240,19 @@ struct SolveReport: Decodable {
                          + "or looking at a blank surface with nothing to "
                          + "match against, often cannot be tied to the rest.")
             }
+        }
+        // A refused lens model is a caveat about the RESULT, not about the
+        // capture, and it is the one thing the person holding the phone can
+        // do nothing about — so it is stated plainly, without an action, and
+        // never phrased as something they got wrong. It comes second because
+        // it explains a soft result rather than being the headline.
+        if lensSource?.hasSuffix("_rejected") == true {
+            out.append("This phone's lens calibration did not describe a "
+                     + "workable lens, so the scan was solved without lens "
+                     + "correction. It still reconstructs; straight edges "
+                     + "may bow slightly toward the frame corners. Nothing "
+                     + "about how you scanned caused this — please share the "
+                     + "session so the calibration can be handled.")
         }
         let flagged = flaggedImages
         let blurry = flagged.filter { $0.flags.contains("blurry") }.count

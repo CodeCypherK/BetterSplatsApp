@@ -147,6 +147,7 @@ uint64_t CacheConfigHash(const EngineConfig& c, bool use_sift, bool fast,
   h = Fnv1a(h, &fast, sizeof(fast));
   h = Fnv1a(h, &c.final_orb_features, sizeof(c.final_orb_features));
   h = Fnv1a(h, &c.final_sift_features, sizeof(c.final_sift_features));
+  h = Fnv1a(h, &c.final_sift_budget_mb, sizeof(c.final_sift_budget_mb));
   h = Fnv1a(h, &c.final_match_ratio, sizeof(c.final_match_ratio));
   h = Fnv1a(h, &c.final_ransac_px, sizeof(c.final_ransac_px));
   h = Fnv1a(h, &c.final_pair_min_inliers, sizeof(c.final_pair_min_inliers));
@@ -428,14 +429,23 @@ FinalOutcome RunFinalSolve(const EngineConfig& config,
   metrics.scout_frames_excluded = scout_skipped;
   if (solve_frame_ids.size() < 2) return fail("session has <2 capture frames");
 
-  // Feature choice: SIFT for the quality preset when the session fits the
-  // transient descriptor budget (or forced by config), else ORB.
+  // Feature choice: SIFT for the quality preset when its descriptors fit the
+  // memory budget (or forced by config), else ORB. Asked in bytes, because
+  // that is the actual constraint — a frame count is a guess about it, and
+  // the guess was 250 frames when a realistic two-room capture is 400.
   const size_t session_frames = solve_frame_ids.size();
-  const bool use_sift =
-      !fast && (config.final_use_sift == 1 ||
-                (config.final_use_sift == 2 &&
-                 static_cast<int>(session_frames) <=
-                     config.final_sift_max_frames));
+  const double sift_mb = static_cast<double>(session_frames) *
+                         config.final_sift_features * 128 * sizeof(float) /
+                         (1024.0 * 1024.0);
+  const bool sift_fits = sift_mb <= config.final_sift_budget_mb;
+  const bool use_sift = !fast && (config.final_use_sift == 1 ||
+                                  (config.final_use_sift == 2 && sift_fits));
+  if (!fast && config.final_use_sift == 2 && !sift_fits) {
+    BS_LOGI("final",
+            "%zu frames of SIFT would need %.0f MB, budget %d MB — using ORB, "
+            "which matches across viewpoints far less well",
+            session_frames, sift_mb, config.final_sift_budget_mb);
+  }
 
   // Resume cache setup.
   const fs::path cache_dir = fs::path(session_dir) / "final" / "cache";

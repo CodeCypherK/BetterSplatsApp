@@ -127,7 +127,19 @@ struct EngineConfig {
   // SIFT for the quality preset: 0 = never, 1 = always, 2 = auto (only
   // when the session is small enough for the transient descriptor memory).
   int final_use_sift = 2;
-  int final_sift_max_frames = 250;
+  // SIFT descriptors are held for the whole solve, so the choice between
+  // SIFT and ORB is a memory question, and it has to be asked in bytes
+  // rather than in frames. It was a flat 250-frame cap, and a two-room
+  // capture is 400 frames: the quality preset silently solved the realistic
+  // case with the more viewpoint-sensitive detector, on a walk designed to
+  // view surfaces from many angles. Measured, that cost 189/400 registered
+  // against 400/400.
+  //
+  // 3000 features x 128 floats x 4 bytes is 1.5 MB per frame, so this
+  // budget buys ~1000 frames. The app overrides it from the device's own
+  // available-memory figure rather than trusting a constant compiled in
+  // months earlier against a phone nobody is holding.
+  int final_sift_budget_mb = 1500;
   int final_seq_window = 8;
   int final_bow_top_k = 10;
   int final_exhaustive_below = 150;

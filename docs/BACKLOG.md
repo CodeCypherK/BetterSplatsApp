@@ -148,11 +148,33 @@ non-expert to that data on the first try.
          designed to view surfaces from many angles. The cap is about
          transient descriptor memory and was set before anyone knew a room
          is 200 images.
-      Running: exhaustive pairing (the ceiling retrieval could reach) and
-      forced SIFT, separately, to size each.
+      **Answered: it is (2), and it is the whole thing.** Forced SIFT on the
+      same 400 frames registers **400/400** with 79.6k points at 0.35 px,
+      against 189/400 and 39.3k at 0.57 px with ORB. So the index-only pair
+      graph is adequate after all — when the descriptor can match across
+      viewpoints — and (1) is a real gap but not the one costing anything
+      today. The cap is now a memory budget in bytes rather than a frame
+      count, and the app fills it from `os_proc_available_memory()`.
+      (The exhaustive-pairing run was abandoned once SIFT answered it; 80k
+      pairs of ORB was going to take another half hour to tell us something
+      we no longer needed.)
+
+- [ ] **Levelling picks the wrong plane on a dense model.** Found by the
+      SIFT run above, and it is the reason that run's ATE is 1.26 m despite
+      400/400 registered at 0.35 px: the reconstruction is excellent and the
+      levelling put it somewhere wrong. Floor search found a plane with
+      **413 inliers** and placed the cameras 1.96 m above it with 0.84 m
+      spread; the ORB run on the same session found **10,786 inliers**, 1.48 m
+      above, spread 0.011 m — and ground truth eye height is 1.5 m. More
+      points made the search worse, which points at the candidate ranking
+      rather than at the data. Note the fixture has no `--floor-calib`, so
+      this is the inference path; a user who does the floor step would not
+      hit it. Next: log every candidate plane the search scored and see what
+      beat the floor.
 
 - [ ] **The final solve fragments on the capture walk, and density does not
-      fix it.** On the two-room circle-and-orbit walk the batch solve
+      fix it.** (Largely superseded by the SIFT finding above — re-measure
+      before spending anything on it.) On the two-room circle-and-orbit walk the batch solve
       registers a third to a half of the images and leaves the rest in
       components that "share no alignable structure (0 candidate points)":
 

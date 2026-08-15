@@ -147,6 +147,17 @@ struct SessionsView: View {
                     } label: {
                         Label("Share full session", systemImage: "shippingbox")
                     }
+                    // Under a megabyte, and it is what actually diagnoses a
+                    // failed reconstruction. The full session is half a
+                    // gigabyte of JPEGs and routinely too large to send
+                    // anywhere, which is how a real failure came to be
+                    // debugged by guesswork.
+                    Button {
+                        shareDiagnostics(entry)
+                    } label: {
+                        Label("Share diagnostics (small)",
+                              systemImage: "stethoscope")
+                    }
                     Divider()
                     Button(role: .destructive) {
                         pendingDelete = entry
@@ -205,6 +216,23 @@ struct SessionsView: View {
     /// Scanning sessions means stat-ing every file in every one of them —
     /// ten captures of 500 frames is fifteen thousand syscalls — so it does
     /// not happen on the main thread while the screen is trying to draw.
+    /// The no-photographs bundle: calibration, live poses, every frame's
+    /// metadata and the solve's own metrics.
+    private func shareDiagnostics(_ entry: Entry) {
+        isSharing = true
+        shareError = nil
+        Task { @MainActor in
+            defer { isSharing = false }
+            do {
+                shareURL = try await DiagnosticBundle.build(
+                    sessionURL: entry.url)
+            } catch {
+                shareError = "Could not build diagnostics: "
+                           + error.localizedDescription
+            }
+        }
+    }
+
     private func reload() {
         Task { @MainActor in
             let found = await Task.detached(priority: .userInitiated) {

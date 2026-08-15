@@ -204,6 +204,30 @@ def main() -> int:
                 print(f"ERROR: {entry['name']} unplaced but not flagged",
                       file=sys.stderr)
                 return 1
+        # The lens the solve actually used. This is the field that would have
+        # named the failure on a capture that placed 2 of 431 images, so it
+        # must be present, and it must agree with the camera the export
+        # writes — a report claiming OPENCV beside a PINHOLE cameras.txt
+        # would send anyone diagnosing a bad scan down the wrong path.
+        for key in ("camera_model", "lens_source", "lens_k1", "lens_k2",
+                    "lens_residual_px"):
+            if key not in report:
+                print(f"ERROR: report.json missing {key}", file=sys.stderr)
+                return 1
+        exported_models = {cam.model.name for cam in rec.cameras.values()}
+        if report["camera_model"] not in exported_models:
+            print(f"ERROR: report.json says camera_model="
+                  f"{report['camera_model']} but cameras.txt has "
+                  f"{sorted(exported_models)}", file=sys.stderr)
+            return 1
+        # A rejected lens must leave the geometry uncorrected, not carry the
+        # coefficients it just refused.
+        if report["lens_source"].endswith("_rejected"):
+            if report["lens_k1"] != 0 or report["lens_k2"] != 0:
+                print("ERROR: report.json rejected a lens model but kept its "
+                      "coefficients", file=sys.stderr)
+                return 1
+
         # Readiness is recomputed from the FINAL model, so it must at least
         # describe the same reconstruction: regions covering real patches,
         # scores in range, and bounds that are not inverted.

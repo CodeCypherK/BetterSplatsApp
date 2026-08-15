@@ -378,6 +378,12 @@ FinalOutcome RunFinalSolve(const EngineConfig& config,
   // Distortion model for undistortion + export.
   double k1 = 0, k2 = 0;
   std::string camera_model = "PINHOLE";
+  // Why the model ended up as it did, for report.json. A capture that comes
+  // back wrong is diagnosed from that file long before anyone has the frames,
+  // and the one thing that has actually gone wrong here — a lens model read
+  // from a misunderstood table — was invisible in it.
+  double lens_residual_px = 0;
+  std::string lens_source = "none";
   const auto& calib = session->calibration();
   if (calib.colmap_model && calib.colmap_model->model == "OPENCV" &&
       calib.colmap_model->params.size() >= 6) {
@@ -390,7 +396,10 @@ FinalOutcome RunFinalSolve(const EngineConfig& config,
       k1 = file_k1;
       k2 = file_k2;
       camera_model = "OPENCV";
+      lens_source = "calibration_file";
+      lens_residual_px = calib.colmap_model->fit_residual_px_max;
     } else {
+      lens_source = "calibration_file_rejected";
       BS_LOGW("final",
               "calibration.json carries a non-physical lens model "
               "(k1=%.4f k2=%.4f); solving uncorrected as PINHOLE",
@@ -408,7 +417,11 @@ FinalOutcome RunFinalSolve(const EngineConfig& config,
         k1 = fit->k1;
         k2 = fit->k2;
         camera_model = "OPENCV";
+        lens_source = "lut_fit";
+      } else {
+        lens_source = "lut_fit_rejected";
       }
+      lens_residual_px = fit->max_residual_px;
       BS_LOGI("final", "lens model: %s k1=%.4f k2=%.4f (worst %.2f px)",
               camera_model.c_str(), k1, k2, fit->max_residual_px);
     }
@@ -2095,6 +2108,15 @@ FinalOutcome RunFinalSolve(const EngineConfig& config,
                << leveling.camera_height_spread_m << ",\n"
                << "  \"walls_squared\": "
                << (leveling.walls_squared ? "true" : "false") << ",\n"
+               // The lens, in the file that gets shared when a scan comes
+               // back wrong. "lens_source" is the load-bearing field: a
+               // *_rejected value means the geometry was solved uncorrected
+               // because the model on hand was not one a lens could produce.
+               << "  \"camera_model\": \"" << camera_model << "\",\n"
+               << "  \"lens_source\": \"" << lens_source << "\",\n"
+               << "  \"lens_k1\": " << k1 << ",\n"
+               << "  \"lens_k2\": " << k2 << ",\n"
+               << "  \"lens_residual_px\": " << lens_residual_px << ",\n"
                << ReadinessReportJson(readiness)
                << ImageReportJson(image_report)
                << "  \"preset\": \"" << (fast ? "fast" : "quality") << "\"\n"

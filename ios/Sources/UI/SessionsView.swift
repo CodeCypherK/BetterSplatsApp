@@ -22,6 +22,7 @@ struct SessionsView: View {
     @State private var entries: [Entry] = []
     @State private var shareURL: URL?
     @State private var shareError: String?
+    @State private var isSharing = false
 
     var body: some View {
         List {
@@ -71,12 +72,22 @@ struct SessionsView: View {
                             } label: {
                                 Label("COLMAP", systemImage: "square.and.arrow.up")
                             }
+                            .disabled(isSharing)
                         }
                         Button {
                             share(folder: entry.url,
                                   name: entry.id + ".zip")
                         } label: {
                             Label("Session", systemImage: "shippingbox")
+                        }
+                        .disabled(isSharing)
+                        if isSharing {
+                            // Archiving a capture is half a gigabyte of
+                            // work. Saying so beats the app looking hung.
+                            HStack(spacing: 6) {
+                                ProgressView().controlSize(.mini)
+                                Text("Preparing…")
+                            }
                         }
                     }
                     .font(.caption)
@@ -106,11 +117,16 @@ struct SessionsView: View {
     }
 
     private func share(folder: URL, name: String) {
-        do {
-            shareURL = try ZipExporter.zipDirectory(at: folder, name: name)
-            shareError = nil
-        } catch {
-            shareError = "Export failed: \(error.localizedDescription)"
+        isSharing = true
+        shareError = nil
+        Task {
+            defer { isSharing = false }
+            do {
+                shareURL = try await ZipExporter.zipDirectory(at: folder,
+                                                              name: name)
+            } catch {
+                shareError = "Export failed: \(error.localizedDescription)"
+            }
         }
     }
 

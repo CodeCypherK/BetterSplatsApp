@@ -6,6 +6,10 @@ struct ProcessingView: View {
     @State private var model: ProcessingViewModel
     @State private var exportURL: URL?
     @State private var exportError: String?
+    /// Non-nil while a zip is being built. Names the archive so the two
+    /// buttons can show progress independently, and disables both — the
+    /// exports directory holds one archive at a time.
+    @State private var exportingName: String?
 
     init(sessionURL: URL, preset: String = "quality") {
         _model = State(initialValue: ProcessingViewModel(
@@ -65,19 +69,23 @@ struct ProcessingView: View {
 
             if model.phase == .done {
                 Section("Export") {
+                    let sessionZip = model.sessionURL.lastPathComponent + ".zip"
                     Button {
                         share(folder: model.colmapURL, name: "colmap_export.zip")
                     } label: {
-                        Label("Share COLMAP dataset (zip)",
-                              systemImage: "square.and.arrow.up")
+                        exportLabel("Share COLMAP dataset (zip)",
+                                    systemImage: "square.and.arrow.up",
+                                    name: "colmap_export.zip")
                     }
+                    .disabled(exportingName != nil)
                     Button {
-                        share(folder: model.sessionURL,
-                              name: model.sessionURL.lastPathComponent + ".zip")
+                        share(folder: model.sessionURL, name: sessionZip)
                     } label: {
-                        Label("Share full session (zip)",
-                              systemImage: "shippingbox")
+                        exportLabel("Share full session (zip)",
+                                    systemImage: "shippingbox",
+                                    name: sessionZip)
                     }
+                    .disabled(exportingName != nil)
                     if let exportError {
                         Text(exportError)
                             .font(.caption)
@@ -193,12 +201,32 @@ struct ProcessingView: View {
         }
     }
 
+    /// Half a gigabyte of JPEGs takes real time to archive, so the label
+    /// says so rather than the app appearing to have hung.
+    @ViewBuilder
+    private func exportLabel(_ title: String, systemImage: String,
+                             name: String) -> some View {
+        if exportingName == name {
+            HStack(spacing: 8) {
+                ProgressView().controlSize(.small)
+                Text("Preparing \(title.hasPrefix("Share COLMAP") ? "dataset" : "session")…")
+            }
+        } else {
+            Label(title, systemImage: systemImage)
+        }
+    }
+
     private func share(folder: URL, name: String) {
-        do {
-            exportURL = try ZipExporter.zipDirectory(at: folder, name: name)
-            exportError = nil
-        } catch {
-            exportError = "Export failed: \(error.localizedDescription)"
+        exportingName = name
+        exportError = nil
+        Task {
+            defer { exportingName = nil }
+            do {
+                exportURL = try await ZipExporter.zipDirectory(at: folder,
+                                                               name: name)
+            } catch {
+                exportError = "Export failed: \(error.localizedDescription)"
+            }
         }
     }
 }

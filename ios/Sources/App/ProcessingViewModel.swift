@@ -149,11 +149,74 @@ final class ProcessingViewModel {
 }
 
 /// Folder -> zip using the file-coordination conversion (no third-party
-/// archiver needed). The returned URL lives in the temporary directory.
+/// archiver needed).
+///
+/// Everything about this runs OFF the main actor, and that is the point. A
+/// finished capture is 200-500 JPEGs — comfortably half a gigabyte — and the
+/// old version zipped it synchronously from a SwiftUI button action. The app
+/// froze solid for as long as it took, with no progress and no way to
+/// cancel, at the one moment the user is being handed the thing they walked
+/// the room for. Long enough and the watchdog kills the app outright.
 enum ZipExporter {
-    enum ZipError: Error { case coordinationFailed(String) }
+    enum ZipError: LocalizedError {
+        case coordinationFailed(String)
+        case notEnoughSpace(needBytes: Int64, freeBytes: Int64)
 
-    static func zipDirectory(at source: URL, name: String) throws -> URL {
+        var errorDescription: String? {
+            switch self {
+            case .coordinationFailed(let why):
+                return why
+            case .notEnoughSpace(let need, let free):
+                let gb = { (b: Int64) in
+                    String(format: "%.1f GB", Double(b) / 1_073_741_824)
+                }
+                return "Not enough free space — this export needs about "
+                     + "\(gb(need)) and there is \(gb(free)). Free some "
+                     + "space, or share the COLMAP dataset on its own."
+            }
+        }
+    }
+
+    /// Where finished zips live. A directory of our own, so the previous
+    /// export can be cleared before the next one: these are whole copies of
+    /// a capture, and iOS empties the temporary directory on its own
+    /// schedule rather than ours. Three exports used to mean three copies
+    /// sitting on a phone the app had already warned was nearly full.
+    private static var exportsDir: URL {
+        FileManager.default.temporaryDirectory
+            .appendingPathComponent("exports", isDirectory: true)
+    }
+
+    /// Builds the zip on a background queue. The URL lives under
+    /// `exportsDir` and is superseded by the next export.
+    static func zipDirectory(at source: URL, name: String) async throws -> URL {
+        try await withCheckedThrowingContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                continuation.resume(with: Result {
+                    try zipSync(at: source, name: name)
+                })
+            }
+        }
+    }
+
+    private static func zipSync(at source: URL, name: String) throws -> URL {
+        let fm = FileManager.default
+
+        // JPEG and LZ4 depth are already compressed, so the archive is about
+        // the size of the source — and the coordinator builds its own copy
+        // before we take ours, so budget for two.
+        let sourceBytes = directorySize(source)
+        let free = (try? URL(fileURLWithPath: NSHomeDirectory())
+            .resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey])
+            .volumeAvailableCapacityForImportantUsage) ?? nil
+        if let free, sourceBytes > 0, free < sourceBytes * 2 {
+            throw ZipError.notEnoughSpace(needBytes: sourceBytes * 2,
+                                          freeBytes: free)
+        }
+
+        try? fm.removeItem(at: exportsDir)
+        try fm.createDirectory(at: exportsDir, withIntermediateDirectories: true)
+
         var result: Result<URL, Error> =
             .failure(ZipError.coordinationFailed("not started"))
         var coordinatorError: NSError?
@@ -162,18 +225,30 @@ enum ZipExporter {
             readingItemAt: source, options: .forUploading,
             error: &coordinatorError) { zipped in
             do {
-                let dest = FileManager.default.temporaryDirectory
-                    .appendingPathComponent(name)
-                try? FileManager.default.removeItem(at: dest)
-                try FileManager.default.copyItem(at: zipped, to: dest)
+                let dest = exportsDir.appendingPathComponent(name)
+                try fm.copyItem(at: zipped, to: dest)
                 result = .success(dest)
             } catch {
                 result = .failure(error)
             }
         }
         if let coordinatorError {
-            throw ZipError.coordinationFailed(coordinatorError.localizedDescription)
+            throw ZipError.coordinationFailed(
+                coordinatorError.localizedDescription)
         }
         return try result.get()
+    }
+
+    private static func directorySize(_ url: URL) -> Int64 {
+        let keys: [URLResourceKey] = [.totalFileAllocatedSizeKey, .fileSizeKey]
+        guard let e = FileManager.default.enumerator(
+            at: url, includingPropertiesForKeys: keys) else { return 0 }
+        var total: Int64 = 0
+        for case let file as URL in e {
+            let values = try? file.resourceValues(forKeys: Set(keys))
+            total += Int64(values?.totalFileAllocatedSize
+                           ?? values?.fileSize ?? 0)
+        }
+        return total
     }
 }

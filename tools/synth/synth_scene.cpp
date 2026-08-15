@@ -597,6 +597,13 @@ constexpr double kPlanObjClear = 0.35;    // ... and to furniture
 constexpr double kDesiredArcDeg = 200.0;  // orbit coverage worth closing in for
 constexpr double kMinRunDeg = 25.0;       // shorter arcs are not worth walking
 constexpr double kCornerRadius = 0.5;     // rounded circuit corners
+// How far off the wall the lap walks, and how far its view is turned along
+// the wall from square-on. Both exist to keep the SUBJECT distance sane:
+// walking the skirting board and looking sideways puts a flat wall 60 cm
+// from the lens, which fills the frame, gives the tracker nothing that
+// persists, and records a 70 cm patch of a 6 m surface.
+constexpr double kLapStandoff = 0.95;
+constexpr double kLapViewDeg = 52.0;  // from the wall normal, toward travel
 
 struct Rect {
   double x0, x1, z0, z1;
@@ -659,38 +666,66 @@ Floorplan MakeFloorplan(const TwoRoomLayout& L, double wall_clear,
   return plan;
 }
 
-// The largest loop inside `room` that stays clear of the furniture: start at
-// the walls and pull each side in until the leg it defines is walkable along
-// its whole length. A sideboard standing 1.3 m off the back wall pushes that
-// leg 1.3 m into the room, which is exactly where a person walks.
-Rect CircuitRect(const Floorplan& plan, Rect r, double y) {
-  auto leg_clear = [&](const Eigen::Vector3d& a, const Eigen::Vector3d& b) {
-    return plan.WalkableLine(a, b);
-  };
+// The lap, one leg at a time. Each starts at kLapStandoff from its wall —
+// nobody films a wall from the skirting board, and the camera cannot see
+// much of one from there either — and moves only when the furniture makes
+// it. Blocked, a leg first tries stepping back TOWARD the wall, down to the
+// walkable limit, because that keeps the loop large; only if that fails does
+// it come inward, which is what a sideboard standing 1.3 m off the back wall
+// forces and is exactly where a person walks around it.
+Rect CircuitRect(const Floorplan& plan, Rect limit, double standoff,
+                 double y) {
   constexpr double kStep = 0.05;
   constexpr double kMinSpan = 1.2;
-  r = {r.x0 + 0.02, r.x1 - 0.02, r.z0 + 0.02, r.z1 - 0.02};
-  for (int iter = 0; iter < 200; ++iter) {
-    bool moved = false;
-    const Eigen::Vector3d c00(r.x0, y, r.z0), c10(r.x1, y, r.z0);
-    const Eigen::Vector3d c01(r.x0, y, r.z1), c11(r.x1, y, r.z1);
-    if (!leg_clear(c00, c10) && r.depth() > kMinSpan) {
-      r.z0 += kStep;
-      moved = true;
+  limit = {limit.x0 + 0.02, limit.x1 - 0.02, limit.z0 + 0.02, limit.z1 - 0.02};
+  Rect r = {std::min(limit.x0 + standoff, 0.5 * (limit.x0 + limit.x1)),
+            std::max(limit.x1 - standoff, 0.5 * (limit.x0 + limit.x1)),
+            std::min(limit.z0 + standoff, 0.5 * (limit.z0 + limit.z1)),
+            std::max(limit.z1 - standoff, 0.5 * (limit.z0 + limit.z1))};
+
+  // side: 0 = z0, 1 = z1, 2 = x0, 3 = x1. `out` is toward that side's wall.
+  auto leg_clear = [&](int side) {
+    const Eigen::Vector3d a(r.x0, y, side == 1 ? r.z1 : r.z0);
+    const Eigen::Vector3d b(side == 3 ? r.x1 : r.x0, y,
+                            side == 1 ? r.z1 : r.z0);
+    if (side < 2) {
+      return plan.WalkableLine({r.x0, y, side ? r.z1 : r.z0},
+                               {r.x1, y, side ? r.z1 : r.z0});
     }
-    if (!leg_clear(c01, c11) && r.depth() > kMinSpan) {
-      r.z1 -= kStep;
-      moved = true;
+    return plan.WalkableLine({side == 3 ? r.x1 : r.x0, y, r.z0},
+                             {side == 3 ? r.x1 : r.x0, y, r.z1});
+  };
+  auto edge = [&](int side) -> double& {
+    return side == 0 ? r.z0 : side == 1 ? r.z1 : side == 2 ? r.x0 : r.x1;
+  };
+  auto wall = [&](int side) {
+    return side == 0 ? limit.z0 : side == 1 ? limit.z1
+           : side == 2 ? limit.x0 : limit.x1;
+  };
+  auto span_ok = [&](int side) {
+    return side < 2 ? r.depth() > kMinSpan : r.width() > kMinSpan;
+  };
+
+  for (int side = 0; side < 4; ++side) {
+    if (leg_clear(side)) continue;
+    const double start = edge(side);
+    const double outward = wall(side) > start ? kStep : -kStep;
+    bool fixed = false;
+    for (int i = 0; i < 60; ++i) {  // back toward the wall first
+      const double next = edge(side) + outward;
+      if ((outward > 0) != (next < wall(side))) break;  // past the wall
+      edge(side) = next;
+      if (leg_clear(side)) {
+        fixed = true;
+        break;
+      }
     }
-    if (!leg_clear(c00, c01) && r.width() > kMinSpan) {
-      r.x0 += kStep;
-      moved = true;
+    if (fixed) continue;
+    edge(side) = start;
+    for (int i = 0; i < 200 && span_ok(side); ++i) {  // then inward
+      edge(side) -= outward;
+      if (leg_clear(side)) break;
     }
-    if (!leg_clear(c10, c11) && r.width() > kMinSpan) {
-      r.x1 -= kStep;
-      moved = true;
-    }
-    if (!moved) break;
   }
   return r;
 }
@@ -833,8 +868,7 @@ bool TwoRoomWalkable(const Eigen::Vector3d& p, double wall_clearance,
       .Walkable(p);
 }
 
-std::vector<SE3> CaptureTrajectory(int frame_count, double eye_height,
-                                   uint32_t seed, double max_turn_deg) {
+CapturePlan BuildCapturePlan(double eye_height) {
   const TwoRoomLayout& L = TwoRoomLayoutSpec();
   const Floorplan plan = MakeFloorplan(L, kPlanWallClear, kPlanObjClear);
   const double plan_y = eye_height;
@@ -855,6 +889,12 @@ std::vector<SE3> CaptureTrajectory(int frame_count, double eye_height,
   }
 
   std::vector<Eigen::Vector3d> pos, look;
+  std::vector<CapturePhase> phase;
+  CapturePhase current = CapturePhase::kLap;
+  auto tag = [&] {
+    while (phase.size() < pos.size()) phase.push_back(current);
+  };
+
   // Moves to `to` from wherever the path is, going around anything in the
   // way and keeping the eye on whatever it was looking at until it arrives.
   auto route_to = [&](const Eigen::Vector3d& to, const Eigen::Vector3d& look_to,
@@ -906,12 +946,14 @@ std::vector<SE3> CaptureTrajectory(int frame_count, double eye_height,
   // One object, orbited: sweep every walkable arc of its ring in one
   // rotational direction, stepping around the blocked stretches without ever
   // taking your eyes off it.
+  double orbit_radius = 0;
   auto orbit = [&](const Eigen::Vector3d& centre, const Eigen::Vector3d& target,
                    double want_radius, int side) {
     const OrbitPlan op =
         ChooseOrbit(plan, {centre.x(), plan_y, centre.z()}, want_radius,
                     std::min(0.9, want_radius), side);
     if (op.runs.empty()) return;
+    orbit_radius = op.radius;
     const Eigen::Vector3d hub(centre.x(), plan_y, centre.z());
 
     // Enter at whichever run starts nearest, then keep going the same way
@@ -958,10 +1000,11 @@ std::vector<SE3> CaptureTrajectory(int frame_count, double eye_height,
                          R.z0 + kPlanWallClear, R.z1 - kPlanWallClear}
                   : Rect{L.face_b() + kPlanWallClear, R.x1 - kPlanWallClear,
                          R.z0 + kPlanWallClear, R.z1 - kPlanWallClear};
-    const Rect circuit = CircuitRect(plan, bounds, plan_y);
+    const Rect circuit = CircuitRect(plan, bounds, kLapStandoff, plan_y);
     const Eigen::Vector3d hub(0.5 * (circuit.x0 + circuit.x1), plan_y,
                               0.5 * (circuit.z0 + circuit.z1));
 
+    current = CapturePhase::kApproach;
     // --- 1. circle the room ---
     // Corners in order, walked with the near wall on the outside and the
     // camera facing it: the lap that establishes the room's shell, before
@@ -1030,7 +1073,8 @@ std::vector<SE3> CaptureTrajectory(int frame_count, double eye_height,
       along.y() = 0;
       if (along.norm() < 1e-6) along = out;
       along.normalize();
-      Eigen::Vector3d dir = 0.72 * along + 0.70 * out;  // ~44 deg off the wall
+      Eigen::Vector3d dir = std::sin(DegToRad(kLapViewDeg)) * along +
+                            std::cos(DegToRad(kLapViewDeg)) * out;
       dir.normalize();
       const double yaw =
           DegToRad(24.0) *
@@ -1046,10 +1090,13 @@ std::vector<SE3> CaptureTrajectory(int frame_count, double eye_height,
     } else {
       route_to(lap.front(), lap_look.front(), {});
     }
+    tag();
+    current = CapturePhase::kLap;
     for (size_t i = pos.empty() ? 0 : 1; i < lap.size(); ++i) {
       pos.push_back(lap[i]);
       look.push_back(lap_look[i]);
     }
+    tag();
 
     // --- 2. orbit each object in the room ---
     // Half the room's short side, which is the user-facing rule too: stand
@@ -1074,7 +1121,18 @@ std::vector<SE3> CaptureTrajectory(int frame_count, double eye_height,
       }
       const Eigen::Vector3d c = (*next)->centre();
       todo.erase(next);
+      current = CapturePhase::kApproach;
+      const size_t before = pos.size();
       orbit(c, {c.x(), std::max(look_y * 0.8, c.y()), c.z()}, want, 0);
+      // Everything the orbit emitted past its entry route is the orbit
+      // itself; the route in front of it is approach.
+      tag();
+      for (size_t i = before; i < phase.size(); ++i) {
+        if ((pos[i] - Eigen::Vector3d(c.x(), plan_y, c.z())).norm() <
+            1.15 * orbit_radius) {
+          phase[i] = CapturePhase::kOrbitObject;
+        }
+      }
     }
 
     // --- 3. the doorway is an object too ---
@@ -1082,7 +1140,18 @@ std::vector<SE3> CaptureTrajectory(int frame_count, double eye_height,
     // ring. An opening is where two rooms have to agree about the same
     // surface, so it earns a full orbit from each of them rather than the
     // glance you get walking through.
-    orbit(L.door_centre(), L.door_centre(), want, room == 0 ? -1 : 1);
+    current = CapturePhase::kApproach;
+    {
+      const size_t before = pos.size();
+      orbit(L.door_centre(), L.door_centre(), want, room == 0 ? -1 : 1);
+      tag();
+      const Eigen::Vector3d hub(L.door_x, plan_y, 0.0);
+      for (size_t i = before; i < phase.size(); ++i) {
+        if ((pos[i] - hub).norm() < 1.15 * orbit_radius) {
+          phase[i] = CapturePhase::kOrbitDoorway;
+        }
+      }
+    }
 
     // --- 4. through the opening (and, from room B, home) ---
     const double dir = room == 0 ? 1.0 : -1.0;
@@ -1090,7 +1159,10 @@ std::vector<SE3> CaptureTrajectory(int frame_count, double eye_height,
     const Eigen::Vector3d near_side(L.door_x - dir * 0.95, plan_y, lane);
     const Eigen::Vector3d far_side(L.door_x + dir * 0.95, plan_y, lane);
     const Eigen::Vector3d through(L.door_x + dir * 1.6, look_y, 0.0);
+    current = CapturePhase::kApproach;
     route_to(near_side, through, {});
+    tag();
+    current = CapturePhase::kThroughDoorway;
     const RoomBounds& next = room == 0 ? L.b : L.a;
     EmitLine(pos, look, near_side, far_side, through, next.centre(look_y));
     // Home, looking the way the first frame looked. A revisit that matches
@@ -1098,8 +1170,21 @@ std::vector<SE3> CaptureTrajectory(int frame_count, double eye_height,
     // to recognize; matching both is the whole point of ending where you
     // started. It also keeps the last target off the room centre, which is
     // where the camera is standing.
+    tag();
+    current = CapturePhase::kApproach;
     if (room == 1) route_to(home, home_look, {});
+    tag();
   }
+
+  tag();
+  return {std::move(pos), std::move(look), std::move(phase)};
+}
+
+std::vector<SE3> CaptureTrajectory(int frame_count, double eye_height,
+                                   uint32_t seed, double max_turn_deg) {
+  const CapturePlan built = BuildCapturePlan(eye_height);
+  const std::vector<Eigen::Vector3d>& pos = built.position;
+  const std::vector<Eigen::Vector3d>& look = built.look;
 
   // Resample the plan at constant speed. Every trajectory here covers a
   // fixed physical path, so the frame count IS the walking speed.

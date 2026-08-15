@@ -20,3 +20,5 @@ target_link_libraries(bs_synth PRIVATE synthlib)
 target_include_directories(bs_synth PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/../../core/src
   ${CMAKE_CURRENT_SOURCE_DIR}/../../third_party)
+# --dump-plan reaches into synth_scene.h, which is built on cv::Vec3f.
+target_include_directories(bs_synth SYSTEM PRIVATE ${OpenCV_INCLUDE_DIRS})

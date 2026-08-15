@@ -12,6 +12,7 @@
 
 #include "bs/bs_api.h"
 #include "generate.h"
+#include "synth_scene.h"
 
 namespace {
 
@@ -19,6 +20,8 @@ void PrintUsage() {
   std::fprintf(stderr,
                "usage: bs_synth <out_session_dir> [options]\n"
                "       bs_synth --version | --selftest\n"
+               "       bs_synth --dump-plan <file.json>   capture plan +\n"
+               "                    layout, for scripts/plot_capture_plan.py\n"
                "options:\n"
                "  --frames N        frame count (default 60)\n"
                "  --speed M         walking speed in m/s; derives the frame\n"
@@ -51,12 +54,63 @@ void PrintUsage() {
                "                    With --speed, N only switches it on.\n");
 }
 
+// Writes the two-room layout and the capture plan as JSON, for
+// scripts/plot_capture_plan.py to draw. The geometry travels WITH the plan
+// rather than being copied into the renderer: a picture of the walk drawn
+// against a stale set of walls is worse than no picture, because it looks
+// authoritative.
+int DumpPlan(const char* path) {
+  const bs::synth::TwoRoomLayout& L = bs::synth::TwoRoomLayoutSpec();
+  const bs::synth::CapturePlan plan = bs::synth::BuildCapturePlan(1.5);
+  FILE* f = std::fopen(path, "w");
+  if (f == nullptr) {
+    std::fprintf(stderr, "cannot write %s\n", path);
+    return 1;
+  }
+  std::fprintf(f, "{\n  \"rooms\": [[%g,%g,%g,%g],[%g,%g,%g,%g]],\n", L.a.x0,
+               L.a.x1, L.a.z0, L.a.z1, L.b.x0, L.b.x1, L.b.z0, L.b.z1);
+  std::fprintf(f,
+               "  \"divider\": {\"x0\": %g, \"x1\": %g, \"door_half\": %g, "
+               "\"door_height\": %g},\n",
+               L.face_a(), L.face_b(), L.door_half, L.door_height);
+  std::fprintf(f, "  \"furniture\": [");
+  for (size_t i = 0; i < L.furniture.size(); ++i) {
+    const auto& b = L.furniture[i];
+    std::fprintf(f, "%s[%g,%g,%g,%g]", i ? "," : "", b.origin.x(),
+                 b.origin.x() + b.w, b.origin.z(), b.origin.z() + b.d);
+  }
+  // Subject distance: how far the first surface along the view ray actually
+  // is. This is the number that would have caught the lap pointed square at
+  // a wall — the look TARGET was a healthy 2.4 m away, and the wall it hit
+  // was 0.55 m away, which no summary of the plan's own geometry could say.
+  const bs::synth::Scene scene = bs::synth::MakeTwoRoomScene(7);
+  std::fprintf(f, "],\n  \"plan\": [\n");
+  for (size_t i = 0; i < plan.position.size(); ++i) {
+    const Eigen::Vector3d dir =
+        (plan.look[i] - plan.position[i]).normalized();
+    const bs::synth::RayHit hit =
+        bs::synth::CastRay(scene, plan.position[i], dir);
+    std::fprintf(f, "%s    [%.4f,%.4f,%.4f,%.4f,%d,%.3f]",
+                 i ? ",\n" : "", plan.position[i].x(), plan.position[i].z(),
+                 plan.look[i].x(), plan.look[i].z(),
+                 static_cast<int>(plan.phase[i]),
+                 hit.plane_index < 0 ? -1.0 : hit.t);
+  }
+  std::fprintf(f, "\n  ]\n}\n");
+  std::fclose(f);
+  std::printf("wrote %zu plan samples to %s\n", plan.position.size(), path);
+  return 0;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
   if (argc >= 2 && std::strcmp(argv[1], "--version") == 0) {
     std::printf("bs_synth %s\n", bs_version());
     return 0;
+  }
+  if (argc >= 3 && std::strcmp(argv[1], "--dump-plan") == 0) {
+    return DumpPlan(argv[2]);
   }
   if (argc >= 2 && std::strcmp(argv[1], "--selftest") == 0) {
     char buf[512];

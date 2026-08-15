@@ -146,6 +146,30 @@ std::vector<SE3> OrbitTrajectory(int frame_count, double radius_x, double radius
                                  double sweep_deg = 140.0,
                                  double max_turn_deg = 0.0);
 
+// What the camera is doing at each point of the capture walk. The plan is
+// worth being able to LOOK at — a path that reads correctly in numbers can
+// still be walking somewhere absurd, and the bug that cost the most this
+// far (a lap pointed square at a wall half a metre away) was obvious the
+// moment the view directions were drawn and invisible in every summary
+// statistic before that.
+enum class CapturePhase : uint8_t {
+  kLap,             // circling the room
+  kOrbitObject,     // going round a piece of furniture
+  kOrbitDoorway,    // going round the opening, from one room's side
+  kThroughDoorway,  // crossing the threshold
+  kApproach,        // walking between the above
+};
+
+// The capture walk before it is sampled into frames: a dense polyline with
+// the look target and phase at every point. `CaptureTrajectory` resamples
+// this at constant speed; tools render it.
+struct CapturePlan {
+  std::vector<Eigen::Vector3d> position;
+  std::vector<Eigen::Vector3d> look;  // absolute world-space look target
+  std::vector<CapturePhase> phase;
+};
+CapturePlan BuildCapturePlan(double eye_height);
+
 // The capture walk through MakeTwoRoomScene: for each room, circle the room
 // once, then orbit every large object in it — and the doorway is an object
 // like any other, orbited from both rooms, because an opening is where two

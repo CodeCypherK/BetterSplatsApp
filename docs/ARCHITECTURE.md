@@ -49,11 +49,32 @@ Two invariants the test suite enforces:
 
 ## Live pipeline (capture time)
 
-Threads inside the engine (device and replay identical):
+Stages inside the engine (device and replay identical):
 
-- **Ingest** (caller thread): `bs_live_feed` copies luma + depth into a
-  pooled frame, pushes to the tracker queue (bounded, drop-oldest — live is
-  approximate by design; RAW storage is decided separately and never drops).
+- **Ingest**: `bs_live_feed` copies luma + depth in and tracks the frame
+  **synchronously, on the calling thread**, before returning. The engine has
+  no queue of its own and cannot drop a frame it was handed — which is why
+  `bs_live_status` has no `frames_processed` beside `frames_fed`, and why an
+  earlier version of this section describing a bounded drop-oldest tracker
+  queue was describing something that did not exist.
+
+  The queue is real, but it is the app's (`ios/Sources/Capture/EngineFeeder.swift`):
+  one slot, drop-oldest, on its own queue. It has to be, because the drop
+  has to happen where the frames arrive. Feeding inline from the capture
+  delegate — which is what the app used to do — made every millisecond the
+  tracker spent over the 33 ms frame interval come out of capture:
+  `AVCaptureDataOutputSynchronizer` discards frames while its delegate is
+  busy, so those frames never reached the storage gate or the quality
+  statistics either, and nothing counted them. The preview enqueue sat after
+  the feed, so slow tracking also showed up as a stuttering viewfinder.
+
+  Dropping is correct rather than a compromise: a live pose is worth
+  something only while it still describes where the phone is, so a backlog
+  of stale frames is worth less than the newest one, and an unbounded queue
+  behind a slower consumer ends as a jetsam kill. What changed is that the
+  drop is now bounded, counted, and reported — the capture screen says so
+  when the tracker is sustainedly behind. RAW storage is decided separately
+  and still never drops.
 - **Tracker**: ORB features, constant-velocity motion model (raw gyro rate
   as a *search-window hint only*), guided matching against the local map,
   PnP RANSAC, pose refine. Emits keyframe decisions, storage directives and

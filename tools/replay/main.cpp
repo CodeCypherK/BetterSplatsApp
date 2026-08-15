@@ -439,10 +439,10 @@ int FeedPass(const bs::SessionReader& session, const std::string& config,
   for (int32_t i = 0; i < status_out.directive_count; ++i) {
     stored_ids.insert(status_out.directives[i].frame_id);
   }
-  std::printf("%s pass: fed %u frames, engine processed %u, state=%d, "
+  std::printf("%s pass: fed %u frames, engine saw %u, state=%d, "
               "keyframes=%u, points=%u, scale_locked=%d\n",
               pass == BS_PASS_SCOUT ? "scout" : "live", fed,
-              status_out.frames_processed, status_out.state,
+              status_out.frames_fed, status_out.state,
               status_out.keyframes, status_out.map_points,
               status_out.scale_locked);
 

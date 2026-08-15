@@ -151,8 +151,13 @@ typedef struct bs_store_directive {
 typedef struct bs_live_status {
   int32_t state;              /* bs_live_state                             */
   uint32_t last_frame_id;     /* last frame the tracker processed          */
+  /* Frames the engine has been given. There is deliberately no
+   * "frames_processed" beside it: bs_live_feed tracks inline and returns,
+   * so the engine cannot drop a frame it was handed, and a field for
+   * "fed minus dropped" could only ever report zero dropped. Frames ARE
+   * dropped — by the app, when the tracker is slower than the camera — and
+   * the app is the side that knows, so it counts them there. */
   uint32_t frames_fed;
-  uint32_t frames_processed;  /* fed minus dropped                         */
   uint32_t keyframes;
   uint32_t map_points;
 

@@ -1029,7 +1029,6 @@ std::vector<bs_store_directive> LiveSystem::DrainDirectives() {
 void LiveSystem::FillStatus(bs_live_status& out) const {
   out.state = state_;
   out.last_frame_id = last_frame_id_;
-  out.frames_processed = frames_processed_;
   out.keyframes = static_cast<uint32_t>(map_.keyframes().size());
   out.map_points = static_cast<uint32_t>(map_.points().size());
   out.guidance = guidance_;

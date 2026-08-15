@@ -467,6 +467,19 @@ struct CaptureView: View {
                     .background(.ultraThinMaterial, in: Capsule())
             }
 
+            // The tracker falling behind the camera. Separate from the
+            // storage note because it is a different problem with a
+            // different fix, and because it can happen at any point in a
+            // capture, including a healthy one.
+            if let note = model.trackerNote {
+                Label(note, systemImage: "gauge.with.dots.needle.33percent")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(Color.orange)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 5)
+                    .background(.ultraThinMaterial, in: Capsule())
+            }
+
             HStack(spacing: 10) {
                 NavigationLink {
                     ReadinessDashboardView(model: model)

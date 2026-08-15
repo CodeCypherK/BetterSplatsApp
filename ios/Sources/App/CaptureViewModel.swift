@@ -56,6 +56,9 @@ final class FrameFeedContext: @unchecked Sendable {
     let store: SessionStore
     let encoder = JpegEncoder()
     let encodeQueue = DispatchQueue(label: "bs.jpeg", qos: .utility)
+    /// Runs the live tracker off the capture queue. See EngineFeeder for why
+    /// feeding inline cost frames the app never even saw.
+    let feeder = EngineFeeder()
     let previewRenderer: VideoPreviewRenderer
     let videoDims: (width: Int, height: Int)
 
@@ -121,8 +124,11 @@ final class FrameFeedContext: @unchecked Sendable {
         nextFrameId += 1
         lock.unlock()
 
-        feedEngine(frame, frameId: frameId, depth: depth)
+        // Preview first, then the engine. The order matters: the feed is
+        // asynchronous now, but the preview is what the user is looking at and
+        // it should never queue behind anything.
         previewRenderer.enqueue(frame.pixelBuffer)
+        feedEngine(frame, frameId: frameId, depth: depth)
 
         // Storage gate: cadence floor, exposure sanity, and MOVEMENT.
         //
@@ -239,55 +245,43 @@ final class FrameFeedContext: @unchecked Sendable {
     /// above stops for the rest of the session.
     var wantsFloorFrames = false
 
+    /// Copies the frame out and hands it to the feeder, which calls the engine
+    /// on its own queue. Everything the engine needs is owned by the copy: the
+    /// capture callback's pixel buffers die when it returns.
     private func feedEngine(_ frame: CapturedFrame, frameId: UInt32,
                             depth: DepthPacker.Packed) {
         CVPixelBufferLockBaseAddress(frame.pixelBuffer, .readOnly)
-        defer { CVPixelBufferUnlockBaseAddress(frame.pixelBuffer, .readOnly) }
-        guard let lumaBase = CVPixelBufferGetBaseAddressOfPlane(frame.pixelBuffer, 0)
-        else { return }
+        let luma = EngineFeeder.downscaledLuma(from: frame.pixelBuffer)
+        CVPixelBufferUnlockBaseAddress(frame.pixelBuffer, .readOnly)
+        guard let luma else { return }
 
-        let width = CVPixelBufferGetWidthOfPlane(frame.pixelBuffer, 0)
-        let height = CVPixelBufferGetHeightOfPlane(frame.pixelBuffer, 0)
-        let stride = CVPixelBufferGetBytesPerRowOfPlane(frame.pixelBuffer, 0)
-
-        var input = bs_frame_in()
-        input.frame_id = frameId
-        input.t_capture = frame.tCapture
-        input.t_depth = frame.tDepth
-        input.luma = UnsafePointer(lumaBase.assumingMemoryBound(to: UInt8.self))
-        input.luma_width = Int32(width)
-        input.luma_height = Int32(height)
-        input.luma_stride = Int32(stride)
+        var out = EngineFeeder.Frame(
+            frameId: frameId, tCapture: frame.tCapture, tDepth: frame.tDepth,
+            luma: luma.pixels, lumaWidth: luma.width, lumaHeight: luma.height,
+            fx: 0, fy: 0, cx: 0, cy: 0,
+            depth: depth.f32, depthWidth: depth.width, depthHeight: depth.height,
+            dfx: 0, dfy: 0, dcx: 0, dcy: 0,
+            gyro: frame.gyroDelta.map { SIMD3($0.x, $0.y, $0.z) })
 
         if let calibration = frame.calibration {
             let m = calibration.intrinsicMatrix
             let ref = calibration.intrinsicMatrixReferenceDimensions
-            let sx = Double(width) / Double(ref.width)
-            let sy = Double(height) / Double(ref.height)
-            input.fx = Double(m.columns.0.x) * sx
-            input.fy = Double(m.columns.1.y) * sy
-            input.cx = Double(m.columns.2.x) * sx
-            input.cy = Double(m.columns.2.y) * sy
+            // Scale to the size of the image actually being handed over, not
+            // to the full-resolution plane it came from.
+            let sx = Double(luma.width) / Double(ref.width)
+            let sy = Double(luma.height) / Double(ref.height)
+            out.fx = Double(m.columns.0.x) * sx
+            out.fy = Double(m.columns.1.y) * sy
+            out.cx = Double(m.columns.2.x) * sx
+            out.cy = Double(m.columns.2.y) * sy
             let dsx = Double(depth.width) / Double(ref.width)
             let dsy = Double(depth.height) / Double(ref.height)
-            input.dfx = Double(m.columns.0.x) * dsx
-            input.dfy = Double(m.columns.1.y) * dsy
-            input.dcx = Double(m.columns.2.x) * dsx
-            input.dcy = Double(m.columns.2.y) * dsy
+            out.dfx = Double(m.columns.0.x) * dsx
+            out.dfy = Double(m.columns.1.y) * dsy
+            out.dcx = Double(m.columns.2.x) * dsx
+            out.dcy = Double(m.columns.2.y) * dsy
         }
-        if let gyro = frame.gyroDelta {
-            input.gyro_dx = gyro.x
-            input.gyro_dy = gyro.y
-            input.gyro_dz = gyro.z
-            input.gyro_valid = 1
-        }
-
-        depth.f32.withUnsafeBufferPointer { depthBuf in
-            input.depth = depthBuf.baseAddress
-            input.depth_width = Int32(depth.width)
-            input.depth_height = Int32(depth.height)
-            _ = CoreEngine.shared.liveFeed(&input)
-        }
+        feeder.offer(out)
     }
 
     static func scaledIntrinsics(
@@ -356,6 +350,13 @@ final class CaptureViewModel {
     var isRescan: Bool { rescanLabel != nil }
     private(set) var guidance = "Preparing…"
     private(set) var framesSeen: UInt32 = 0
+    /// Set when the tracker is persistently slower than the camera, so frames
+    /// are being dropped before it ever sees them. Worth telling the user
+    /// about because the answer is theirs — slow down, or let the phone cool
+    /// — and because it degrades quietly otherwise: fewer tracked frames is
+    /// weaker live pose, which is worse guidance and a worse storage gate,
+    /// none of which announces itself.
+    private(set) var trackerNote: String?
     private(set) var framesStored: UInt32 = 0
     private(set) var megabytesWritten: Double = 0
     private(set) var storageNote: String?
@@ -564,6 +565,11 @@ final class CaptureViewModel {
             try? await Task.sleep(for: .milliseconds(400))
             scoutFramesStored = await context.store.storedFrames
 
+            // And let the tracker finish what it accepted, so the scaffold
+            // the capture pass loads includes the end of the circuit — which
+            // is exactly where the capture pass has to relocalize.
+            await context.feeder.finish()
+
             let engine = CoreEngine.shared
             engine.liveEnd()
             scaffoldKeyframes = engine.livePollStatus().keyframes
@@ -684,6 +690,18 @@ final class CaptureViewModel {
                 }
                 self.recovery = RecoveryHint(status: status)
                 self.framesSeen = status.frames_fed
+                // The tracker's share of the camera. Some dropping is normal
+                // and harmless — a relocalization sweep costs several frames
+                // and recovers — so this reports a SUSTAINED shortfall, over
+                // the whole session, and only once there is enough of a
+                // session for the fraction to mean anything.
+                let counts = context.feeder.counts
+                self.trackerNote = counts.delivered >= 150
+                    && counts.dropFraction > 0.35
+                    ? String(format: "Tracking is behind the camera (%.0f%% of "
+                             + "frames skipped) — move slower",
+                             counts.dropFraction * 100)
+                    : nil
                 // The recovery hint is a better version of the same message,
                 // so it replaces the generic pill rather than sitting beside
                 // it repeating itself.
@@ -857,8 +875,11 @@ final class CaptureViewModel {
         manager.stop()
 
         Task {
-            // Let in-flight encodes drain before finalizing.
+            // Let in-flight encodes drain before finalizing, and the tracker
+            // finish the frames it accepted — the last of them cover wherever
+            // the user stopped walking.
             try? await Task.sleep(for: .milliseconds(600))
+            await context?.feeder.finish()
             CoreEngine.shared.liveEnd()
             if let context {
                 // Record the rescan volume BEFORE finalize, which is what

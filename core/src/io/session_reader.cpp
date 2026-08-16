@@ -191,6 +191,12 @@ std::string SessionReader::ImagePath(uint32_t frame_id) const {
   return (fs::path(FramePath(frame_id)) / "image.jpg").string();
 }
 
+std::string SessionReader::MaskPath(uint32_t frame_id) const {
+  const auto it = owner_.find(frame_id);
+  const std::string& dir = it == owner_.end() ? dir_ : it->second;
+  return (fs::path(dir) / "masks" / (FrameDirName(frame_id) + ".png")).string();
+}
+
 std::optional<FrameMeta> SessionReader::ReadMeta(uint32_t frame_id) const {
   const std::string text =
       ReadTextFile((fs::path(FramePath(frame_id)) / "meta.json").string());

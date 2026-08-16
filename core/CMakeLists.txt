@@ -78,4 +78,11 @@ else()
   target_link_libraries(bscore PRIVATE ${OpenCV_LIBS})
 endif()
 
-target_compile_options(bscore PRIVATE -Wall -Wextra)
+if(MSVC)
+  # /W4 is not the equivalent of -Wall -Wextra here: MSVC applies it to the
+  # Eigen and Ceres headers too, which bury the engine's own warnings under
+  # thousands from third-party templates.
+  target_compile_options(bscore PRIVATE /W3)
+else()
+  target_compile_options(bscore PRIVATE -Wall -Wextra)
+endif()

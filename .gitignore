@@ -4,6 +4,10 @@ ios-deps/
 *.ipa
 *.xcarchive
 
+# vcpkg manifest-mode dependency tree (Windows host build); vcpkg.json is
+# committed, the several GB it expands into is not.
+vcpkg_installed/
+
 # Generated Xcode project (produced by `xcodegen generate`)
 ios/BetterSplats.xcodeproj/
 ios/Info.plist

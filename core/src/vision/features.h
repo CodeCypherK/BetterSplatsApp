@@ -52,12 +52,26 @@ struct SiftOptions {
   float retry_yield_frac = kFeatureRetryYieldFraction;
 };
 
+// `mask`, when non-empty, is 8-bit single-channel over the same pixel grid as
+// `gray`, following the COLMAP/OpenCV convention: **non-zero keeps the pixel,
+// zero excludes it**. It is stated that way round rather than as "the mask
+// marks the person" so the same file is directly usable by COLMAP and by a
+// splat trainer's photometric loss without anyone inverting it in between —
+// an inversion that is silent when it goes wrong, because a model
+// reconstructed from ONLY the people in the room still solves, just to the
+// wrong scene.
+//
+// An empty mask means "no opinion" and behaves bit-identically to the
+// unmasked path, which is what lets masks be an optional derived layer.
+
 // Detects ORB features on an 8-bit gray image; retries with the low FAST
 // threshold when the frame yields less than `retry_yield_frac` of budget.
-FeatureSet DetectOrb(const cv::Mat& gray, const OrbOptions& options);
+FeatureSet DetectOrb(const cv::Mat& gray, const OrbOptions& options,
+                     const cv::Mat& mask = cv::Mat());
 
 // Detects (Root)SIFT features; retries at the lower contrast threshold when
 // the frame yields less than `retry_yield_frac` of budget.
-FeatureSet DetectSift(const cv::Mat& gray, const SiftOptions& options);
+FeatureSet DetectSift(const cv::Mat& gray, const SiftOptions& options,
+                      const cv::Mat& mask = cv::Mat());
 
 }  // namespace bs

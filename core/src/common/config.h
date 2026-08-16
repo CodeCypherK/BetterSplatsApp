@@ -253,6 +253,22 @@ struct EngineConfig {
   // Set true only to study what they would contribute.
   bool final_include_scout = false;
 
+  // --- exclusion masks ---
+  // Honour <session>/masks/NNNNNN.png when present: keypoints are detected
+  // only where the mask is non-zero, so a person or an animal that walked
+  // through the capture contributes no features and therefore no tracks.
+  //
+  // On by default because absent masks change nothing — the same argument
+  // that governs DepthImage.confidence. A mask can only ever REMOVE evidence,
+  // so the worst case of a bad mask is a thinner reconstruction, never a
+  // confidently wrong one.
+  //
+  // What this does NOT do is remove a moving subject from the photographs the
+  // splat trains on; that is the trainer's job with the same mask files. It
+  // removes them from the GEOMETRY, which is the half that silently corrupts
+  // every camera pose in the room rather than showing up as a visible ghost.
+  bool final_use_masks = true;
+
   // --- levelling ---
   // Image-only SfM has no gravity, so a scan of an ordinary room comes out
   // tilted and at an arbitrary bearing. Find the floor, level it, and square

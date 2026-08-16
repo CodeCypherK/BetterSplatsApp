@@ -12,8 +12,31 @@ option(BS_BUILD_TOOLS "Build synth/replay CLI tools (host platforms only)" ON)
 option(BS_SANITIZE "Enable ASan + UBSan" OFF)
 
 if(BS_SANITIZE)
+  if(MSVC)
+    message(FATAL_ERROR "BS_SANITIZE is GCC/Clang-only — use the linux-asan preset")
+  endif()
   add_compile_options(-fsanitize=address,undefined -fno-omit-frame-pointer)
   add_link_options(-fsanitize=address,undefined)
+endif()
+
+# The engine is portable C++17 and the Windows port needed no source changes,
+# but MSVC differs from the GNU family in three ways that are settled here
+# rather than in the sources:
+#   _USE_MATH_DEFINES  M_PI is the ONLY non-portable construct in core/ and
+#                      tools/ (16 uses). MSVC hides it behind this macro, and
+#                      it must be defined before <cmath> — hence a command-line
+#                      define rather than a #define in a header, which would
+#                      depend on include order.
+#   /bigobj            The Ceres cost functors in final_solve.cpp and
+#                      live_mapper.cpp expand past MSVC's 65,536-section limit.
+#   /utf-8             Sources carry UTF-8 comments; without this MSVC reads
+#                      them in the system codepage and warns (C4819) or worse.
+# NOMINMAX and WIN32_LEAN_AND_MEAN are defensive: nothing here includes
+# windows.h today, but OpenCV and Ceres headers can pull it in transitively,
+# and its min/max macros break std::min/std::max and Eigen.
+if(MSVC)
+  add_compile_definitions(_USE_MATH_DEFINES NOMINMAX WIN32_LEAN_AND_MEAN)
+  add_compile_options(/bigobj /utf-8)
 endif()
 
 if(CMAKE_SYSTEM_NAME STREQUAL "iOS")

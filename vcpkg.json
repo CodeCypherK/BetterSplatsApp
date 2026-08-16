@@ -1,0 +1,43 @@
+{
+  "name": "bettersplats",
+  "version-string": "0.1.0",
+  "description": "Host-build dependencies for the BetterSplats engine, tools and tests on Windows. Linux CI takes these from apt (scripts/ci_linux.sh deps) and iOS from scripts/ios/build_deps.sh; this manifest exists so the same sources build with MSVC without a system package manager.",
+  "homepage": "https://github.com/CodeCypherK/BetterSplatsApp",
+  "builtin-baseline": "ddf0518c31a259dcc359fd4c7bcb1ce8a27e9855",
+  "dependencies": [
+    "eigen3",
+    {
+      "name": "ceres",
+      "features": [
+        "eigensparse"
+      ]
+    },
+    {
+      "name": "opencv4",
+      "default-features": false,
+      "features": [
+        "calib3d",
+        "fs",
+        "intrinsics",
+        "jpeg",
+        "png",
+        "thread"
+      ]
+    },
+    "gtest"
+  ],
+  "overrides": [
+    {
+      "$comment": "Linux CI builds against Ubuntu 24.04's libeigen3-dev, which is 3.4.0, and core/CMakeLists.txt asks for 3.4. The current vcpkg baseline ships Eigen 5.0.1 — a major version whose config file correctly refuses a 3.4 request. Pinning here rather than relaxing the find_package: the point of the Windows job is to prove the SAME sources against the SAME libraries, and a host quietly building on a different major version of the linear algebra library is exactly the kind of difference that shows up as a numerical discrepancy nobody can place.",
+      "name": "eigen3",
+      "version": "3.4.0",
+      "port-version": 5
+    },
+    {
+      "$comment": "Pinned with eigen3 above, and for the same reason. ceres 2.2.0#6 asks for Eigen in the range 3.3...5, which under CMake's SameMajorVersion rules only Eigen 5.x can satisfy — the upper bound's major must match the version found, so a range ending at 5 rejects 3.4.0 despite containing it. Port-version 5 is the last that pairs with the Eigen the Linux job uses. Lifting both pins together is the upgrade path, once the engine has been built and TESTED against Eigen 5 rather than assumed compatible with it.",
+      "name": "ceres",
+      "version": "2.2.0",
+      "port-version": 5
+    }
+  ]
+}

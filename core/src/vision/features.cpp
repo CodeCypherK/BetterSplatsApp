@@ -47,9 +47,28 @@ void GridFilter(FeatureSet& set, int cols, int rows, int max_total,
   set.descriptors = descriptors;
 }
 
+// Fraction of the frame a mask leaves usable; 1.0 when there is no mask.
+//
+// This exists for the retry gate rather than for reporting. Both detectors
+// treat "came back short of budget" as evidence of a starved frame and
+// re-detect at a more sensitive threshold — but a masked frame is short for a
+// reason that has nothing to do with blur: the excluded region has no
+// features to give. Testing against the full budget would re-detect on every
+// masked frame and spray the sensitive threshold's weaker keypoints across
+// the part of the image that was fine, which is the opposite of what masking
+// is for.
+double VisibleFraction(const cv::Mat& mask, cv::Size size) {
+  if (mask.empty() || mask.type() != CV_8UC1) return 1.0;
+  const double total = static_cast<double>(size.area());
+  if (total <= 0.0) return 1.0;
+  const double visible = static_cast<double>(cv::countNonZero(mask)) / total;
+  return std::clamp(visible, 0.0, 1.0);
+}
+
 }  // namespace
 
-FeatureSet DetectOrb(const cv::Mat& gray, const OrbOptions& options) {
+FeatureSet DetectOrb(const cv::Mat& gray, const OrbOptions& options,
+                     const cv::Mat& mask) {
   FeatureSet set;
   set.type = FeatureType::kOrb;
 
@@ -57,20 +76,21 @@ FeatureSet DetectOrb(const cv::Mat& gray, const OrbOptions& options) {
   auto orb = cv::ORB::create(options.max_features * 2, options.scale_factor,
                              options.levels, /*edgeThreshold=*/19, 0, 2,
                              cv::ORB::HARRIS_SCORE, 31, options.fast_threshold);
-  orb->detectAndCompute(gray, cv::noArray(), set.keypoints, set.descriptors);
+  orb->detectAndCompute(gray, mask, set.keypoints, set.descriptors);
 
   // A frame that comes back short of its budget is starved, not simply
   // featureless: blur and noise suppress FAST responses well before the
   // scene runs out of structure. Re-detect more sensitively and let the
   // grid filter below pick the strongest, still spatially spread.
   const int retry_below =
-      static_cast<int>(options.max_features * options.retry_yield_frac);
+      static_cast<int>(options.max_features * options.retry_yield_frac *
+                       VisibleFraction(mask, gray.size()));
   if (set.size() < retry_below &&
       options.fast_threshold_min < options.fast_threshold) {
     auto retry = cv::ORB::create(options.max_features * 2, options.scale_factor,
                                  options.levels, 19, 0, 2, cv::ORB::HARRIS_SCORE,
                                  31, options.fast_threshold_min);
-    retry->detectAndCompute(gray, cv::noArray(), set.keypoints, set.descriptors);
+    retry->detectAndCompute(gray, mask, set.keypoints, set.descriptors);
   }
 
   GridFilter(set, options.grid_cols, options.grid_rows, options.max_features,
@@ -78,13 +98,14 @@ FeatureSet DetectOrb(const cv::Mat& gray, const OrbOptions& options) {
   return set;
 }
 
-FeatureSet DetectSift(const cv::Mat& gray, const SiftOptions& options) {
+FeatureSet DetectSift(const cv::Mat& gray, const SiftOptions& options,
+                      const cv::Mat& mask) {
   FeatureSet set;
   set.type = FeatureType::kSift;
   auto detect = [&](double contrast) {
     auto sift = cv::SIFT::create(options.max_features, /*nOctaveLayers=*/3,
                                  contrast, /*edgeThreshold=*/10, /*sigma=*/1.6);
-    sift->detectAndCompute(gray, cv::noArray(), set.keypoints, set.descriptors);
+    sift->detectAndCompute(gray, mask, set.keypoints, set.descriptors);
   };
   detect(options.contrast_threshold);
 
@@ -92,7 +113,8 @@ FeatureSet DetectSift(const cv::Mat& gray, const SiftOptions& options) {
   // low-amplitude extrema that blur and noise leave behind, so a short frame
   // gets a second, more sensitive pass rather than a thin track set.
   const int retry_below =
-      static_cast<int>(options.max_features * options.retry_yield_frac);
+      static_cast<int>(options.max_features * options.retry_yield_frac *
+                       VisibleFraction(mask, gray.size()));
   if (set.size() < retry_below &&
       options.contrast_threshold_min < options.contrast_threshold) {
     detect(options.contrast_threshold_min);

@@ -40,12 +40,31 @@
         "BS_BUILD_TOOLS": "OFF",
         "BS_IOS_DEPS_DIR": "${sourceDir}/ios-deps"
       }
+    },
+    {
+      "name": "windows-rel",
+      "displayName": "Windows x64 Release (engine + tools + tests)",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/windows-rel",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      },
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "BS_BUILD_TESTS": "ON",
+        "BS_BUILD_TOOLS": "ON",
+        "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
+        "VCPKG_TARGET_TRIPLET": "x64-windows-static-md"
+      }
     }
   ],
   "buildPresets": [
     { "name": "linux-rel", "configurePreset": "linux-rel" },
     { "name": "linux-asan", "configurePreset": "linux-asan" },
-    { "name": "ios-rel", "configurePreset": "ios-rel" }
+    { "name": "ios-rel", "configurePreset": "ios-rel" },
+    { "name": "windows-rel", "configurePreset": "windows-rel" }
   ],
   "testPresets": [
     {
@@ -56,6 +75,11 @@
     {
       "name": "linux-asan",
       "configurePreset": "linux-asan",
+      "output": { "outputOnFailure": true }
+    },
+    {
+      "name": "windows-rel",
+      "configurePreset": "windows-rel",
       "output": { "outputOnFailure": true }
     }
   ]

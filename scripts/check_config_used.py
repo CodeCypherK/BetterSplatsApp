@@ -19,7 +19,6 @@ retrieval, the pair cap, track completion, radius-outlier removal.
     scripts/check_config_used.py            # from the repo root
 """
 import re
-import subprocess
 import sys
 from pathlib import Path
 
@@ -43,15 +42,22 @@ def main() -> int:
               file=sys.stderr)
         return 1
 
+    # Read every source once and search in Python rather than shelling out to
+    # grep per field. Two reasons: grep does not exist on a stock Windows
+    # runner, and this gate now runs on the Windows job too — a CI check that
+    # silently cannot run is worth less than no check at all. It is also ~90
+    # fewer process spawns.
+    sources = {
+        path.as_posix(): path.read_text(encoding="utf-8", errors="ignore")
+        for directory in ("core/src", "core/tests", "tools")
+        for path in Path(directory).rglob("*")
+        if path.suffix in {".cpp", ".h"} and path.as_posix() not in DECL_ONLY
+    }
+
     unused = []
     for field in fields:
-        out = subprocess.run(
-            ["grep", "-rlE", rf"\b(config|config_|c|cfg)\.{field}\b",
-             "core/src", "core/tests", "tools", "--include=*.cpp",
-             "--include=*.h"],
-            capture_output=True, text=True)
-        readers = {line for line in out.stdout.split() if line not in DECL_ONLY}
-        if not readers:
+        pattern = re.compile(rf"\b(?:config|config_|c|cfg)\.{re.escape(field)}\b")
+        if not any(pattern.search(text) for text in sources.values()):
             unused.append(field)
 
     print(f"config fields: {len(fields)}, read by the engine: "

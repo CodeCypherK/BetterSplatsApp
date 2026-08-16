@@ -16,6 +16,8 @@ session_<yyyyMMdd-HHmmss>_<6hex>/
 │   │   ├── lidar.depth   RAW   binary depth map, format below
 │   │   └── meta.json     RAW   per-frame metadata, schema below
 │   └── ...
+├── masks/                DERIVED  optional, written by an external tool
+│   └── NNNNNN.png       8-bit exclusion mask for frame NNNNNN, format below
 ├── live/                 LIVE  engine-owned, disposable
 │   ├── poses.jsonl       one JSON object per processed frame (live pose);
 │   │                     the final solve's only live input (init hint)
@@ -122,6 +124,47 @@ Scout frames are still written to RAW like any other: they are real
 measurements, the Linux replay needs them to reproduce a session, and
 "excluded from the reconstruction" is a solve-time decision, never a reason
 to discard captured data.
+
+## `masks/NNNNNN.png` (derived layer, optional)
+
+An 8-bit single-channel PNG per frame, naming the pixels the final solve may
+detect features on. **Non-zero keeps a pixel, zero excludes it** — the COLMAP
+convention, and the same sense a splat trainer's photometric loss wants, so
+one file serves both without anyone inverting it in between. That direction is
+deliberate rather than arbitrary: an inverted mask does not fail, it
+reconstructs the room from the people walking through it and reports a
+perfectly healthy solve.
+
+`NNNNNN` is the frame's zero-padded id, matching its directory under
+`frames/`. Any resolution is accepted; the solve resizes to the JPEG's grid
+with **nearest-neighbour** interpolation, because the value is binary and
+interpolating one invents fractional pixels along every boundary.
+
+Four properties are normative:
+
+- **It is a fourth layer, not part of RAW.** Masks sit beside `frames/`, never
+  inside it. They are regenerated whenever the segmentation model or the class
+  list changes, and RAW's whole value is that a byte comparison after
+  processing still passes.
+- **Absent means "no opinion".** A session with no `masks/` directory, or a
+  frame with no mask, behaves bit-identically to one from before this existed.
+  Absent never means "exclude everything".
+- **It can only remove evidence, never add it.** The worst case of a bad mask
+  is a thinner reconstruction; there is no case where one causes a pixel to be
+  trusted more than it would have been.
+- **In a chain, a mask lives with the session that owns its frame.** The
+  lookup resolves through the same owner map as `frames/`, so masks for a
+  parent session's frames belong in the parent (see Project chains).
+
+`final_use_masks` (default true) turns the whole mechanism off. Masks are
+fingerprinted by size and modification time into the feature cache key, so
+regenerating them invalidates cached features rather than silently reusing the
+ones extracted before the masks existed.
+
+Nothing in this repository writes masks. They are produced by whatever
+segmentation tool the operator prefers — GSplat Studio's pre-splatting cleanup
+generates them from a COCO-trained instance segmenter — which is exactly why
+the convention has to be written down here rather than agreed informally.
 
 ## `calibration.json` (per session)
 

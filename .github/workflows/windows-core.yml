@@ -1,0 +1,110 @@
+name: core-windows
+
+# The engine's third host. Linux is the development loop and iOS is the
+# product; this exists because the reconstruction is also run OFF the phone —
+# a captured session is copied to a workstation and solved there, with tunable
+# config, by GSplat Studio's pre-splatting cleanup. That path needs a
+# bs_replay.exe somebody can download, and a Windows build nobody runs in CI
+# is a Windows build that is broken by the next commit.
+#
+# The port itself is three compiler settings in CMakeLists.txt (M_PI, /bigobj,
+# /utf-8) — the sources are unchanged, which is the property this job defends.
+
+on:
+  push:
+    paths:
+      - "core/**"
+      - "tools/**"
+      - "third_party/**"
+      - "scripts/check_config_used.py"
+      - "CMakeLists.txt"
+      - "CMakePresets.json"
+      - "vcpkg.json"
+      - ".github/workflows/windows-core.yml"
+  workflow_dispatch:
+  workflow_call:
+
+jobs:
+  test:
+    name: build + test (release)
+    runs-on: windows-2022
+    timeout-minutes: 120
+    env:
+      VCPKG_ROOT: ${{ github.workspace }}/vcpkg
+      # Keep vcpkg's own downloads and build trees inside the workspace so the
+      # cache action can see them.
+      VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}/vcpkg-cache
+    steps:
+      - uses: actions/checkout@v4
+
+      # Ninja + MSVC rather than the Visual Studio generator: it matches the
+      # Linux preset's single-config shape, and pinning a generator name would
+      # tie this job to a VS version that the runner image changes underneath
+      # us. cl.exe comes from the dev shell below instead.
+      - name: Set up MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Install Ninja
+        run: choco install ninja --no-progress -y
+
+      - name: Cache vcpkg binaries
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/vcpkg-cache
+          # Keyed on the manifest: Ceres and OpenCV are a ~40 minute build from
+          # cold and nothing but vcpkg.json changes what they are.
+          key: vcpkg-x64-static-md-${{ hashFiles('vcpkg.json') }}
+          restore-keys: vcpkg-x64-static-md-
+
+      - name: Bootstrap vcpkg
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path "$env:VCPKG_DEFAULT_BINARY_CACHE" | Out-Null
+          git clone --depth 1 https://github.com/microsoft/vcpkg.git "$env:VCPKG_ROOT"
+          & "$env:VCPKG_ROOT/bootstrap-vcpkg.bat" -disableMetrics
+
+      - name: Configure
+        run: cmake --preset windows-rel
+
+      - name: Build
+        run: cmake --build --preset windows-rel
+
+      - name: Test
+        run: ctest --preset windows-rel
+
+      # The two spec invariants the Linux job enforces are host-independent, so
+      # they run here too rather than being trusted to the other platform.
+      - name: Validate config coverage
+        run: python scripts/check_config_used.py
+
+      - name: Stage bs_replay
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Copy-Item build/windows-rel/tools/replay/bs_replay.exe dist/
+          Copy-Item build/windows-rel/tools/synth/bs_synth.exe dist/
+          # Static-md linkage means the only external dependency is the VC++
+          # redistributable, which GSplat Studio already ships. Proven rather
+          # than asserted: a run from a bare directory would fail here if some
+          # DLL had crept into the link.
+          ./dist/bs_replay.exe --version
+          ./dist/bs_replay.exe --selftest
+
+      - name: Upload bs_replay
+        uses: actions/upload-artifact@v4
+        with:
+          name: bs-tools-windows-x64
+          path: dist/*.exe
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload failure artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-test-logs-${{ github.run_number }}
+          path: build/windows-rel/Testing/**/*.log
+          if-no-files-found: ignore
+          retention-days: 7

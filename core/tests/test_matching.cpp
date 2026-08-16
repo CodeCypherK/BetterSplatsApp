@@ -125,6 +125,89 @@ TEST(Matching, MismatchedTypesReturnEmpty) {
   EXPECT_TRUE(MatchFeatures(sets.a, sift, {}).empty());
 }
 
+// A textured frame with a rectangle of it excluded — the shape of a person
+// standing in a capture. Both detectors must return nothing from inside the
+// excluded region, because a keypoint there becomes a track, and a track on a
+// subject that moves between frames pulls on every camera pose that saw it.
+TEST(Features, MaskExcludesKeypointsInsideIt) {
+  cv::Mat img(720, 960, CV_8UC1);
+  cv::RNG cvrng(7);
+  cvrng.fill(img, cv::RNG::UNIFORM, 0, 255);
+  cv::GaussianBlur(img, img, cv::Size(5, 5), 1.2);
+
+  // Non-zero keeps, zero excludes (COLMAP convention, see features.h).
+  const cv::Rect excluded(300, 200, 360, 300);
+  cv::Mat mask(img.size(), CV_8UC1, cv::Scalar(255));
+  mask(excluded).setTo(cv::Scalar(0));
+
+  // The region really is feature-rich when nothing is masking it, otherwise
+  // this test would pass on an image that simply had nothing there.
+  int unmasked_inside = 0;
+  for (const auto& kp : DetectOrb(img, {}).keypoints) {
+    if (excluded.contains(cv::Point(kp.pt))) ++unmasked_inside;
+  }
+  ASSERT_GT(unmasked_inside, 20);
+
+  for (const auto& kp : DetectOrb(img, {}, mask).keypoints) {
+    EXPECT_FALSE(excluded.contains(cv::Point(kp.pt))) << "ORB kept a masked pixel";
+  }
+  SiftOptions sift;
+  sift.max_features = 1500;
+  for (const auto& kp : DetectSift(img, sift, mask).keypoints) {
+    EXPECT_FALSE(excluded.contains(cv::Point(kp.pt))) << "SIFT kept a masked pixel";
+  }
+}
+
+// Absent means "no opinion", never "exclude everything" — the property that
+// lets masks be an optional derived layer that no existing session notices.
+TEST(Features, EmptyMaskMatchesTheUnmaskedPath) {
+  cv::Mat img(480, 640, CV_8UC1);
+  cv::RNG cvrng(11);
+  cvrng.fill(img, cv::RNG::UNIFORM, 0, 255);
+  cv::GaussianBlur(img, img, cv::Size(5, 5), 1.2);
+
+  const FeatureSet plain = DetectOrb(img, {});
+  const FeatureSet empty_mask = DetectOrb(img, {}, cv::Mat());
+  ASSERT_EQ(plain.size(), empty_mask.size());
+  for (int i = 0; i < plain.size(); ++i) {
+    EXPECT_EQ(plain.keypoints[i].pt, empty_mask.keypoints[i].pt);
+  }
+}
+
+// The retry gate treats "short of budget" as a starved frame and re-detects at
+// a more sensitive threshold. A masked frame is short for an entirely
+// different reason — the excluded part has no features to give — so the gate
+// has to be scaled by how much of the frame survives. Without that scaling,
+// masking half an image makes every frame retry, and the sensitive pass
+// sprays weaker keypoints across the half that was never the problem: a mask
+// would ADD noise features to the region it was supposed to leave alone.
+TEST(Features, MaskDoesNotProvokeTheStarvedFrameRetry) {
+  cv::Mat img(720, 960, CV_8UC1);
+  cv::RNG cvrng(23);
+  cvrng.fill(img, cv::RNG::UNIFORM, 0, 255);
+  cv::GaussianBlur(img, img, cv::Size(5, 5), 1.2);
+
+  const cv::Rect visible(0, 0, 480, 720);  // keep the left half
+  cv::Mat mask(img.size(), CV_8UC1, cv::Scalar(0));
+  mask(visible).setTo(cv::Scalar(255));
+
+  auto count_in = [&](const FeatureSet& set) {
+    int n = 0;
+    for (const auto& kp : set.keypoints) {
+      if (visible.contains(cv::Point(kp.pt))) ++n;
+    }
+    return n;
+  };
+
+  const int plain_left = count_in(DetectOrb(img, {}));
+  const int masked_left = count_in(DetectOrb(img, {}, mask));
+  ASSERT_GT(plain_left, 100);
+  // Masking the other half must not densify this one. The retry it would
+  // otherwise trigger detects at fast_threshold_min and roughly doubles the
+  // yield here, so 1.5x separates "no retry" from "retried" comfortably.
+  EXPECT_LT(masked_left, plain_left * 3 / 2);
+}
+
 TEST(Features, OrbOnSyntheticTextureIsRepeatable) {
   // Same image twice -> identical detections; spread across the grid.
   cv::Mat img(720, 960, CV_8UC1);

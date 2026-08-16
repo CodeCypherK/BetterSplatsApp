@@ -46,7 +46,10 @@ void PrintUsage() {
                "  --decimate N feed every Nth frame (a device session holds\n"
                "              only stored frames, ~3 fps, where synth holds all\n"
                "              30 - this asks which regime a result holds in)\n"
-               "  --config    engine config JSON string (default {})\n");
+               "  --config    engine config JSON string (default {})\n"
+               "  --progress-json  emit one JSON object per line on stdout\n"
+               "              instead of the human summary, for a host UI\n"
+               "              driving the solve (--final only)\n");
 }
 
 int RunInfo(const bs::SessionReader& session) {
@@ -227,12 +230,64 @@ int RunTwoView(const bs::SessionReader& session, int gap, bool check) {
 // Runs the final solve through the engine ABI (worker thread + polling, the
 // same path the app uses), then optionally checks the exported poses
 // against ground truth.
+// Stable machine-readable names for bs_final_stage. Deliberately not the enum
+// numbers: a host UI displaying these should not have to be recompiled when a
+// stage is inserted in the middle, and the numbers are an ABI detail.
+const char* StageName(int stage) {
+  switch (stage) {
+    case BS_STAGE_IDLE: return "idle";
+    case BS_STAGE_FEATURES: return "features";
+    case BS_STAGE_VOCAB: return "vocab";
+    case BS_STAGE_PAIRS: return "pairs";
+    case BS_STAGE_MATCHING: return "matching";
+    case BS_STAGE_TRACKS: return "tracks";
+    case BS_STAGE_INIT_POSES: return "init_poses";
+    case BS_STAGE_TRIANGULATE: return "triangulate";
+    case BS_STAGE_GLOBAL_BA: return "global_ba";
+    case BS_STAGE_FLOATER_SWEEP: return "floater_sweep";
+    case BS_STAGE_LIDAR_ALIGN: return "lidar_align";
+    case BS_STAGE_EXPORT: return "export";
+    case BS_STAGE_DONE: return "done";
+    case BS_STAGE_FAILED: return "failed";
+    default: return "unknown";
+  }
+}
+
+// Minimal JSON string escaping for the one place a message crosses: engine
+// error text, which is human-written and can hold quotes or a Windows path.
+std::string JsonEscape(const char* text) {
+  std::string out;
+  for (const char* p = text != nullptr ? text : ""; *p != '\0'; ++p) {
+    switch (*p) {
+      case '"': out += "\\\""; break;
+      case '\\': out += "\\\\"; break;
+      case '\n': out += "\\n"; break;
+      case '\r': out += "\\r"; break;
+      case '\t': out += "\\t"; break;
+      default:
+        if (static_cast<unsigned char>(*p) < 0x20) {
+          char buf[8];
+          std::snprintf(buf, sizeof(buf), "\\u%04x", *p);
+          out += buf;
+        } else {
+          out += *p;
+        }
+    }
+  }
+  return out;
+}
+
 int RunFinal(const bs::SessionReader& session, const std::string& config,
-             const std::string& preset, bool check) {
+             const std::string& preset, bool check, bool progress_json) {
   bs_engine* engine = bs_create(config.c_str());
   if (engine == nullptr) return 1;
 
   if (bs_final_start(engine, session.dir().c_str(), preset.c_str()) != BS_OK) {
+    if (progress_json) {
+      std::printf("{\"type\":\"error\",\"message\":\"%s\"}\n",
+                  JsonEscape(bs_last_error(engine)).c_str());
+      std::fflush(stdout);
+    }
     std::fprintf(stderr, "final_start failed: %s\n", bs_last_error(engine));
     bs_destroy(engine);
     return 1;
@@ -242,7 +297,21 @@ int RunFinal(const bs::SessionReader& session, const std::string& config,
   bs_final_progress progress{};
   while (true) {
     bs_final_poll(engine, &progress);
-    if (progress.stage != last_stage) {
+    if (progress_json) {
+      // Every poll, not only on a stage change. Global BA is by far the
+      // longest stage of a real solve, and a UI fed only on transitions shows
+      // a frozen bar for the whole of it — which reads as a hang, and is the
+      // point at which people kill a run that was working.
+      std::printf(
+          "{\"type\":\"progress\",\"stage\":\"%s\",\"stage_progress\":%.3f,"
+          "\"total\":%.3f,\"registered\":%u,\"images\":%u,\"points\":%u,"
+          "\"rmse_px\":%.3f,\"track_len\":%.2f,\"ba_round\":%u}\n",
+          StageName(progress.stage), progress.stage_progress,
+          progress.total_progress, progress.images_registered,
+          progress.images_total, progress.points, progress.reproj_rmse_px,
+          progress.mean_track_len, progress.ba_round);
+      std::fflush(stdout);
+    } else if (progress.stage != last_stage) {
       last_stage = progress.stage;
       std::printf("stage %2d  total %3.0f%%  reg %u/%u  points %u  rmse %.2f\n",
                   progress.stage, 100.0f * progress.total_progress,
@@ -258,11 +327,26 @@ int RunFinal(const bs::SessionReader& session, const std::string& config,
   }
 
   const bool solved = progress.stage == BS_STAGE_DONE;
-  std::printf("final solve: %s — registered %u/%u, %u points, rmse %.2fpx, "
-              "mean track %.1f\n",
-              solved ? "DONE" : "FAILED", progress.images_registered,
-              progress.images_total, progress.points, progress.reproj_rmse_px,
-              progress.mean_track_len);
+  if (progress_json) {
+    std::printf("{\"type\":\"done\",\"ok\":%s,\"registered\":%u,\"images\":%u,"
+                "\"points\":%u,\"rmse_px\":%.3f,\"track_len\":%.2f,"
+                "\"colmap_dir\":\"%s\"}\n",
+                solved ? "true" : "false", progress.images_registered,
+                progress.images_total, progress.points,
+                progress.reproj_rmse_px, progress.mean_track_len,
+                JsonEscape((session.dir() + "/final/colmap").c_str()).c_str());
+    if (!solved) {
+      std::printf("{\"type\":\"error\",\"message\":\"%s\"}\n",
+                  JsonEscape(bs_last_error(engine)).c_str());
+    }
+    std::fflush(stdout);
+  } else {
+    std::printf("final solve: %s — registered %u/%u, %u points, rmse %.2fpx, "
+                "mean track %.1f\n",
+                solved ? "DONE" : "FAILED", progress.images_registered,
+                progress.images_total, progress.points, progress.reproj_rmse_px,
+                progress.mean_track_len);
+  }
   if (!solved) {
     std::fprintf(stderr, "error: %s\n", bs_last_error(engine));
     bs_destroy(engine);
@@ -924,6 +1008,7 @@ int main(int argc, char** argv) {
   int decimate = 1;
   std::string preset = "quality";
   std::string config = "{}";
+  bool progress_json = false;
   for (int i = 2; i < argc; ++i) {
     const std::string arg = argv[i];
     if (arg == "--info") do_info = true;
@@ -940,6 +1025,8 @@ int main(int argc, char** argv) {
       if (i + 1 < argc && argv[i + 1][0] != '-') preset = argv[++i];
     } else if (arg == "--config" && i + 1 < argc) {
       config = argv[++i];
+    } else if (arg == "--progress-json") {
+      progress_json = true;
     } else {
       std::fprintf(stderr, "unknown option: %s\n", arg.c_str());
       PrintUsage();
@@ -966,5 +1053,5 @@ int main(int argc, char** argv) {
     const int rc = RunLive(*session, config, check, decimate);
     if (rc != 0 || !do_final) return rc;
   }
-  return RunFinal(*session, config, preset, check);
+  return RunFinal(*session, config, preset, check, progress_json);
 }

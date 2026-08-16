@@ -137,10 +137,44 @@ uint64_t Fnv1a(uint64_t h, const void* data, size_t n) {
 //   2: yield-based retry in both detectors (blur/noise starvation fix)
 constexpr int kFeatureAlgorithmVersion = 2;
 
+// Fingerprint of the exclusion masks this solve will apply: the size and
+// modification time of every mask that exists, in frame order, or 0 when
+// masking is off.
+//
+// This has to enter the cache key, and the reason is a silent-wrong-answer
+// one. The feature cache is keyed on the config and the frame list; masks are
+// neither. Regenerate them — a different model, another class ticked, a
+// threshold nudged — and every input to that key is unchanged, so the solve
+// would answer from features extracted BEFORE the masks existed and quietly
+// reconstruct from exactly the pixels the masks were made to remove. Hashing
+// the file contents would be exact, but size and mtime are what a regenerated
+// mask actually changes, and this costs one stat per frame rather than
+// reading every mask on every run.
+uint64_t MaskFingerprint(const SessionReader& session,
+                         const std::vector<uint32_t>& frame_ids, bool enabled) {
+  if (!enabled) return 0;
+  uint64_t h = 1469598103934665603ull;
+  for (const uint32_t id : frame_ids) {
+    std::error_code ec;
+    const fs::path path = session.MaskPath(id);
+    const auto size = fs::file_size(path, ec);
+    if (ec) continue;
+    const auto mtime = fs::last_write_time(path, ec);
+    if (ec) continue;
+    const auto ticks = mtime.time_since_epoch().count();
+    h = Fnv1a(h, &id, sizeof(id));
+    h = Fnv1a(h, &size, sizeof(size));
+    h = Fnv1a(h, &ticks, sizeof(ticks));
+  }
+  return h;
+}
+
 uint64_t CacheConfigHash(const EngineConfig& c, bool use_sift, bool fast,
-                         const std::vector<uint32_t>& frame_ids) {
+                         const std::vector<uint32_t>& frame_ids,
+                         uint64_t mask_fingerprint) {
   uint64_t h = 1469598103934665603ull;
   const int schema = 1;
+  h = Fnv1a(h, &mask_fingerprint, sizeof(mask_fingerprint));
   h = Fnv1a(h, &schema, sizeof(schema));
   h = Fnv1a(h, &kFeatureAlgorithmVersion, sizeof(kFeatureAlgorithmVersion));
   h = Fnv1a(h, &use_sift, sizeof(use_sift));
@@ -518,8 +552,10 @@ FinalOutcome RunFinalSolve(const EngineConfig& config,
     std::error_code ec;
     fs::create_directories(cache_dir, ec);
   }
-  const uint64_t config_hash =
-      CacheConfigHash(config, use_sift, fast, solve_frame_ids);
+  const uint64_t mask_fingerprint =
+      MaskFingerprint(*session, solve_frame_ids, config.final_use_masks);
+  const uint64_t config_hash = CacheConfigHash(config, use_sift, fast,
+                                               solve_frame_ids, mask_fingerprint);
   bool cache_valid = false;
   {
     std::ifstream manifest(cache_dir / "manifest.txt");
@@ -541,6 +577,7 @@ FinalOutcome RunFinalSolve(const EngineConfig& config,
   metrics.images_total = static_cast<uint32_t>(session_frames);
   {
     int done = 0;
+    int masked_frames = 0;
     for (const uint32_t frame_id : solve_frame_ids) {
       if (cancelled()) {
         outcome.cancelled = true;
@@ -583,14 +620,33 @@ FinalOutcome RunFinalSolve(const EngineConfig& config,
         frame.K = {meta->intrinsics.fx, meta->intrinsics.fy,
                    meta->intrinsics.cx, meta->intrinsics.cy, gray.cols,
                    gray.rows};
+
+        // Optional exclusion mask (non-zero = usable). Resized nearest-
+        // neighbour when it was generated at a different resolution from the
+        // JPEG, which is the normal case: segmentation runs at whatever the
+        // model wants, and interpolating a mask would invent partial values
+        // along every boundary where the answer is binary.
+        cv::Mat mask;
+        if (config.final_use_masks) {
+          const fs::path mask_path = session->MaskPath(frame_id);
+          std::error_code exists_ec;
+          if (fs::exists(mask_path, exists_ec) && !exists_ec) {
+            mask = cv::imread(mask_path.string(), cv::IMREAD_GRAYSCALE);
+          }
+          if (!mask.empty() && mask.size() != gray.size()) {
+            cv::resize(mask, mask, gray.size(), 0, 0, cv::INTER_NEAREST);
+          }
+          if (!mask.empty()) ++masked_frames;
+        }
+
         if (use_sift) {
           SiftOptions sift;
           sift.max_features = config.final_sift_features;
-          frame.features = DetectSift(gray, sift);
+          frame.features = DetectSift(gray, sift, mask);
         } else {
           OrbOptions orb;
           orb.max_features = orb_features;
-          frame.features = DetectOrb(gray, orb);
+          frame.features = DetectOrb(gray, orb, mask);
         }
 
         const PinholeIntrinsics pin{frame.K.fx, frame.K.fy, frame.K.cx,
@@ -630,6 +686,13 @@ FinalOutcome RunFinalSolve(const EngineConfig& config,
       frames.push_back(std::move(frame));
       report(BS_STAGE_FEATURES,
              static_cast<float>(++done) / metrics.images_total);
+    }
+    // Said out loud because the failure mode is silence: masks live outside
+    // the session's RAW layer, so a wrong directory, an unwritten batch or a
+    // stale cache all present as a normal solve that simply ignored them.
+    if (config.final_use_masks && masked_frames > 0) {
+      BS_LOGI("final", "exclusion masks applied to %d of %zu frames",
+              masked_frames, solve_frame_ids.size());
     }
   }
   if (frames.size() < 3) return fail("too few readable frames");

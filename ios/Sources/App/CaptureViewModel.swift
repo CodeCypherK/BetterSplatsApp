@@ -10,23 +10,18 @@ import simd
 /// mutable state is guarded by `lock` and the rest is immutable or actors.
 final class FrameFeedContext: @unchecked Sendable {
     /// The band one capture should land in: **200 is the minimum worth
-    /// training a room from, 500 is the ceiling.**
+    /// training a room from, 1000 is the ceiling.**
     ///
     /// This bounds a single capture, not a project. A house is a chain of
-    /// sessions — around ten captures of 200-500 frames — sharing one world
-    /// frame, so the project total is bounded by free disk, not by this.
-    ///
-    /// Comfortably under the final solve's memory ceiling too, which is a
-    /// separate limit for a separate reason: the solve holds every frame's
-    /// features resident, measured at 1.24 MB/frame. See
-    /// docs/ARCHITECTURE.md, "How big a project can get".
-    static let storedFrameCap = 500
-    static let storedFrameWarn = 450
+    /// sessions sharing one world frame, so the project total is bounded by
+    /// free disk, not by this.
+    static let storedFrameCap = 1000
+    static let storedFrameWarn = 900
     static let storedFrameTarget = 200
 
     /// Motion gate. Storage exists to give the final solve NEW viewpoints; a
     /// frame taken from where the last one was taken is a duplicate, and with
-    /// a 500-frame budget a duplicate is not free — it is a viewpoint
+    /// a 1000-frame budget a duplicate is not free — it is a viewpoint
     /// somewhere else that never gets captured.
     ///
     /// The SPACING comes from the engine, live, through
@@ -74,15 +69,17 @@ final class FrameFeedContext: @unchecked Sendable {
     /// the write as well as the encode, and the encoder should not sit idle
     /// while one frame drains to flash.
     static let maxEncodesInFlight = 3
-    var storeCommits = 0
-    /// Frames that failed to reach disk. Non-zero means the capture on disk
-    /// is smaller than the session thinks it walked, which changes what the
-    /// end-of-capture verdict should say.
+    /// Frames that actually landed on disk. This — not attempts — is the
+    /// capture count and what the cap is measured against. A write that
+    /// fails never increments it, so a burst of encode/disk errors cannot
+    /// pretend the room is full.
+    var storeSuccesses = 0
+    /// Frames that failed to reach disk. Shown separately; never part of
+    /// the cap or the "you have N photos" number.
     var storeFailures = 0
-    /// Frames stored so far by the scout circuit. Split out from
-    /// `storeCommits` only so the UI can say which half of the budget the
-    /// user has spent — both halves share one session and one disk cap.
-    var scoutCommits = 0
+    /// Successful scout writes. Split out only so the UI can say which half
+    /// of the budget the user has spent.
+    var scoutSuccesses = 0
 
     /// Latest live pose, published by the polling loop for the storage gate.
     /// Guarded by `lock`: written on the main actor, read on the capture
@@ -121,19 +118,28 @@ final class FrameFeedContext: @unchecked Sendable {
         lock.lock(); defer { lock.unlock() }; return storeFailures
     }
 
-    /// Releases one storage-pipeline slot, and on failure takes back the cap
-    /// slot the frame had already claimed.
+    /// Releases one storage-pipeline slot. Only a successful write counts
+    /// toward the cap and the on-screen photo count.
+    ///
+    /// `pose` is the camera pose at accept time — movement is measured from
+    /// the last frame that *landed*, not from one that claimed a slot and
+    /// then died on the way to flash.
     ///
     /// A plain method rather than the lock inline at the call site: the caller
     /// is an async Task, and `NSLock.lock()` is `noasync` precisely because
     /// holding one across a suspension point deadlocks. Nothing is awaited in
     /// here, which is the property that makes it safe.
-    func finishStore(failed: Bool) {
+    func finishStore(failed: Bool, pass: String,
+                     centre: SIMD3<Double>?, rotation: simd_quatd?) {
         lock.lock()
         encodesInFlight -= 1
         if failed {
-            storeCommits -= 1
             storeFailures += 1
+        } else {
+            storeSuccesses += 1
+            if pass == "scout" { scoutSuccesses += 1 }
+            lastStoredCentre = centre
+            lastStoredRotation = rotation
         }
         lock.unlock()
     }
@@ -191,7 +197,7 @@ final class FrameFeedContext: @unchecked Sendable {
 
         // Storage gate: cadence floor, exposure sanity, and MOVEMENT.
         //
-        // The movement term is what makes a 500-frame budget go far. On a
+        // The movement term is what makes a 1000-frame budget go far. On a
         // pure clock this stored 3.3 frames every second the camera was
         // running, so pausing to think, or turning on the spot to look at
         // something, spent the room's budget on views the solve already had.
@@ -202,13 +208,19 @@ final class FrameFeedContext: @unchecked Sendable {
         // Backpressure THINS storage, it does not queue it. When the pipeline
         // is full this frame is skipped, and because the movement gate is a
         // distance rather than a clock, the next frame is still past the
-        // threshold — so what is lost is cadence, not coverage. Frames that
-        // fail to write are a different matter and are counted, not skipped
-        // silently.
+        // threshold — so what is lost is cadence, not coverage.
+        //
+        // The CAP is successful writes only. Claiming a slot on accept and
+        // rolling it back on failure made a burst of encode/disk errors look
+        // like a full capture while the disk held half as many photos — the
+        // gate stopped accepting, the counter said "full", and the user
+        // stopped walking. Failed attempts must not spend the budget.
         lock.lock()
         let elapsed = frame.tCapture - lastStoreTime
         let busy = encodesInFlight >= Self.maxEncodesInFlight
-        let capped = storeCommits >= Self.storedFrameCap
+        // In-flight writes may still land, so leave room for them — but never
+        // count a failure toward the ceiling.
+        let capped = storeSuccesses + encodesInFlight >= Self.storedFrameCap
         let manual = pendingManual
         // Floor calibration still needs frames on disk even while auto is
         // paused — the prompt is "take a step", not "tap Start first".
@@ -238,14 +250,14 @@ final class FrameFeedContext: @unchecked Sendable {
         let shouldStore = autoOk || manualOk
         let storeReason = manualOk ? "manual" : "gate"
         let framePass = passName
+        let acceptCentre = latestCentre
+        let acceptRotation = latestRotation
         if shouldStore {
             if manualOk { pendingManual = false }
+            // Cadence floor only — the movement pose is updated when the
+            // write succeeds, so a failed attempt does not burn a viewpoint.
             lastStoreTime = frame.tCapture
-            lastStoredCentre = latestCentre
-            lastStoredRotation = latestRotation
             encodesInFlight += 1
-            storeCommits += 1
-            if framePass == "scout" { scoutCommits += 1 }
         }
         lock.unlock()
         guard shouldStore else { return }
@@ -288,9 +300,8 @@ final class FrameFeedContext: @unchecked Sendable {
         let calibration = frame.calibration
         encodeQueue.async { [self] in
             guard let jpeg = encoder.encode(pixelBuffer) else {
-                // Same outcome as a failed write — the photo is gone — so it
-                // gives back its cap slot and counts the same way.
-                finishStore(failed: true)
+                finishStore(failed: true, pass: framePass,
+                            centre: acceptCentre, rotation: acceptRotation)
                 return
             }
             let payload = SessionStore.FramePayload(
@@ -304,20 +315,18 @@ final class FrameFeedContext: @unchecked Sendable {
                 // every encoded frame spawned an unstructured Task holding its
                 // payload. Nothing bounded those, so a stalled disk grew
                 // memory by a megabyte a frame instead of thinning cadence.
-                //
-                // A frame that did not land must not be counted as one that
-                // did: `storeCommits` is the cap, and `storedFrames` is what
-                // the end-of-capture verdict judges the session on. Silently
-                // keeping the count would tell the user they had 400 frames
-                // when the disk took 300.
                 do {
                     if let calibration {
                         try await store.writeCalibrationIfNeeded(calibration)
                     }
                     try await store.writeFrame(payload)
-                    self.finishStore(failed: false)
+                    self.finishStore(failed: false, pass: framePass,
+                                     centre: acceptCentre,
+                                     rotation: acceptRotation)
                 } catch {
-                    self.finishStore(failed: true)
+                    self.finishStore(failed: true, pass: framePass,
+                                     centre: acceptCentre,
+                                     rotation: acceptRotation)
                 }
             }
         }
@@ -462,6 +471,9 @@ final class CaptureViewModel {
     /// none of which announces itself.
     private(set) var trackerNote: String?
     private(set) var framesStored: UInt32 = 0
+    /// Writes that never reached disk. Shown next to the saved count so a
+    /// burst of failures cannot look like a full capture.
+    private(set) var framesFailed: UInt32 = 0
     private(set) var megabytesWritten: Double = 0
     private(set) var storageNote: String?
 
@@ -541,6 +553,29 @@ final class CaptureViewModel {
 
     /// Auto-store is off until the user taps Start. Manual snaps still work.
     private(set) var autoCaptureEnabled = false
+
+    /// Live ISO. The slider writes this; polling only follows the device
+    /// until the user moves it.
+    private(set) var iso: Double = 100
+    private(set) var isoMin: Double = 50
+    private(set) var isoMax: Double = 1600
+    private var isoPinned = false
+
+    func setISO(_ value: Double) {
+        guard isoMax > isoMin else { return }
+        isoPinned = true
+        iso = min(isoMax, max(isoMin, value))
+        manager.setISO(Float(iso))
+    }
+
+    private func pullISOFromDevice() {
+        let limits = manager.isoLimits
+        isoMin = Double(limits.min)
+        isoMax = Double(max(limits.max, limits.min + 1))
+        if !isoPinned {
+            iso = Double(manager.currentISO)
+        }
+    }
 
     var isScouting: Bool { state == .scouting }
 
@@ -627,15 +662,13 @@ final class CaptureViewModel {
         var detail: String {
             switch verdict {
             case .good:
-                return "\(frames) frames. Enough to reconstruct this room."
+                return "\(frames) photos saved. Enough to reconstruct this room."
             case .thin:
-                // The one case worth interrupting for: it looks fine and is
-                // not, and the fix costs a minute now versus a return trip.
-                return "\(frames) frames — under the \(FrameFeedContext.storedFrameTarget) "
+                return "\(frames) photos saved — under the \(FrameFeedContext.storedFrameTarget) "
                      + "a room usually needs. Walking it again now is much "
                      + "cheaper than coming back."
             case .full:
-                return "\(frames) frames, the per-capture limit. If the room "
+                return "\(frames) photos saved, the per-capture limit. If the room "
                      + "is not finished, capture the rest as another room in "
                      + "this project."
             }
@@ -663,6 +696,7 @@ final class CaptureViewModel {
         case .idle, .finished, .failed:
             self.plan = plan
             state = .starting
+            isoPinned = false
             Task { await startInner() }
         default:
             break
@@ -678,6 +712,7 @@ final class CaptureViewModel {
 
         do {
             try manager.configure()
+            pullISOFromDevice()
         } catch {
             state = .failed(error.localizedDescription)
             return
@@ -874,6 +909,7 @@ final class CaptureViewModel {
         var keyframes: UInt32
         var readiness: Float
         var framesStored: UInt32
+        var framesFailed: UInt32
         var megabytesWritten: Double
         var trackerNote: String?
         var storageNote: String?
@@ -896,6 +932,7 @@ final class CaptureViewModel {
         framesSeen = r.framesSeen
         readinessOverall = r.readiness
         framesStored = r.framesStored
+        framesFailed = r.framesFailed
         megabytesWritten = r.megabytesWritten
         trackerNote = r.trackerNote
         storageNote = r.storageNote
@@ -903,6 +940,7 @@ final class CaptureViewModel {
         if isScouting { scaffoldKeyframes = r.keyframes }
         if let centre = r.walkedCentre { extendWalked(centre) }
         stats = r.stats
+        pullISOFromDevice()
     }
 
     /// Polls the engine for status, storage directives and readiness.
@@ -987,13 +1025,12 @@ final class CaptureViewModel {
                 var note: String?
                 var level: StorageNoteLevel = .progress
                 if failed > 0 {
-                    // Above everything else, including "nearly full". A frame
-                    // that did not reach disk is gone — the ring buffer moved
-                    // on — so this is the one storage message the user can
-                    // still act on, by re-walking what they just covered.
+                    // Above everything else, including "nearly full". Say how
+                    // many actually landed — a failed write is gone, and the
+                    // saved count is what the session is.
                     note = failed == 1
-                        ? "1 photo could not be saved — check free space"
-                        : "\(failed) photos could not be saved — check free space"
+                        ? "1 photo failed — \(stored) saved (failed ones do not count)"
+                        : "\(failed) photos failed — \(stored) saved (failed ones do not count)"
                     level = .critical
                 } else if free < FrameFeedContext.minFreeBytes {
                     // Disk beats the frame count: a capture that dies on a
@@ -1003,12 +1040,12 @@ final class CaptureViewModel {
                         Double(free) / 1_073_741_824)
                     level = .critical
                 } else if stored >= FrameFeedContext.storedFrameCap {
-                    note = "Capture full — stop here, then continue this "
-                         + "project in a new capture"
+                    note = "Capture full (\(stored) saved) — stop here, then "
+                         + "continue this project in a new capture"
                     level = .critical
                 } else if stored >= FrameFeedContext.storedFrameWarn {
                     note = "Nearly full: \(stored)/"
-                         + "\(FrameFeedContext.storedFrameCap) — finish up"
+                         + "\(FrameFeedContext.storedFrameCap) saved — finish up"
                     level = .warning
                 } else if stored < FrameFeedContext.storedFrameTarget {
                     // The under-covered case is the one people actually hit,
@@ -1016,7 +1053,7 @@ final class CaptureViewModel {
                     // looks fine, and the thinness only shows up as holes in
                     // the trained splat hours later.
                     note = "\(stored)/\(FrameFeedContext.storedFrameTarget) "
-                         + "frames — keep going for full coverage"
+                         + "saved — keep going for full coverage"
                     level = .progress
                 }
 
@@ -1025,6 +1062,7 @@ final class CaptureViewModel {
                     framesSeen: status.frames_fed, keyframes: status.keyframes,
                     readiness: status.readiness_overall,
                     framesStored: UInt32(stored),
+                    framesFailed: UInt32(failed),
                     megabytesWritten: Double(bytes) / 1_048_576.0,
                     trackerNote: trackerNote, storageNote: note,
                     storageNoteLevel: level, walkedCentre: viewer?.center,

@@ -395,6 +395,10 @@ struct CaptureView: View {
             HStack(spacing: 14) {
                 Label("\(model.framesSeen)", systemImage: "eye")
                 Label("\(model.framesStored)", systemImage: "internaldrive")
+                if model.framesFailed > 0 {
+                    Label("\(model.framesFailed)", systemImage: "xmark.circle")
+                        .foregroundStyle(.red)
+                }
                 Label(String(format: "%.0f MB", model.megabytesWritten),
                       systemImage: "externaldrive.badge.timemachine")
                 if model.readinessOverall > 0 {
@@ -533,9 +537,11 @@ struct CaptureView: View {
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
     }
 
-    /// Auto toggle, manual shutter, and (when not scouting) end session.
+    /// Auto toggle, manual shutter, ISO, and (when not scouting) end session.
     private var captureControls: some View {
-        HStack(alignment: .center, spacing: 28) {
+        VStack(spacing: 14) {
+            isoSlider
+            HStack(alignment: .center, spacing: 28) {
             Button {
                 model.toggleAutoCapture()
             } label: {
@@ -582,8 +588,39 @@ struct CaptureView: View {
             } else {
                 Color.clear.frame(width: 44, height: 44)
             }
+            }
+            .frame(maxWidth: .infinity)
         }
-        .frame(maxWidth: .infinity)
+    }
+
+    private var isoSlider: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Text("ISO")
+                    .font(.caption.weight(.semibold))
+                Spacer()
+                Text("\(Int(model.iso.rounded()))")
+                    .font(.caption.monospacedDigit().weight(.semibold))
+            }
+            Slider(
+                value: Binding(
+                    get: { log2(max(model.iso, model.isoMin)) },
+                    set: { model.setISO(pow(2, $0)) }
+                ),
+                in: log2(model.isoMin)...log2(max(model.isoMax, model.isoMin + 1))
+            )
+            .tint(.white)
+            HStack {
+                Text("\(Int(model.isoMin.rounded()))")
+                Spacer()
+                Text("\(Int(model.isoMax.rounded()))")
+            }
+            .font(.caption2.monospacedDigit())
+            .foregroundStyle(.secondary)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
     }
 
     private var bottomBar: some View {
@@ -625,7 +662,8 @@ struct CaptureView: View {
                         s.inlierRatio * 100, s.pxError))
             Text(String(format: "store every %.2f m / %.0f deg",
                         s.storeSpacingM, s.storeRotationDeg))
-            Text("stored \(model.framesStored)  ·  seen \(model.framesSeen)")
+            Text("stored \(model.framesStored)  ·  failed \(model.framesFailed)  ·  seen \(model.framesSeen)")
+            Text(String(format: "ISO %.0f", model.iso))
         }
         .font(.caption2.monospacedDigit())
         .foregroundStyle(.white.opacity(0.85))

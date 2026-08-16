@@ -224,7 +224,9 @@ final class CaptureManager: NSObject {
                 if device.isFocusModeSupported(.autoFocus) {
                     device.focusMode = .autoFocus
                 }
-                if device.isExposureModeSupported(.autoExpose) {
+                // Don't run AE if the user already pinned ISO — autoExpose
+                // would move it before lockCaptureSettings can restore it.
+                if !self.isoChosenByUser, device.isExposureModeSupported(.autoExpose) {
                     device.exposureMode = .autoExpose
                 }
                 if device.isWhiteBalanceModeSupported(.autoWhiteBalance) {
@@ -247,7 +249,8 @@ final class CaptureManager: NSObject {
 
     private func awaitConvergence(attemptsLeft: Int) {
         guard let device else { return }
-        let settled = !device.isAdjustingFocus && !device.isAdjustingExposure
+        let exposureBusy = !isoChosenByUser && device.isAdjustingExposure
+        let settled = !device.isAdjustingFocus && !exposureBusy
             && !device.isAdjustingWhiteBalance
         guard settled || attemptsLeft <= 0 else {
             captureQueue.asyncAfter(deadline: .now() + 0.1) { [weak self] in
@@ -263,14 +266,54 @@ final class CaptureManager: NSObject {
         captureQueue.async { [weak self] in
             guard let self else { return }
             self.lockedISO = nil
+            self.isoChosenByUser = false
             if self.session.isRunning { self.session.stopRunning() }
         }
     }
 
-    /// ISO frozen at whatever AE settled on; shutter is adjusted from luma.
-    /// Nil until `lockCaptureSettings` runs.
+    /// ISO frozen at whatever AE settled on, unless the user set it; shutter
+    /// is adjusted from luma.
+    /// Nil until `lockCaptureSettings` or `setISO` runs.
     private var lockedISO: Float?
+    private var isoChosenByUser = false
     private var lastShutterSteer: Double = 0
+
+    var isoLimits: (min: Float, max: Float) {
+        guard let format = device?.activeFormat else { return (50, 1600) }
+        return (format.minISO, format.maxISO)
+    }
+
+    var currentISO: Float {
+        if let locked = lockedISO { return locked }
+        return device?.iso ?? isoLimits.min
+    }
+
+    /// Pin ISO to `iso` and switch to custom exposure so shutter can still
+    /// move. Safe to call before or after the photometric settle.
+    func setISO(_ iso: Float) {
+        captureQueue.async { [weak self] in
+            self?.applyISO(iso, chosenByUser: true)
+        }
+    }
+
+    private func applyISO(_ iso: Float, chosenByUser: Bool) {
+        guard let device else { return }
+        let limits = isoLimits
+        let clamped = min(limits.max, max(limits.min, iso))
+        do {
+            try device.lockForConfiguration()
+            defer { device.unlockForConfiguration() }
+            if device.isExposureModeSupported(.custom) {
+                let duration = device.exposureDuration
+                device.setExposureModeCustom(duration: duration, iso: clamped,
+                                             completionHandler: nil)
+                lockedISO = clamped
+                if chosenByUser { isoChosenByUser = true }
+            }
+        } catch {
+            // Leave the previous ISO in place.
+        }
+    }
 
     /// Freezes focus, white balance and ISO on whatever they converged to.
     /// Shutter is left adjustable: a locked ISO keeps sensor gain (and
@@ -294,8 +337,13 @@ final class CaptureManager: NSObject {
                 device.whiteBalanceMode = .locked
             }
             if device.isExposureModeSupported(.custom) {
-                let iso = min(device.activeFormat.maxISO,
+                let iso: Float
+                if isoChosenByUser, let chosen = lockedISO {
+                    iso = chosen
+                } else {
+                    iso = min(device.activeFormat.maxISO,
                               max(device.activeFormat.minISO, device.iso))
+                }
                 device.setExposureModeCustom(duration: device.exposureDuration,
                                              iso: iso,
                                              completionHandler: nil)

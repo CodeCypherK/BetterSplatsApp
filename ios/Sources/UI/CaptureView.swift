@@ -31,10 +31,6 @@ struct CaptureView: View {
             }
             .padding()
 
-            if let recovery = model.recovery {
-                recoveryArrow(recovery)
-            }
-
             if let phase = model.floorPhase {
                 floorCalibrationPrompt(phase)
             }
@@ -97,7 +93,7 @@ struct CaptureView: View {
                    + "take over from the old ones.")
                     .font(.subheadline)
                     .multilineTextAlignment(.center)
-                Text("The old frames stay on your phone — the reconstruction "
+                Text("The old frames stay on your phone — the desktop solve "
                    + "just stops using them, so this is reversible.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -323,40 +319,6 @@ struct CaptureView: View {
         .animation(.easeInOut(duration: 0.2), value: model.floorPhase)
     }
 
-    /// A big arrow pointing at the nearest mapped place, centred over the
-    /// preview.
-    ///
-    /// This is deliberately the loudest thing on the screen. Lost tracking is
-    /// the one state where the user cannot make progress by carrying on, and
-    /// every second spent lost is frames that do not reach the
-    /// reconstruction — so it is worth interrupting for, unlike the advisory
-    /// guidance in the pill.
-    @ViewBuilder
-    private func recoveryArrow(_ recovery: RecoveryHint) -> some View {
-        VStack(spacing: 14) {
-            // Behind the user, an on-screen arrow is the wrong instrument —
-            // pointing at the bottom edge of the phone does not read as "turn
-            // round". Say it instead.
-            if recovery.isBehind {
-                Image(systemName: "arrow.uturn.backward")
-                    .font(.system(size: 64, weight: .bold))
-            } else {
-                Image(systemName: "arrow.up")
-                    .font(.system(size: 72, weight: .bold))
-                    .rotationEffect(.radians(recovery.arrowAngle))
-            }
-            Text(String(format: "%.1f m", recovery.distanceM))
-                .font(.title3.weight(.semibold).monospacedDigit())
-        }
-        .foregroundStyle(.orange)
-        .shadow(radius: 6)
-        .padding(28)
-        .background(.ultraThinMaterial, in: Circle())
-        .transition(.scale.combined(with: .opacity))
-        .animation(.easeInOut(duration: 0.2), value: recovery)
-        .allowsHitTesting(false)
-    }
-
     /// What just happened, and what to do next — shown while the user is
     /// still standing in the room they captured.
     ///
@@ -538,8 +500,7 @@ struct CaptureView: View {
     }
 
     /// During the circuit the primary action is not "stop" — it is "I have
-    /// walked the whole space, now let me scan it". Presenting a shutter
-    /// button here would make the natural next tap end the session.
+    /// walked the whole space, now let me scan it".
     private var scoutBar: some View {
         VStack(spacing: 10) {
             Text("Walking the space")
@@ -553,6 +514,7 @@ struct CaptureView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
+            captureControls
             Button {
                 model.finishScout()
             } label: {
@@ -571,33 +533,67 @@ struct CaptureView: View {
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
     }
 
+    /// Auto toggle, manual shutter, and (when not scouting) end session.
+    private var captureControls: some View {
+        HStack(alignment: .center, spacing: 28) {
+            Button {
+                model.toggleAutoCapture()
+            } label: {
+                VStack(spacing: 4) {
+                    Image(systemName: model.autoCaptureEnabled
+                          ? "pause.circle.fill" : "play.circle.fill")
+                        .font(.system(size: 36))
+                    Text(model.autoCaptureEnabled ? "Pause" : "Start")
+                        .font(.caption.weight(.semibold))
+                }
+            }
+            .foregroundStyle(model.autoCaptureEnabled ? .orange : .green)
+            .disabled(model.state == .starting || model.state == .stopping)
+
+            Button {
+                model.snapFrame()
+            } label: {
+                ZStack {
+                    Circle()
+                        .strokeBorder(.white, lineWidth: 4)
+                        .frame(width: 74, height: 74)
+                    Circle()
+                        .fill(.white)
+                        .frame(width: 60, height: 60)
+                }
+            }
+            .accessibilityLabel("Snap frame")
+            .disabled(model.state == .starting || model.state == .stopping
+                      || model.framesStored >= UInt32(FrameFeedContext.storedFrameCap))
+
+            if !model.isScouting {
+                Button {
+                    model.stop()
+                } label: {
+                    VStack(spacing: 4) {
+                        Image(systemName: "stop.circle.fill")
+                            .font(.system(size: 36))
+                        Text("End")
+                            .font(.caption.weight(.semibold))
+                    }
+                }
+                .foregroundStyle(.red)
+                .disabled(model.state == .starting || model.state == .stopping)
+            } else {
+                Color.clear.frame(width: 44, height: 44)
+            }
+        }
+        .frame(maxWidth: .infinity)
+    }
+
     private var bottomBar: some View {
         HStack {
             if model.isScouting {
                 scoutBar.frame(maxWidth: .infinity)
             } else if case .finished = model.state {
                 finishedCard.frame(maxWidth: .infinity)
-            } else {
-                Button {
-                    if model.isCapturing { model.stop() } else { model.start() }
-                } label: {
-                    ZStack {
-                        Circle()
-                            .strokeBorder(.white, lineWidth: 4)
-                            .frame(width: 74, height: 74)
-                        if model.isCapturing {
-                            RoundedRectangle(cornerRadius: 6)
-                                .fill(.red)
-                                .frame(width: 30, height: 30)
-                        } else {
-                            Circle()
-                                .fill(.red)
-                                .frame(width: 60, height: 60)
-                        }
-                    }
-                }
-                .frame(maxWidth: .infinity)
-                .disabled(model.state == .starting || model.state == .stopping)
+            } else if model.isCapturing {
+                captureControls
             }
         }
     }

@@ -193,15 +193,37 @@ struct SessionJSON: Codable {
     struct Capture: Codable {
         var afLocked: Bool
         var aeLocked: Bool
+        var isoLocked: Bool
         var awbLocked: Bool
         var gdcDisabled: Bool
         var stabilization: String
         enum CodingKeys: String, CodingKey {
             case afLocked = "af_locked"
             case aeLocked = "ae_locked"
+            case isoLocked = "iso_locked"
             case awbLocked = "awb_locked"
             case gdcDisabled = "gdc_disabled"
             case stabilization
+        }
+
+        init(afLocked: Bool, aeLocked: Bool, isoLocked: Bool = false,
+             awbLocked: Bool, gdcDisabled: Bool, stabilization: String) {
+            self.afLocked = afLocked
+            self.aeLocked = aeLocked
+            self.isoLocked = isoLocked
+            self.awbLocked = awbLocked
+            self.gdcDisabled = gdcDisabled
+            self.stabilization = stabilization
+        }
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            afLocked = try c.decode(Bool.self, forKey: .afLocked)
+            aeLocked = try c.decodeIfPresent(Bool.self, forKey: .aeLocked) ?? false
+            isoLocked = try c.decodeIfPresent(Bool.self, forKey: .isoLocked) ?? false
+            awbLocked = try c.decodeIfPresent(Bool.self, forKey: .awbLocked) ?? false
+            gdcDisabled = try c.decode(Bool.self, forKey: .gdcDisabled)
+            stabilization = try c.decode(String.self, forKey: .stabilization)
         }
     }
 

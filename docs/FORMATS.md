@@ -199,9 +199,12 @@ the convention has to be written down here rather than agreed informally.
   "video": { "w": 1920, "h": 1440, "fps": 30, "pixel_format": "420f" },
   "depth": { "w": 320, "h": 240, "format": "hdep", "filtering": false },
   // Locks actually achieved this session (recorded at finalize, not intent).
-  // ae/awb absent in early schema-v1 sessions -> read as false.
-  "capture": { "af_locked": true, "ae_locked": true, "awb_locked": true,
-               "gdc_disabled": true, "stabilization": "off" },
+  // ae/awb/iso_locked absent in early schema-v1 sessions -> read as false.
+  // ISO is frozen after the opening AE settle; shutter duration may still
+  // move (`ae_locked` false, `iso_locked` true) so a lighting change does
+  // not clip. Per-frame duration and ISO are in each frame's meta.json.
+  "capture": { "af_locked": true, "ae_locked": false, "iso_locked": true,
+               "awb_locked": true, "gdc_disabled": true, "stabilization": "off" },
   "frame_count": 412,                          // stored frames
   "keyframe_ids": [1, 9, 15, ...],
   "regions": [ { "id": 1, "name": "Room 1", "renamed": false } ],

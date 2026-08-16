@@ -8,29 +8,7 @@ final class CoreEngine: @unchecked Sendable {
     private let handle: OpaquePointer?
 
     private init() {
-        handle = bs_create(Self.startupConfigJSON())
-    }
-
-    /// Config the engine cannot work out for itself because it is portable
-    /// C++ and this is an iOS question.
-    ///
-    /// The one that matters is how much memory the final solve may spend on
-    /// SIFT descriptors, which decides whether it uses SIFT at all. That was
-    /// a hardcoded 250-frame cap; a realistic two-room capture is 400 frames,
-    /// so the quality preset was quietly falling back to ORB — 189 of 400
-    /// images registered, against 400 of 400 with SIFT.
-    ///
-    /// `os_proc_available_memory()` is what iOS will actually let this
-    /// process have right now, on this device, with whatever else is
-    /// resident. A third of it is the budget: the solve needs the rest for
-    /// images, tracks, points and Ceres, and being wrong in this direction
-    /// costs a detector downgrade while being wrong in the other costs the
-    /// whole session to a jetsam kill.
-    private static func startupConfigJSON() -> String {
-        let available = os_proc_available_memory()
-        guard available > 0 else { return "{}" }
-        let budgetMB = max(256, min(4096, available / 3 / (1024 * 1024)))
-        return #"{"final_sift_budget_mb": \#(budgetMB)}"#
+        handle = bs_create("{}")
     }
 
     deinit {
@@ -138,29 +116,6 @@ final class CoreEngine: @unchecked Sendable {
     @discardableResult
     func renameRegion(id: UInt32, name: String) -> bs_result {
         bs_region_rename(handle, id, name)
-    }
-
-    // MARK: - Final solve
-
-    @discardableResult
-    func finalStart(sessionDir: String, preset: String) -> bs_result {
-        bs_final_start(handle, sessionDir, preset)
-    }
-
-    func finalPoll() -> bs_final_progress {
-        var progress = bs_final_progress()
-        _ = bs_final_poll(handle, &progress)
-        return progress
-    }
-
-    @discardableResult
-    func finalCancel() -> bs_result {
-        bs_final_cancel(handle)
-    }
-
-    @discardableResult
-    func thermalHint(level: Int32) -> bs_result {
-        bs_thermal_hint(handle, level)
     }
 
     // MARK: - Snapshot

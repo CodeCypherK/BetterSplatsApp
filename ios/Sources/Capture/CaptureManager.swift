@@ -9,10 +9,11 @@ import UIKit
 /// docs/ARCHITECTURE.md): geometric distortion correction OFF (we model the
 /// lens ourselves from the calibration LUT), stabilization OFF (warping
 /// invalidates intrinsics), depth temporal filtering OFF (raw measurements
-/// only), and focus + exposure + white balance all locked — once, for good —
-/// so one camera model and one photometric response serve the whole session.
-/// WHEN they lock is the caller's decision, not this class's: see
-/// `settleThenLock()`.
+/// only), and focus + white balance + ISO locked after the scene settles —
+/// shutter duration stays free so a walk from a bright window into a
+/// hallway does not clip or crush. Focus still has to freeze: one camera
+/// model for the whole session. WHEN they lock is the caller's decision:
+/// see `settleThenLock()`.
 final class CaptureManager: NSObject {
     enum CaptureError: LocalizedError {
         case noLiDARDevice
@@ -60,7 +61,9 @@ final class CaptureManager: NSObject {
     /// knows whether photometric consistency can be assumed.
     struct LockState {
         var focus = false
+        /// Full AE lock (ISO and shutter). We no longer ask for this.
         var exposure = false
+        var iso = false
         var whiteBalance = false
     }
     private let lockStateLock = NSLock()
@@ -184,7 +187,8 @@ final class CaptureManager: NSObject {
     }
 
     /// Converges AF/AE/AWB on what the camera is looking at NOW, then freezes
-    /// all three for the rest of the session.
+    /// focus, white balance and ISO. Shutter stays in custom mode and is
+    /// steered from frame luma so brightness can still track the room.
     ///
     /// The caller decides when the view is representative, and that decision
     /// cannot be made in here. This used to fire on a 1.5 s timer from
@@ -256,20 +260,27 @@ final class CaptureManager: NSObject {
 
     func stop() {
         motion.stopGyroUpdates()
-        captureQueue.async { [session] in
-            if session.isRunning { session.stopRunning() }
+        captureQueue.async { [weak self] in
+            guard let self else { return }
+            self.lockedISO = nil
+            if self.session.isRunning { self.session.stopRunning() }
         }
     }
 
-    /// Freezes focus, exposure and white balance on whatever they converged
-    /// to, and records what actually stuck.
+    /// ISO frozen at whatever AE settled on; shutter is adjusted from luma.
+    /// Nil until `lockCaptureSettings` runs.
+    private var lockedISO: Float?
+    private var lastShutterSteer: Double = 0
+
+    /// Freezes focus, white balance and ISO on whatever they converged to.
+    /// Shutter is left adjustable: a locked ISO keeps sensor gain (and
+    /// therefore noise) consistent, which is the photometric axis a splat
+    /// actually cares about, while duration can still follow a window-to-
+    /// hallway lighting change. AVFoundation has no ISO-priority AE, so
+    /// shutter is driven from the same luma stats the storage gate already
+    /// computes — `steerShutter`.
     ///
-    /// All three matter for reconstruction quality. Focus keeps one camera
-    /// model valid for the whole session. Exposure and white balance keep the
-    /// scene photometrically consistent: a Gaussian splat bakes appearance
-    /// into the radiance field, so brightness steps and colour casts between
-    /// frames turn into muddy, washed-out surfaces. Locking is best-effort —
-    /// whatever the hardware refuses is recorded honestly in session.json.
+    /// Focus still locks: one lens position, one camera model.
     private func lockCaptureSettings() {
         guard let device else { return }
         var state = LockState()
@@ -279,23 +290,70 @@ final class CaptureManager: NSObject {
             if device.isFocusModeSupported(.locked) {
                 device.focusMode = .locked
             }
-            if device.isExposureModeSupported(.locked) {
-                device.exposureMode = .locked
-            }
             if device.isWhiteBalanceModeSupported(.locked) {
                 device.whiteBalanceMode = .locked
             }
+            if device.isExposureModeSupported(.custom) {
+                let iso = min(device.activeFormat.maxISO,
+                              max(device.activeFormat.minISO, device.iso))
+                device.setExposureModeCustom(duration: device.exposureDuration,
+                                             iso: iso,
+                                             completionHandler: nil)
+                lockedISO = iso
+            } else if device.isExposureModeSupported(.locked) {
+                // No custom mode: fall back to a full AE lock rather than
+                // leaving ISO free to hunt for the rest of the session.
+                device.exposureMode = .locked
+            }
         } catch {
-            // Settings stay continuous; per-frame intrinsics and exposure are
-            // still recorded, so the solve can compensate after the fact.
+            // Settings stay continuous; per-frame ISO and duration are still
+            // recorded, so the solve can compensate after the fact.
         }
-        // Read back rather than assuming the assignment took. The one-shot
-        // auto modes revert to .locked on their own, and a mode we set may be
-        // overridden by the device; session.json should say what is true.
         state.focus = device.focusMode == .locked
         state.exposure = device.exposureMode == .locked
+        state.iso = lockedISO != nil && device.exposureMode == .custom
         state.whiteBalance = device.whiteBalanceMode == .locked
         lockState = state
+    }
+
+    /// Nudge shutter only, holding the ISO captured at lock. Called from the
+    /// capture queue with the frame's luma stats. No-ops until ISO is frozen
+    /// and skips tiny steps so we are not reconfiguring the device at 30 Hz.
+    func steerShutter(_ stats: FrameAnalysis.LumaStats) {
+        guard let device, let iso = lockedISO,
+              device.exposureMode == .custom,
+              !device.isAdjustingExposure
+        else { return }
+        let t = ProcessInfo.processInfo.systemUptime
+        guard t - lastShutterSteer >= 0.15 else { return }
+
+        let minS = device.activeFormat.minExposureDuration.seconds
+        let frameS = device.activeVideoMaxFrameDuration.seconds
+        let formatMax = device.activeFormat.maxExposureDuration.seconds
+        let maxS = min(formatMax, frameS > 0 ? frameS : formatMax)
+        var seconds = device.exposureDuration.seconds
+        // Target a mid-grey luma. Overexposure wins: clipped highlights are
+        // gone, a slightly dark frame is not.
+        if stats.overexposedFraction > 0.03 {
+            seconds *= 0.72
+        } else if stats.meanLuma > 1 {
+            let ratio = 110.0 / stats.meanLuma
+            seconds *= min(1.22, max(0.82, ratio))
+        }
+        seconds = min(maxS, max(minS, seconds))
+        let current = device.exposureDuration.seconds
+        guard current > 0, abs(seconds - current) / current > 0.06 else { return }
+
+        do {
+            try device.lockForConfiguration()
+            defer { device.unlockForConfiguration() }
+            let duration = CMTime(seconds: seconds, preferredTimescale: 1_000_000)
+            device.setExposureModeCustom(duration: duration, iso: iso,
+                                         completionHandler: nil)
+            lastShutterSteer = t
+        } catch {
+            // Leave the last duration in place.
+        }
     }
 
     private func startGyro() {

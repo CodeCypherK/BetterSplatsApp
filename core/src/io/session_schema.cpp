@@ -151,6 +151,7 @@ std::string SessionInfo::ToJson() const {
                 {"filtering", depth_filtering}};
   j["capture"] = {{"af_locked", af_locked},
                   {"ae_locked", ae_locked},
+                  {"iso_locked", iso_locked},
                   {"awb_locked", awb_locked},
                   {"gdc_disabled", gdc_disabled},
                   {"stabilization", stabilization}};
@@ -217,6 +218,7 @@ std::optional<SessionInfo> SessionInfo::FromJson(const std::string& text) {
     const auto& c = j["capture"];
     s.af_locked = c.value("af_locked", true);
     s.ae_locked = c.value("ae_locked", false);
+    s.iso_locked = c.value("iso_locked", false);
     s.awb_locked = c.value("awb_locked", false);
     s.gdc_disabled = c.value("gdc_disabled", true);
     s.stabilization = c.value("stabilization", "off");

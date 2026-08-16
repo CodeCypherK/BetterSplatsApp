@@ -242,8 +242,10 @@ struct GuidanceStabilizer {
     mutating func settle(rawCode: Int32, state: Int32,
                          now: TimeInterval = ProcessInfo.processInfo.systemUptime)
         -> Int32 {
-        let raw = state == Int32(BS_LIVE_LOST.rawValue)
-            ? Int32(BS_GUIDE_TRACKING_LOST.rawValue)
+        // Tracking-lost is not shown: it was loud and rarely actionable.
+        // Keep the dwell rules for the advice that remains.
+        let raw = rawCode == Int32(BS_GUIDE_TRACKING_LOST.rawValue)
+            ? Int32(BS_GUIDE_GOOD.rawValue)
             : rawCode
         if raw == shown {
             candidate = raw

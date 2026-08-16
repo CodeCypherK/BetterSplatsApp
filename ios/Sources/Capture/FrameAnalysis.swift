@@ -8,6 +8,7 @@ enum FrameAnalysis {
     struct LumaStats {
         var laplacianVariance: Double
         var overexposedFraction: Double
+        var meanLuma: Double
     }
 
     /// Computes stats on a subsampled grid of the luma plane (plane 0 of a
@@ -17,7 +18,8 @@ enum FrameAnalysis {
         defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, .readOnly) }
 
         guard let base = CVPixelBufferGetBaseAddressOfPlane(pixelBuffer, 0) else {
-            return LumaStats(laplacianVariance: 0, overexposedFraction: 0)
+            return LumaStats(laplacianVariance: 0, overexposedFraction: 0,
+                             meanLuma: 0)
         }
         let width = CVPixelBufferGetWidthOfPlane(pixelBuffer, 0)
         let height = CVPixelBufferGetHeightOfPlane(pixelBuffer, 0)
@@ -30,6 +32,7 @@ enum FrameAnalysis {
         var count = 0
         var overexposed = 0
         var total = 0
+        var lumaSum = 0.0
 
         var y = step
         while y < height - step {
@@ -46,6 +49,7 @@ enum FrameAnalysis {
                 lapSqSum += lap * lap
                 count += 1
                 if c >= 250 { overexposed += 1 }
+                lumaSum += c
                 total += 1
                 x += step
             }
@@ -53,13 +57,15 @@ enum FrameAnalysis {
         }
 
         guard count > 0 else {
-            return LumaStats(laplacianVariance: 0, overexposedFraction: 0)
+            return LumaStats(laplacianVariance: 0, overexposedFraction: 0,
+                             meanLuma: 0)
         }
         let mean = lapSum / Double(count)
         let variance = lapSqSum / Double(count) - mean * mean
         return LumaStats(
             laplacianVariance: max(0, variance),
-            overexposedFraction: Double(overexposed) / Double(total)
+            overexposedFraction: Double(overexposed) / Double(total),
+            meanLuma: lumaSum / Double(total)
         )
     }
 }

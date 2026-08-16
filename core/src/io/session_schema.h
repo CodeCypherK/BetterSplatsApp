@@ -148,6 +148,7 @@ struct SessionInfo {
   // locked them, so they read back false rather than claiming a lock that
   // never happened.
   bool ae_locked = false;
+  bool iso_locked = false;
   bool awb_locked = false;
   bool gdc_disabled = true;
   std::string stabilization = "off";

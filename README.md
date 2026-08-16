@@ -2,15 +2,14 @@
 
 A native iPhone app for **Gaussian-splat-ready photogrammetry capture** on
 LiDAR iPhones. Walk through an environment, get live per-room "splat
-readiness" feedback, then produce a globally optimized **COLMAP sparse
-reconstruction** (`cameras.txt`, `images.txt`, `points3D.txt`, `images/`)
-ready for splat training — all on the phone, fully offline.
+readiness" feedback, and write an immutable RAW session (`frames/`,
+`session.json`, `calibration.json`) ready to reconstruct on a workstation.
 
-**Image-first by design**: camera poses come only from multi-view image
-geometry (SfM with global bundle adjustment). LiDAR is an independent depth
-sensor with its own confidence model, used to validate geometry, anchor
-textureless surfaces and suppress floaters — never to track the camera.
-ARKit is not used.
+The phone does **not** run the final solve. Reconstruction (global bundle
+adjustment, COLMAP export) lives in the desktop tools (`bs_replay` / host
+UI). Camera poses at capture time still come only from multi-view image
+geometry. LiDAR is an independent depth sensor — never used to track the
+camera. ARKit is not used.
 
 ## Status
 
@@ -23,11 +22,11 @@ splat-readiness scoring system, and the final global reconstruction —
 (track length 4.6, 0.41 px reprojection), fused `dense.ply`, and a
 verified byte-identical RAW layer after processing.
 
-The iOS app (capture, live guidance, readiness dashboard, 3D map,
-on-device reconstruction + share-sheet export) builds via the `ios-app`
-workflow; grab the IPA artifact and see `docs/SIDELOADING.md`. On-device
-field testing is the current frontier — expect tuning commits as real
-captures come back through the replay tool.
+The iOS app (capture, live guidance, readiness dashboard, 3D map, session
+share) builds via the `ios-app` workflow; grab the IPA artifact and see
+`docs/SIDELOADING.md`. Reconstruct on a workstation from the exported
+session. On-device field testing is the current frontier — expect tuning
+commits as real captures come back through the replay tool.
 
 ## Build matrix (no Mac required)
 

@@ -17,7 +17,6 @@ struct ProjectStore {
         let frameCount: UInt32
         let parentSession: String
         let supersedes: [SessionJSON.SupersedeJSON]
-        let hasExport: Bool
 
         var id: String { sessionName }
         var date: Date? { ISO8601DateFormatter().date(from: createdUtc) }
@@ -34,7 +33,6 @@ struct ProjectStore {
         var latestDirectory: URL? { captures.last?.directory }
         var date: Date? { captures.first?.date }
         var rescanCount: Int { captures.reduce(0) { $0 + $1.supersedes.count } }
-        var hasExport: Bool { captures.contains { $0.hasExport } }
 
         /// Highest frame id written anywhere in the project, so the next
         /// capture can carry on from it rather than colliding.
@@ -85,9 +83,7 @@ struct ProjectStore {
                 createdUtc: doc.createdUtc,
                 frameCount: doc.frameCount,
                 parentSession: doc.parentSession ?? "",
-                supersedes: doc.supersedes ?? [],
-                hasExport: fm.fileExists(atPath: entry
-                    .appendingPathComponent("final/colmap/points3D.txt").path))
+                supersedes: doc.supersedes ?? [])
 
             // A capture from before projects existed stands alone under its
             // own name rather than being dropped.

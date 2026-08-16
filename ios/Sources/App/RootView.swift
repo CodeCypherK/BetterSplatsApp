@@ -38,7 +38,7 @@ struct RootView: View {
                     if !hasLiDAR {
                         Text("Capture requires a LiDAR iPhone (12 Pro or later Pro model).")
                     } else {
-                        Text("Sessions are saved to the Files app (On My iPhone → BetterSplats) — copy them off the phone regularly.")
+                        Text("Sessions are saved to the Files app (On My iPhone → BetterSplats). Copy them to a computer to reconstruct — the phone only stores the capture.")
                     }
                 }
 

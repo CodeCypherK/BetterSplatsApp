@@ -198,12 +198,13 @@ actor SessionStore {
     /// `locks`: what the camera actually froze for this session (focus,
     /// exposure, white balance) — recorded honestly, including partial or
     /// failed locks, so the reconstruction side knows what to assume.
-    func finalize(locks: (focus: Bool, exposure: Bool, whiteBalance: Bool)
-                  = (false, false, false)) throws {
+    func finalize(locks: (focus: Bool, exposure: Bool, iso: Bool,
+                          whiteBalance: Bool) = (false, false, false, false)) throws {
         sessionDoc.endUtc = ISO8601DateFormatter().string(from: Date())
         sessionDoc.frameCount = frameCount
         sessionDoc.capture.afLocked = locks.focus
         sessionDoc.capture.aeLocked = locks.exposure
+        sessionDoc.capture.isoLocked = locks.iso
         sessionDoc.capture.awbLocked = locks.whiteBalance
         try writeSessionJson()
     }

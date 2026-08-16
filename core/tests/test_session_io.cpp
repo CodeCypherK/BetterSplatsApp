@@ -42,6 +42,7 @@ class SessionIoTest : public ::testing::Test {
     info.depth_h = 240;
     info.depth_format = "hdep";
     info.ae_locked = true;
+    info.iso_locked = true;
     info.awb_locked = true;
     info.regions = {{1, "Room 1", false}, {2, "Hallway", true}};
     info.app_version = "0.1.0";
@@ -120,6 +121,7 @@ TEST_F(SessionIoTest, WriteThenReadBackIdentity) {
   // Photometric lock flags survive the round trip.
   EXPECT_TRUE(reader->info().af_locked);
   EXPECT_TRUE(reader->info().ae_locked);
+  EXPECT_TRUE(reader->info().iso_locked);
   EXPECT_TRUE(reader->info().awb_locked);
 
   ASSERT_EQ(reader->frame_ids(), (std::vector<uint32_t>{1, 2}));
@@ -181,6 +183,7 @@ TEST_F(SessionIoTest, LegacySessionReportsPhotometricLocksAbsent) {
     text.erase(at, end - at + 1);
   };
   strip("ae_locked");
+  strip("iso_locked");
   strip("awb_locked");
   std::ofstream(path, std::ios::trunc) << text;
 
@@ -188,6 +191,7 @@ TEST_F(SessionIoTest, LegacySessionReportsPhotometricLocksAbsent) {
   ASSERT_TRUE(reader.has_value());
   EXPECT_TRUE(reader->info().af_locked);    // long-standing key, defaults true
   EXPECT_FALSE(reader->info().ae_locked);   // absent -> not locked
+  EXPECT_FALSE(reader->info().iso_locked);
   EXPECT_FALSE(reader->info().awb_locked);
 }
 

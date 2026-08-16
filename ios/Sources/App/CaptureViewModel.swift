@@ -147,6 +147,23 @@ final class FrameFeedContext: @unchecked Sendable {
         set { lock.lock(); passName = newValue; lock.unlock() }
     }
 
+    /// Auto storage is off until the user taps Start. Camera and live
+    /// tracking still run; only writing frames is gated.
+    private var autoStoreEnabled = false
+    /// Consumed by the next frame that can actually be written.
+    private var pendingManual = false
+
+    func setAutoStore(_ on: Bool) {
+        lock.lock(); autoStoreEnabled = on; lock.unlock()
+    }
+
+    func requestManualCapture() {
+        lock.lock(); pendingManual = true; lock.unlock()
+    }
+
+    /// Shutter-only AE, run on the capture queue after luma stats.
+    var steerExposure: ((FrameAnalysis.LumaStats) -> Void)?
+
     init(store: SessionStore, previewRenderer: VideoPreviewRenderer,
          videoDims: (width: Int, height: Int)) {
         self.store = store
@@ -158,6 +175,7 @@ final class FrameFeedContext: @unchecked Sendable {
     /// 33 ms frame interval; the heavy JPEG encode is bounced to encodeQueue.
     func handle(_ frame: CapturedFrame) {
         let stats = FrameAnalysis.lumaStats(of: frame.pixelBuffer)
+        steerExposure?(stats)
         guard let depth = DepthPacker.pack(frame.depthData.depthDataMap) else { return }
 
         lock.lock()
@@ -191,9 +209,13 @@ final class FrameFeedContext: @unchecked Sendable {
         let elapsed = frame.tCapture - lastStoreTime
         let busy = encodesInFlight >= Self.maxEncodesInFlight
         let capped = storeCommits >= Self.storedFrameCap
-        // No pose (tracking lost, or before bootstrap) means we cannot tell
-        // whether anything changed — so keep the frame. Losing a real
-        // viewpoint is worse than keeping a redundant one.
+        let manual = pendingManual
+        // Floor calibration still needs frames on disk even while auto is
+        // paused — the prompt is "take a step", not "tap Start first".
+        let autoOn = autoStoreEnabled || wantsFloorFrames
+        // No pose (before bootstrap) means we cannot tell whether anything
+        // changed — so keep the frame. Losing a real viewpoint is worse
+        // than keeping a redundant one.
         var moved = true
         if let centre = latestCentre, let rotation = latestRotation,
            let lastCentre = lastStoredCentre, let lastRotation = lastStoredRotation {
@@ -207,10 +229,17 @@ final class FrameFeedContext: @unchecked Sendable {
                 || turn >= max(Self.storeMinRotationDeg, storeRotationDeg)
                 || elapsed >= Self.storeMaxIntervalS
         }
-        let shouldStore = !busy && !capped && elapsed >= 0.30 && moved
+        let autoOk = autoOn && !busy && !capped && elapsed >= 0.30 && moved
             && stats.overexposedFraction < 0.10
+        // A manual snap bypasses movement, cadence and exposure — those are
+        // why auto refused. Cap and backpressure still apply: a write that
+        // cannot land is not a capture.
+        let manualOk = manual && !busy && !capped
+        let shouldStore = autoOk || manualOk
+        let storeReason = manualOk ? "manual" : "gate"
         let framePass = passName
         if shouldStore {
+            if manualOk { pendingManual = false }
             lastStoreTime = frame.tCapture
             lastStoredCentre = latestCentre
             lastStoredRotation = latestRotation
@@ -236,7 +265,7 @@ final class FrameFeedContext: @unchecked Sendable {
                 lapVar: stats.laplacianVariance,
                 overexpFrac: stats.overexposedFraction),
             isKeyframe: false,
-            storeReason: "gate",
+            storeReason: storeReason,
             pass: framePass)
 
         // The calibrator needs a frame that is genuinely going to disk: it
@@ -510,11 +539,32 @@ final class CaptureViewModel {
     /// distance from the user while being nothing of the kind.
     private(set) var viewer: ViewerPose?
 
-    /// Set only while tracking is lost and the engine knows which way the
-    /// map is. Drives the recovery arrow.
-    private(set) var recovery: RecoveryHint?
+    /// Auto-store is off until the user taps Start. Manual snaps still work.
+    private(set) var autoCaptureEnabled = false
 
     var isScouting: Bool { state == .scouting }
+
+    func setAutoCapture(_ on: Bool) {
+        autoCaptureEnabled = on
+        context?.setAutoStore(on)
+        if on {
+            guidance = isScouting
+                ? "Walk the space — back to the walls, camera facing in"
+                : "Move slowly and keep the scene in view"
+        } else if isRunning {
+            guidance = "Auto paused — tap Start or snap a frame"
+        }
+    }
+
+    func toggleAutoCapture() {
+        setAutoCapture(!autoCaptureEnabled)
+    }
+
+    /// Force the next synchronized video+depth frame onto disk, even if the
+    /// auto gate would skip it.
+    func snapFrame() {
+        context?.requestManualCapture()
+    }
 
     /// Shows the route card over a running capture.
     ///
@@ -667,6 +717,9 @@ final class CaptureViewModel {
         // one of them.
         context.nextFrameId = await store.firstFrameId
         context.pass = plan == .scoutThenCapture ? "scout" : "capture"
+        context.steerExposure = { [manager] stats in
+            manager.steerShutter(stats)
+        }
         self.context = context
         manager.onFrame = { frame in
             context.handle(frame)  // capture queue
@@ -675,10 +728,10 @@ final class CaptureViewModel {
         if plan == .captureOnly { beginFloorCalibration(context) }
 
         manager.start()
+        autoCaptureEnabled = false
+        context.setAutoStore(false)
         state = plan == .scoutThenCapture ? .scouting : .capturing
-        guidance = plan == .scoutThenCapture
-            ? "Walk the space — back to the walls, camera facing in"
-            : "Move slowly and keep the scene in view"
+        guidance = "Auto paused — tap Start or snap a frame"
         if plan == .captureOnly { presentRouteCard() }
         startPolling()
     }
@@ -734,7 +787,9 @@ final class CaptureViewModel {
             beginFloorCalibration(context)
 
             state = .capturing
-            guidance = "Move slowly and keep the scene in view"
+            autoCaptureEnabled = false
+            context.setAutoStore(false)
+            guidance = "Auto paused — tap Start or snap a frame"
             presentRouteCard()
         }
     }
@@ -807,14 +862,13 @@ final class CaptureViewModel {
     private struct PollInput {
         let context: FrameFeedContext
         let isScouting: Bool
-        let regions: [CoreEngine.Snapshot.Region]
+        let autoCaptureEnabled: Bool
     }
 
     /// Everything a poll produces, ready to assign. A plain value type so it
     /// can cross back to the main actor in one hop.
     private struct PollResult {
         var viewer: ViewerPose?
-        var recovery: RecoveryHint?
         var guidance: String
         var framesSeen: UInt32
         var keyframes: UInt32
@@ -832,13 +886,12 @@ final class CaptureViewModel {
     private func pollInput() -> PollInput? {
         guard isRunning, let context else { return nil }
         return PollInput(context: context, isScouting: isScouting,
-                         regions: snapshot.regions)
+                         autoCaptureEnabled: autoCaptureEnabled)
     }
 
     @MainActor
     private func apply(_ r: PollResult) {
         viewer = r.viewer
-        recovery = r.recovery
         guidance = r.guidance
         framesSeen = r.framesSeen
         readinessOverall = r.readiness
@@ -903,21 +956,16 @@ final class CaptureViewModel {
                     await context.store.addKeyframeIds(keyframed)
                 }
 
-                // Name the place the arrow points at, when there is more than
-                // one place to mean.
-                let guideRegion = input.regions.count > 1
-                    ? input.regions.first { $0.id == status.guide_region_id }?.name
-                    : nil
-                let recovery = RecoveryHint(status: status,
-                                            regionName: guideRegion)
-
-                // Steady the pill before anyone reads it.
                 let code = pill.settle(rawCode: status.guidance,
                                        state: status.state)
-                let text = recovery?.text
-                    ?? (input.isScouting
+                let text: String
+                if !input.autoCaptureEnabled {
+                    text = "Auto paused — tap Start or snap a frame"
+                } else {
+                    text = input.isScouting
                         ? Self.scoutGuidanceText(for: code, status: status)
-                        : Self.guidanceText(for: code, status: status))
+                        : Self.guidanceText(for: code, status: status)
+                }
 
                 // The tracker's share of the camera. Some dropping is normal
                 // and harmless — a relocalization sweep costs several frames
@@ -973,7 +1021,7 @@ final class CaptureViewModel {
                 }
 
                 await self.apply(PollResult(
-                    viewer: viewer, recovery: recovery, guidance: text,
+                    viewer: viewer, guidance: text,
                     framesSeen: status.frames_fed, keyframes: status.keyframes,
                     readiness: status.readiness_overall,
                     framesStored: UInt32(stored),
@@ -1084,7 +1132,7 @@ final class CaptureViewModel {
         case BS_GUIDE_MOVE_SIDEWAYS: return "Step sideways to add parallax"
         case BS_GUIDE_SLOW_DOWN: return "Slow down"
         case BS_GUIDE_RECAPTURE: return "Recapture this area"
-        case BS_GUIDE_TRACKING_LOST: return "Tracking lost — return to a mapped area"
+        case BS_GUIDE_TRACKING_LOST: return "Keep going"
         case BS_GUIDE_COVERAGE_NEEDED: return "More coverage needed here"
         default: return "Capturing"
         }
@@ -1100,8 +1148,6 @@ final class CaptureViewModel {
         switch bs_guidance(rawValue: bs_guidance.RawValue(max(0, code))) {
         case BS_GUIDE_SLOW_DOWN:
             return "Turn more slowly"
-        case BS_GUIDE_TRACKING_LOST:
-            return "Lost the map — go back the way you came"
         default:
             return "Keep walking — back to the walls, camera facing in"
         }
@@ -1182,7 +1228,7 @@ final class CaptureViewModel {
                 let locks = manager.lockState
                 try? await context.store.finalize(
                     locks: (focus: locks.focus, exposure: locks.exposure,
-                            whiteBalance: locks.whiteBalance))
+                            iso: locks.iso, whiteBalance: locks.whiteBalance))
                 let stored = await context.store.storedFrames
                 summary = CaptureSummary(
                     frames: stored,

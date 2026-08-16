@@ -4,9 +4,8 @@ import SwiftUI
 ///
 /// A project is the unit that matches how the work actually happens — a
 /// house is not one capture, it is ten sittings over a space, and between
-/// them the useful questions are "which room is thin", "can I re-export
-/// this", "I want to redo the kitchen". A flat list of dated session folders
-/// answers none of those.
+/// them the useful questions are "which room is thin" and "I want to redo
+/// the kitchen". A flat list of dated session folders answers none of those.
 struct ProjectsView: View {
     @State private var projects: [ProjectStore.Project] = []
     @State private var creating = false
@@ -100,10 +99,6 @@ struct ProjectsView: View {
                 if project.rescanCount > 0 {
                     Label("\(project.rescanCount)", systemImage: "arrow.clockwise")
                 }
-                if project.hasExport {
-                    Label("exported", systemImage: "checkmark.seal")
-                        .foregroundStyle(.green)
-                }
             }
             .font(.caption.monospacedDigit())
             .foregroundStyle(.secondary)
@@ -119,8 +114,8 @@ struct ProjectsView: View {
     private func reload() { projects = ProjectStore.load() }
 }
 
-/// One project: its captures, and the three things you come back to do —
-/// capture more, re-export, or redo a room.
+/// One project: its captures, and the two things you come back to do —
+/// capture more, or redo a room.
 struct ProjectDetailView: View {
     let project: ProjectStore.Project
 
@@ -154,21 +149,11 @@ struct ProjectDetailView: View {
                 } label: {
                     Label("Redo a room", systemImage: "arrow.clockwise")
                 }
-                if let latest = current.latestDirectory {
-                    NavigationLink {
-                        ProcessingView(sessionURL: latest)
-                    } label: {
-                        Label(current.hasExport
-                              ? "Reconstruct and re-export"
-                              : "Reconstruct and export",
-                              systemImage: "cube.transparent")
-                    }
-                }
             } header: {
                 Text("Continue")
             } footer: {
                 Text("Redoing a room replaces the old frames wherever you "
-                   + "walk. They stay on the phone — the reconstruction just "
+                   + "walk. They stay on the phone — the desktop solve just "
                    + "stops using them.")
             }
 
@@ -182,11 +167,6 @@ struct ProjectDetailView: View {
         .navigationBarTitleDisplayMode(.inline)
         .onAppear {
             reloaded = ProjectStore.load().first { $0.id == project.id }
-            // Readiness lives in the newest capture's report, since that is
-            // the solve that covered the whole chain.
-            if let latest = current.latestDirectory {
-                report = SolveReport.read(sessionURL: latest)
-            }
         }
         .sheet(isPresented: $namingRescan) { roomPicker }
         .navigationDestination(item: $startingRescan) { rescan in
@@ -195,47 +175,20 @@ struct ProjectDetailView: View {
         }
     }
 
-    /// Rooms from the last solve, worst first — the whole point is to pick
-    /// the one that came out badly, so ranking by score is the answer to the
-    /// question rather than an alphabetical list to read through.
-    ///
-    /// Falls back to naming it by hand when there is no report yet: a
-    /// project that has never been reconstructed still has rooms, they just
-    /// have no scores, and refusing to rescan until you have solved once
-    /// would be a strange thing to insist on.
     private var roomPicker: some View {
         NavigationStack {
             List {
-                let rooms = (report?.readiness?.regions ?? [])
-                    .sorted { $0.score < $1.score }
-                if rooms.isEmpty {
-                    Section {
-                        TextField("Room name (e.g. Kitchen)", text: $rescanName)
-                        Button("Start") {
-                            namingRescan = false
-                            startingRescan = Rescan(
-                                label: rescanName.isEmpty ? "this room"
-                                                          : rescanName)
-                        }
-                    } footer: {
-                        Text("No reconstruction yet, so there are no room "
-                           + "scores to choose from. Name it and walk it.")
+                Section {
+                    TextField("Room name (e.g. Kitchen)", text: $rescanName)
+                    Button("Start") {
+                        namingRescan = false
+                        startingRescan = Rescan(
+                            label: rescanName.isEmpty ? "this room"
+                                                      : rescanName)
                     }
-                } else {
-                    Section {
-                        ForEach(rooms) { room in
-                            Button {
-                                namingRescan = false
-                                startingRescan = Rescan(label: room.name)
-                            } label: {
-                                roomRow(room)
-                            }
-                        }
-                    } footer: {
-                        Text("Scores are from the last reconstruction. Pick a "
-                           + "room and walk it again — the new frames take "
-                           + "over wherever you go.")
-                    }
+                } footer: {
+                    Text("Name the room and walk it again — the new frames "
+                       + "take over wherever you go.")
                 }
             }
             .navigationTitle("Redo which room?")
@@ -247,33 +200,9 @@ struct ProjectDetailView: View {
         .presentationDetents([.medium, .large])
     }
 
-    private func roomRow(_ room: SolveReport.Readiness.Region) -> some View {
-        HStack {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(room.name).font(.headline)
-                if let worst = room.worstAxisName {
-                    Text("weakest: \(worst)")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                Text(String(format: "%.1f m² · %d weak spot%@", room.areaM2,
-                            Int(room.weakAreas), room.weakAreas == 1 ? "" : "s"))
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
-            Spacer()
-            Text("\(Int(room.score))%")
-                .font(.title3.weight(.semibold).monospacedDigit())
-                .foregroundStyle(room.score >= 85 ? .green
-                                 : (room.score >= 60 ? .orange : .red))
-        }
-        .padding(.vertical, 2)
-    }
-
     @State private var namingRescan = false
     @State private var rescanName = ""
     @State private var startingRescan: Rescan?
-    @State private var report: SolveReport?
 
     struct Rescan: Identifiable, Hashable {
         let label: String

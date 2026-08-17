@@ -10,6 +10,7 @@ version bump and a migration note here.
 session_<yyyyMMdd-HHmmss>_<6hex>/
 ├── session.json          RAW   written by the app (start + finalize)
 ├── calibration.json      RAW   per-session camera summary + fitted model
+├── rooms.json            sidecar  floorplan rooms after a multi-room scout
 ├── frames/
 │   ├── 000001/
 │   │   ├── image.jpg     RAW   1920×1440 JPEG (quality ≈0.85), no EXIF
@@ -97,7 +98,8 @@ Invalid samples are NaN (preferred) or 0. Uncompressed size is always
   "quality":  { "lap_var": 312.5, "overexp_frac": 0.003 },
   "is_keyframe": true,
   "store_reason": "kf",             // "gate" | "kf" | "burst"
-  "pass": "capture"                 // "capture" | "scout"; absent => capture
+  "pass": "capture",                // "capture" | "scout"; absent => capture
+  "room_id": 2                      // extra photo for this floorplan room; absent on scout / single-room
 }
 ```
 
@@ -124,6 +126,37 @@ Scout frames are still written to RAW like any other: they are real
 measurements, the Linux replay needs them to reproduce a session, and
 "excluded from the reconstruction" is a solve-time decision, never a reason
 to discard captured data.
+
+After a multi-room scout the user picks (or draws) rooms on a 2D plan of
+the route. Extra photos taken while a room is selected are tagged
+`room_id` and capped at 200 per room. Scout frames do not spend that
+budget — a 700-frame circuit leaves each room with a full 200 extras.
+
+## `rooms.json` (sidecar, not RAW)
+
+Written after the scout circuit and whenever the user redraws or finishes
+a room. The route photos stay immutable; this file is the floorplan overlay
+(outlines, names, which scout frames fell inside each room, how many extra
+photos were taken).
+
+```jsonc
+{
+  "rooms": [
+    {
+      "id": 1,
+      "name": "Kitchen",
+      "polygon": [[0.2, -1.4], [4.1, -1.4], [4.1, 2.0], [0.2, 2.0]],
+      "scout_frame_ids": [3, 4, 5, 18],
+      "capture_count": 86
+    }
+  ]
+}
+```
+
+`polygon` is in metres on the plan (the two axes the walk actually covered,
+dropping height). `scout_frame_ids` are route frames whose camera centre
+projected inside that outline. `capture_count` is extra photos stored while
+that room was the active capture — not including the route.
 
 ## `masks/NNNNNN.png` (derived layer, optional)
 

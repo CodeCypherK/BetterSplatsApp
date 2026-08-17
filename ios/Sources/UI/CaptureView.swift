@@ -24,18 +24,25 @@ struct CaptureView: View {
             PreviewSurface(renderer: model.previewRenderer)
                 .ignoresSafeArea()
 
-            VStack {
-                statusPill
-                Spacer()
-                bottomBar
+            if !model.isPlanning {
+                VStack {
+                    statusPill
+                    Spacer()
+                    bottomBar
+                }
+                .padding()
             }
-            .padding()
 
             if let phase = model.floorPhase {
                 floorCalibrationPrompt(phase)
             }
 
             if model.showsRouteCard { routeCard }
+
+            if model.isPlanning {
+                FloorplanView(model: model)
+                    .ignoresSafeArea()
+            }
 
             if model.state == .idle {
                 // A rescan is always one room by definition, so asking "one
@@ -137,10 +144,10 @@ struct CaptureView: View {
                 } label: {
                     planOption(
                         title: "Several rooms",
-                        detail: "Walk the whole space once first — a lap of "
-                              + "every room, back to the walls, camera facing "
-                              + "in. It takes a minute and gives the detailed "
-                              + "scan something to hold position against.",
+                        detail: "Walk the whole space once first. Then pick "
+                              + "or draw each room and add up to "
+                              + "\(FrameFeedContext.roomCaptureCap) extra "
+                              + "photos. The route does not spend that budget.",
                         icon: "figure.walk.motion")
                 }
             }
@@ -492,8 +499,11 @@ struct CaptureView: View {
                     .padding(.vertical, 4)
                     .background(.ultraThinMaterial, in: Capsule())
             } else if model.scoutFramesStored > 0 {
-                Text("\(model.scoutFramesStored) route frames + "
-                     + "\(max(0, Int(model.framesStored) - Int(model.scoutFramesStored))) scan frames")
+                let extras = model.isCapturingRoom
+                    ? Int(model.framesStored)
+                    : max(0, Int(model.framesStored) - Int(model.scoutFramesStored))
+                Text("\(model.scoutFramesStored) route + \(extras) extra"
+                     + (model.activeRoomName.map { " in \($0)" } ?? ""))
                     .font(.caption2.monospacedDigit())
                     .foregroundStyle(.secondary)
                     .padding(.horizontal, 12)
@@ -514,7 +524,7 @@ struct CaptureView: View {
                  : "\(model.scaffoldKeyframes) waypoints mapped")
                 .font(.caption.monospacedDigit())
                 .foregroundStyle(.secondary)
-            Text("Finish where you started, then scan in detail.")
+            Text("Finish where you started, then pick rooms on the plan.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
@@ -522,7 +532,7 @@ struct CaptureView: View {
             Button {
                 model.finishScout()
             } label: {
-                Label("Start detailed scan", systemImage: "camera.viewfinder")
+                Label("Finish route", systemImage: "map")
                     .frame(maxWidth: .infinity)
             }
             .buttonStyle(.borderedProminent)
@@ -570,9 +580,23 @@ struct CaptureView: View {
             }
             .accessibilityLabel("Snap frame")
             .disabled(model.state == .starting || model.state == .stopping
-                      || model.framesStored >= UInt32(FrameFeedContext.storedFrameCap))
+                      || (!model.isScouting
+                          && model.framesStored >= UInt32(model.extraPhotoCap)))
 
-            if !model.isScouting {
+            if model.isCapturingRoom {
+                Button {
+                    model.finishRoom()
+                } label: {
+                    VStack(spacing: 4) {
+                        Image(systemName: "checkmark.circle.fill")
+                            .font(.system(size: 36))
+                        Text("Done")
+                            .font(.caption.weight(.semibold))
+                    }
+                }
+                .foregroundStyle(.green)
+                .disabled(model.state == .starting || model.state == .stopping)
+            } else if !model.isScouting {
                 Button {
                     model.stop()
                 } label: {
@@ -590,6 +614,11 @@ struct CaptureView: View {
             }
             }
             .frame(maxWidth: .infinity)
+            if model.isCapturingRoom {
+                Button("End session") { model.stop() }
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
     }
 

@@ -18,6 +18,10 @@ final class FrameFeedContext: @unchecked Sendable {
     static let storedFrameCap = 1000
     static let storedFrameWarn = 900
     static let storedFrameTarget = 200
+    /// Extra photos allowed in one room after the route. The route itself
+    /// is a different budget — it does not spend this, and a 700-frame
+    /// circuit must not pretend the first room is already full.
+    static let roomCaptureCap = 200
 
     /// Motion gate. Storage exists to give the final solve NEW viewpoints; a
     /// frame taken from where the last one was taken is a duplicate, and with
@@ -77,9 +81,13 @@ final class FrameFeedContext: @unchecked Sendable {
     /// Frames that failed to reach disk. Shown separately; never part of
     /// the cap or the "you have N photos" number.
     var storeFailures = 0
-    /// Successful scout writes. Split out only so the UI can say which half
-    /// of the budget the user has spent.
+    /// Successful scout writes. The route is not the room budget.
     var scoutSuccesses = 0
+    /// Successful capture-pass writes in the *current* room. Reset when
+    /// the user picks the next room.
+    var captureSuccesses = 0
+    /// Ceiling applied to `captureSuccesses`. Scout ignores it.
+    var captureCap = storedFrameCap
 
     /// Latest live pose, published by the polling loop for the storage gate.
     /// Guarded by `lock`: written on the main actor, read on the capture
@@ -137,7 +145,11 @@ final class FrameFeedContext: @unchecked Sendable {
             storeFailures += 1
         } else {
             storeSuccesses += 1
-            if pass == "scout" { scoutSuccesses += 1 }
+            if pass == "scout" {
+                scoutSuccesses += 1
+            } else {
+                captureSuccesses += 1
+            }
             lastStoredCentre = centre
             lastStoredRotation = rotation
         }
@@ -165,6 +177,29 @@ final class FrameFeedContext: @unchecked Sendable {
 
     func requestManualCapture() {
         lock.lock(); pendingManual = true; lock.unlock()
+    }
+
+    func setCaptureCap(_ cap: Int) {
+        lock.lock(); captureCap = cap; lock.unlock()
+    }
+
+    func resetRoomCaptureCount() {
+        lock.lock(); captureSuccesses = 0; lock.unlock()
+    }
+
+    /// Stamped onto capture-pass frames so the desktop solve knows which
+    /// room's extra photos they are. 0 = none.
+    private var roomIdValue: UInt32 = 0
+    var roomId: UInt32 {
+        get { lock.lock(); defer { lock.unlock() }; return roomIdValue }
+        set { lock.lock(); roomIdValue = newValue; lock.unlock() }
+    }
+
+    var captureCount: Int {
+        lock.lock(); defer { lock.unlock() }; return captureSuccesses
+    }
+    var scoutCount: Int {
+        lock.lock(); defer { lock.unlock() }; return scoutSuccesses
     }
 
     /// Shutter-only AE, run on the capture queue after luma stats.
@@ -218,9 +253,11 @@ final class FrameFeedContext: @unchecked Sendable {
         lock.lock()
         let elapsed = frame.tCapture - lastStoreTime
         let busy = encodesInFlight >= Self.maxEncodesInFlight
-        // In-flight writes may still land, so leave room for them — but never
-        // count a failure toward the ceiling.
-        let capped = storeSuccesses + encodesInFlight >= Self.storedFrameCap
+        // Scout is uncapped: a 700-frame route must not spend the room's
+        // 200 extra photos. Capture-pass writes hit `captureCap` (1000 for
+        // a single room, 200 per room after a route).
+        let capped = passName != "scout"
+            && captureSuccesses + encodesInFlight >= captureCap
         let manual = pendingManual
         // Floor calibration still needs frames on disk even while auto is
         // paused — the prompt is "take a step", not "tap Start first".
@@ -250,6 +287,8 @@ final class FrameFeedContext: @unchecked Sendable {
         let shouldStore = autoOk || manualOk
         let storeReason = manualOk ? "manual" : "gate"
         let framePass = passName
+        let taggedRoom = (framePass != "scout" && roomIdValue != 0)
+            ? roomIdValue : nil as UInt32?
         let acceptCentre = latestCentre
         let acceptRotation = latestRotation
         if shouldStore {
@@ -278,7 +317,8 @@ final class FrameFeedContext: @unchecked Sendable {
                 overexpFrac: stats.overexposedFraction),
             isKeyframe: false,
             storeReason: storeReason,
-            pass: framePass)
+            pass: framePass,
+            roomId: taggedRoom)
 
         // The calibrator needs a frame that is genuinely going to disk: it
         // records the floor against a frame id, and the solve resolves that
@@ -425,6 +465,9 @@ final class CaptureViewModel {
         /// Walking the opening circuit. Frames are stored and tagged
         /// `pass="scout"`; the engine is building the localization scaffold.
         case scouting
+        /// Route is done. User is looking at the floorplan, drawing or
+        /// picking a room to scan next. Camera stays up; nothing is stored.
+        case planning
         case capturing
         case stopping
         case finished(sessionName: String)
@@ -578,6 +621,26 @@ final class CaptureViewModel {
     }
 
     var isScouting: Bool { state == .scouting }
+    var isPlanning: Bool { state == .planning }
+    var isCapturingRoom: Bool { state == .capturing && activeRoom != nil }
+    var activeRoomName: String? { activeRoom?.name }
+    var extraPhotoCap: Int {
+        plan == .scoutThenCapture
+            ? FrameFeedContext.roomCaptureCap
+            : FrameFeedContext.storedFrameCap
+    }
+
+    private(set) var floorplan: Floorplan?
+    private(set) var activeRoom: Floorplan.Room?
+    private(set) var selectedRoomId: UInt32?
+    private(set) var drawingVertices: [SIMD2<Double>] = []
+    var isDrawingRoom = false
+
+    /// Both passes and the floorplan pause feed the engine; several call sites
+    /// care only about "is the camera running".
+    var isRunning: Bool {
+        state == .capturing || state == .scouting || state == .planning
+    }
 
     func setAutoCapture(_ on: Bool) {
         autoCaptureEnabled = on
@@ -687,16 +750,20 @@ final class CaptureViewModel {
     let mapRenderer = MapRenderer()
 
     var isCapturing: Bool { state == .capturing }
-    /// Both passes feed the engine and write frames; several call sites care
-    /// only about "is the camera running".
-    var isRunning: Bool { state == .capturing || state == .scouting }
 
     func start(plan: Plan = .captureOnly) {
         switch state {
         case .idle, .finished, .failed:
             self.plan = plan
-            state = .starting
             isoPinned = false
+            photometryLocked = false
+            floorplan = nil
+            activeRoom = nil
+            selectedRoomId = nil
+            isDrawingRoom = false
+            drawingVertices = []
+            scoutFramesStored = 0
+            state = .starting
             Task { await startInner() }
         default:
             break
@@ -795,15 +862,17 @@ final class CaptureViewModel {
             // inline this froze the UI for as long as tens of megabytes take,
             // at the exact moment the user has just pressed a button and is
             // watching for it to do something.
-            let dir = context.store.directory.path
+            let sessionURL = context.store.directory
             let handover = await Task.detached(priority: .userInitiated) {
-                () -> (keyframes: UInt32, ok: Bool, error: String) in
+                () -> (keyframes: UInt32, ok: Bool, error: String,
+                       snap: CoreEngine.Snapshot) in
                 let engine = CoreEngine.shared
                 engine.liveEnd()
                 let keyframes = engine.livePollStatus().keyframes
-                let ok = engine.liveBegin(sessionDir: dir,
+                let ok = engine.liveBegin(sessionDir: sessionURL.path,
                                           pass: BS_PASS_CAPTURE) == BS_OK
-                return (keyframes, ok, engine.lastError)
+                let snap = engine.snapshot()
+                return (keyframes, ok, engine.lastError, snap)
             }.value
 
             scaffoldKeyframes = handover.keyframes
@@ -813,19 +882,20 @@ final class CaptureViewModel {
                 return
             }
             context.pass = "capture"
+            applySnapshot(handover.snap)
 
-            // Only now. The floor calibration names a frame id and the solve
-            // resolves it through that frame's final pose — but the solve
-            // excludes scout frames outright, so a floor measured during the
-            // circuit would point at a frame that never gets a pose, and be
-            // silently dropped.
-            beginFloorCalibration(context)
+            var built = FloorplanBuilder.load(sessionDirectory: sessionURL,
+                                              snapshot: handover.snap)
+            FloorplanBuilder.assignScoutFrames(&built)
+            floorplan = built
+            selectedRoomId = built.rooms.first?.id
+            await persistRooms()
 
-            state = .capturing
-            autoCaptureEnabled = false
+            context.setCaptureCap(FrameFeedContext.roomCaptureCap)
             context.setAutoStore(false)
-            guidance = "Auto paused — tap Start or snap a frame"
-            presentRouteCard()
+            autoCaptureEnabled = false
+            state = .planning
+            guidance = "Pick a room to scan, or draw one on the plan"
         }
     }
 
@@ -893,11 +963,121 @@ final class CaptureViewModel {
     }
     private var photometryLocked = false
 
+    func selectRoom(_ id: UInt32) {
+        selectedRoomId = id
+    }
+
+    func beginDrawingRoom() {
+        isDrawingRoom = true
+        drawingVertices = []
+    }
+
+    func addDrawPoint(_ planPoint: SIMD2<Double>) {
+        guard isDrawingRoom else { return }
+        drawingVertices.append(planPoint)
+    }
+
+    func cancelDrawing() {
+        isDrawingRoom = false
+        drawingVertices = []
+    }
+
+    func closeDrawnRoom() {
+        guard drawingVertices.count >= 3 else { return }
+        var plan = floorplan ?? Floorplan(
+            poses: [], rooms: [], origin: .zero,
+            axisU: SIMD3(1, 0, 0), axisV: SIMD3(0, 0, 1))
+        let nextId = (plan.rooms.map(\.id).max() ?? 0) + 1
+        var room = Floorplan.Room(
+            id: nextId, name: "Room \(nextId)",
+            polygon: drawingVertices, scoutFrameIds: [], captureCount: 0)
+        room.scoutFrameIds = plan.poses.filter {
+            FloorplanBuilder.pointInPolygon($0.plan, drawingVertices)
+        }.map(\.frameId)
+        plan.rooms.append(room)
+        floorplan = plan
+        selectedRoomId = nextId
+        isDrawingRoom = false
+        drawingVertices = []
+        Task { await persistRooms() }
+    }
+
+    func renameRoom(_ id: UInt32, to name: String) {
+        guard var plan = floorplan,
+              let i = plan.rooms.firstIndex(where: { $0.id == id }) else { return }
+        plan.rooms[i].name = name
+        floorplan = plan
+        if activeRoom?.id == id { activeRoom?.name = name }
+        Task { await persistRooms() }
+    }
+
+    func detectRoomsAgain() {
+        guard var plan = floorplan else { return }
+        plan.rooms = FloorplanBuilder.autoRooms(in: plan, snapshot: snapshot)
+        FloorplanBuilder.assignScoutFrames(&plan)
+        floorplan = plan
+        selectedRoomId = plan.rooms.first?.id
+        Task { await persistRooms() }
+    }
+
+    /// Begin the extra 200-photo pass for one room. Route frames that fell
+    /// inside its outline are already associated; they do not spend the 200.
+    func startRoomScan(_ id: UInt32) {
+        guard state == .planning, let context,
+              var plan = floorplan,
+              let room = plan.rooms.first(where: { $0.id == id })
+        else { return }
+        FloorplanBuilder.assignScoutFrames(&plan)
+        floorplan = plan
+        let resolved = plan.rooms.first(where: { $0.id == id }) ?? room
+        activeRoom = resolved
+        selectedRoomId = id
+        context.roomId = id
+        context.resetRoomCaptureCount()
+        context.setCaptureCap(FrameFeedContext.roomCaptureCap)
+        if !photometryLocked {
+            beginFloorCalibration(context)
+        }
+        autoCaptureEnabled = false
+        context.setAutoStore(false)
+        state = .capturing
+        guidance = "Scan \(resolved.name) — up to \(FrameFeedContext.roomCaptureCap) extra photos"
+        Task { await persistRooms() }
+    }
+
+    /// Keep the session open and go back to the plan for the next room.
+    func finishRoom() {
+        guard state == .capturing, activeRoom != nil, let context else { return }
+        setAutoCapture(false)
+        let saved = UInt32(context.captureCount)
+        if var plan = floorplan,
+           let i = plan.rooms.firstIndex(where: { $0.id == activeRoom?.id }) {
+            plan.rooms[i].captureCount = saved
+            floorplan = plan
+        }
+        context.roomId = 0
+        activeRoom = nil
+        dismissRouteCard()
+        floorPhase = nil
+        context.wantsFloorFrames = false
+        state = .planning
+        guidance = "Room saved. Pick the next one, or end the session."
+        Task { await persistRooms() }
+    }
+
+    private func persistRooms() async {
+        guard let plan = floorplan, let store = context?.store else { return }
+        await store.writeRooms(plan)
+    }
+
     /// The little bit of main-actor state a poll needs before it can run.
     private struct PollInput {
         let context: FrameFeedContext
         let isScouting: Bool
         let autoCaptureEnabled: Bool
+        let isPlanning: Bool
+        let perRoom: Bool
+        let roomName: String?
     }
 
     /// Everything a poll produces, ready to assign. A plain value type so it
@@ -922,7 +1102,10 @@ final class CaptureViewModel {
     private func pollInput() -> PollInput? {
         guard isRunning, let context else { return nil }
         return PollInput(context: context, isScouting: isScouting,
-                         autoCaptureEnabled: autoCaptureEnabled)
+                         autoCaptureEnabled: autoCaptureEnabled,
+                         isPlanning: isPlanning,
+                         perRoom: plan == .scoutThenCapture,
+                         roomName: activeRoom?.name)
     }
 
     @MainActor
@@ -997,7 +1180,9 @@ final class CaptureViewModel {
                 let code = pill.settle(rawCode: status.guidance,
                                        state: status.state)
                 let text: String
-                if !input.autoCaptureEnabled {
+                if input.isPlanning {
+                    text = "Pick a room to scan, or draw one on the plan"
+                } else if !input.autoCaptureEnabled {
                     text = "Auto paused — tap Start or snap a frame"
                 } else {
                     text = input.isScouting
@@ -1018,42 +1203,66 @@ final class CaptureViewModel {
                              counts.dropFraction * 100)
                     : nil
 
-                let stored = Int(await context.store.storedFrames)
+                let scoutSaved = context.scoutCount
+                let roomSaved = context.captureCount
+                let stored: Int
+                let cap: Int
+                let warn: Int
+                let target: Int
+                if input.isScouting {
+                    stored = scoutSaved
+                    cap = Int.max
+                    warn = Int.max
+                    target = 0
+                } else if input.perRoom {
+                    stored = roomSaved
+                    cap = FrameFeedContext.roomCaptureCap
+                    warn = FrameFeedContext.roomCaptureCap - 20
+                    target = FrameFeedContext.roomCaptureCap
+                } else {
+                    stored = Int(await context.store.storedFrames)
+                    cap = FrameFeedContext.storedFrameCap
+                    warn = FrameFeedContext.storedFrameWarn
+                    target = FrameFeedContext.storedFrameTarget
+                }
                 let bytes = await context.store.storedBytes
                 let free = Self.freeDiskBytes()
                 let failed = context.failedWrites
                 var note: String?
                 var level: StorageNoteLevel = .progress
-                if failed > 0 {
-                    // Above everything else, including "nearly full". Say how
-                    // many actually landed — a failed write is gone, and the
-                    // saved count is what the session is.
+                if input.isPlanning {
+                    note = "\(scoutSaved) route photos — they do not count against a room"
+                    level = .progress
+                } else if failed > 0 {
                     note = failed == 1
                         ? "1 photo failed — \(stored) saved (failed ones do not count)"
                         : "\(failed) photos failed — \(stored) saved (failed ones do not count)"
                     level = .critical
                 } else if free < FrameFeedContext.minFreeBytes {
-                    // Disk beats the frame count: a capture that dies on a
-                    // write halfway through a room loses the room.
                     note = String(
                         format: "iPhone almost full (%.1f GB left) — stop soon",
                         Double(free) / 1_073_741_824)
                     level = .critical
-                } else if stored >= FrameFeedContext.storedFrameCap {
-                    note = "Capture full (\(stored) saved) — stop here, then "
-                         + "continue this project in a new capture"
+                } else if stored >= cap {
+                    if input.perRoom, let name = input.roomName {
+                        note = "\(name) is full (\(stored) extra photos) — finish this room"
+                    } else {
+                        note = "Capture full (\(stored) saved) — stop here, then "
+                             + "continue this project in a new capture"
+                    }
                     level = .critical
-                } else if stored >= FrameFeedContext.storedFrameWarn {
-                    note = "Nearly full: \(stored)/"
-                         + "\(FrameFeedContext.storedFrameCap) saved — finish up"
+                } else if stored >= warn {
+                    note = "Nearly full: \(stored)/\(cap) extra photos — finish up"
                     level = .warning
-                } else if stored < FrameFeedContext.storedFrameTarget {
-                    // The under-covered case is the one people actually hit,
-                    // and it is invisible without being told: the capture
-                    // looks fine, and the thinness only shows up as holes in
-                    // the trained splat hours later.
-                    note = "\(stored)/\(FrameFeedContext.storedFrameTarget) "
-                         + "saved — keep going for full coverage"
+                } else if input.isScouting {
+                    note = "\(stored) route photos — finish where you started"
+                    level = .progress
+                } else if input.perRoom {
+                    let name = input.roomName ?? "this room"
+                    note = "\(stored)/\(cap) extra in \(name) · \(scoutSaved) on the route"
+                    level = .progress
+                } else if stored < target {
+                    note = "\(stored)/\(target) saved — keep going for full coverage"
                     level = .progress
                 }
 
@@ -1229,7 +1438,7 @@ final class CaptureViewModel {
     private(set) var lastSessionDirectory: URL?
 
     func stop() {
-        guard state == .capturing || state == .scouting else { return }
+        guard state == .capturing || state == .scouting || state == .planning else { return }
         state = .stopping
         pollTask?.cancel()
         manager.onFrame = nil
@@ -1248,6 +1457,7 @@ final class CaptureViewModel {
                 CoreEngine.shared.liveEnd()
             }.value
             if let context {
+                await persistRooms()
                 // Record the rescan volume BEFORE finalize, which is what
                 // writes session.json out.
                 if let label = rescanLabel, let volume = rescanVolume {

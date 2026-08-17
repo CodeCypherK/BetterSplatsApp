@@ -257,6 +257,36 @@ actor SessionStore {
         }
     }
 
+    /// Floorplan rooms live next to RAW, not inside it: the route photos are
+    /// immutable, the room outlines are something the user can redraw.
+    func writeRooms(_ plan: Floorplan) {
+        struct File: Codable {
+            var rooms: [RoomJSON]
+        }
+        struct RoomJSON: Codable {
+            var id: UInt32
+            var name: String
+            var polygon: [[Double]]
+            var scoutFrameIds: [UInt32]
+            var captureCount: UInt32
+            enum CodingKeys: String, CodingKey {
+                case id, name, polygon
+                case scoutFrameIds = "scout_frame_ids"
+                case captureCount = "capture_count"
+            }
+        }
+        let payload = File(rooms: plan.rooms.map {
+            RoomJSON(id: $0.id, name: $0.name,
+                     polygon: $0.polygon.map { [$0.x, $0.y] },
+                     scoutFrameIds: $0.scoutFrameIds,
+                     captureCount: $0.captureCount)
+        })
+        let enc = JSONEncoder()
+        enc.outputFormatting = [.prettyPrinted, .sortedKeys]
+        guard let data = try? enc.encode(payload) else { return }
+        try? Self.write(data, to: directory.appendingPathComponent("rooms.json"))
+    }
+
     /// Records that this capture re-covered a volume, superseding whatever
     /// earlier captures in the project recorded there.
     ///

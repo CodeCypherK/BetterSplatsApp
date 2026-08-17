@@ -60,6 +60,9 @@ struct FrameMetaJSON: Codable {
     /// measurement: "not reconstructed from" is a solve-time decision, never
     /// a licence to discard what the sensor saw.
     var pass = "capture"
+    /// Which floorplan room this extra photo belongs to. Absent on scout
+    /// frames and on single-room captures.
+    var roomId: UInt32?
 
     enum CodingKeys: String, CodingKey {
         case schemaVersion = "schema_version"
@@ -73,6 +76,7 @@ struct FrameMetaJSON: Codable {
         case isKeyframe = "is_keyframe"
         case storeReason = "store_reason"
         case pass
+        case roomId = "room_id"
     }
 }
 

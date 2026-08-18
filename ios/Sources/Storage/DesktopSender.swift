@@ -3,18 +3,17 @@ import Network
 import SwiftUI
 import UIKit
 
-/// Sends a session or project folder to the desktop receiver over the same
-/// TCP protocol PhoneStreamer uses:
+/// Zips a session or project, then sends that one archive to the desktop
+/// receiver over the same TCP protocol PhoneStreamer uses:
 ///
 ///   [u32 big-endian length][u8 type][payload]
 ///   type 20 file — [u16 pathLen][utf8 relPath][u32 size][bytes]
 ///   type 21 done — [u16 nameLen][utf8 packageName]
 ///
-/// Files are streamed in 1 MB chunks. Relative paths keep the folder tree,
-/// so a session lands as `incoming/<session>/...` and a project as
-/// `incoming/<project>/<session>/...`. The desktop side is
-/// `tools/desktop/capture_receiver.py` (or PhoneStreamer's capture-server.cmd
-/// — same bytes on the wire).
+/// The payload is a single `.zip`, streamed in 1 MB chunks, so a 400-photo
+/// room is one file on the wire instead of a thousand. The receiver writes
+/// `incoming/<name>.zip` and unpacks it. PhoneStreamer's capture-server.cmd
+/// speaks the same bytes.
 @MainActor
 final class DesktopSender: ObservableObject {
     static let shared = DesktopSender()
@@ -71,13 +70,13 @@ final class DesktopSender: ObservableObject {
         }
 
         isSending = true
-        status = "Connecting…"
+        status = "Zipping…"
         UIApplication.shared.isIdleTimerDisabled = true
 
         let host = self.host.trimmingCharacters(in: .whitespaces)
         let port = self.port
         Task.detached(priority: .userInitiated) {
-            let result = Self.upload(
+            let result = await Self.upload(
                 folders: folders, packageName: name,
                 nestUnderPackage: nestUnderPackage,
                 host: host, port: port) { message in
@@ -106,54 +105,30 @@ final class DesktopSender: ObservableObject {
         return out.isEmpty ? "capture" : out
     }
 
-    // MARK: - Wire protocol (off the main actor, identical to PhoneStreamer)
-
-    private struct Item {
-        let url: URL
-        let relative: String
-        let size: Int
-    }
+    // MARK: - Zip, then one type-20 file (off the main actor)
 
     nonisolated private static func upload(
         folders: [URL], packageName: String, nestUnderPackage: Bool,
         host: String, port: UInt16,
         progress: @escaping @Sendable (String) -> Void
-    ) -> String {
-        var items: [Item] = []
-        let fm = FileManager.default
-        for folder in folders {
-            let resolved = folder.resolvingSymlinksInPath()
-            guard let enumerator = fm.enumerator(
-                at: resolved,
-                includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey]
-            ) else { continue }
-            for case let file as URL in enumerator {
-                guard (try? file.resourceValues(forKeys: [.isRegularFileKey])
-                    .isRegularFile) == true else { continue }
-                let size = (try? file.resourceValues(forKeys: [.fileSizeKey])
-                    .fileSize) ?? 0
-                guard size > 0 else { continue }
-                if size > Int(UInt32.max) {
-                    return "A file is larger than 4 GB — the protocol cannot send it"
-                }
-                var rel = file.resolvingSymlinksInPath().path
-                let base = resolved.deletingLastPathComponent()
-                    .resolvingSymlinksInPath().path
-                if rel.hasPrefix(base + "/") {
-                    rel = String(rel.dropFirst(base.count + 1))
-                } else {
-                    rel = resolved.lastPathComponent + "/" + file.lastPathComponent
-                }
-                // A project send prefixes every session path with the package
-                // name so the receiver writes incoming/<project>/<session>/…
-                if nestUnderPackage {
-                    rel = packageName + "/" + rel
-                }
-                items.append(Item(url: file, relative: rel, size: size))
-            }
+    ) async -> String {
+        progress("Zipping…")
+        let zipURL: URL
+        do {
+            zipURL = try await makeZip(folders: folders, packageName: packageName,
+                                       nestUnderPackage: nestUnderPackage)
+        } catch {
+            return "Zip failed: \(error.localizedDescription)"
         }
-        guard !items.isEmpty else { return "Folder is empty" }
+        defer { try? FileManager.default.removeItem(at: zipURL) }
 
+        let size = (try? zipURL.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+        guard size > 0 else { return "Zip is empty" }
+        if size > Int(UInt32.max) {
+            return "Zip is larger than 4 GB — the protocol cannot send it"
+        }
+
+        progress("Connecting…")
         let conn = NWConnection(
             host: NWEndpoint.Host(host),
             port: NWEndpoint.Port(rawValue: port) ?? 9999,
@@ -200,34 +175,36 @@ final class DesktopSender: ObservableObject {
             return !failed
         }
 
-        for (i, item) in items.enumerated() {
-            guard let fh = try? FileHandle(forReadingFrom: item.url) else { continue }
-            let relData = item.relative.data(using: .utf8) ?? Data()
-            var header = Data()
-            header.appendUInt32(UInt32(1 + 2 + relData.count + 4 + item.size))
-            header.append(20)
-            header.appendUInt16(UInt16(relData.count))
-            header.append(relData)
-            header.appendUInt32(UInt32(item.size))
-            guard sendChunk(header) else {
-                try? fh.close()
-                conn.cancel()
-                return "Upload failed mid-transfer"
+        let rel = packageName + ".zip"
+        let relData = rel.data(using: .utf8) ?? Data()
+        var header = Data()
+        header.appendUInt32(UInt32(1 + 2 + relData.count + 4 + size))
+        header.append(20)
+        header.appendUInt16(UInt16(relData.count))
+        header.append(relData)
+        header.appendUInt32(UInt32(size))
+        guard let fh = try? FileHandle(forReadingFrom: zipURL),
+              sendChunk(header) else {
+            conn.cancel()
+            return "Upload failed mid-transfer"
+        }
+        var sent = 0
+        var lastPct = -1
+        while sent < size {
+            guard let piece = try? fh.read(upToCount: 1 << 20),
+                  !piece.isEmpty else { break }
+            sent += piece.count
+            guard sendChunk(piece) else { break }
+            let pct = Int(Double(sent) / Double(size) * 100)
+            if pct != lastPct {
+                lastPct = pct
+                progress("Sending \(pct)%")
             }
-            var sent = 0
-            while sent < item.size {
-                guard let piece = try? fh.read(upToCount: 1 << 20),
-                      !piece.isEmpty else { break }
-                sent += piece.count
-                guard sendChunk(piece) else { break }
-            }
-            try? fh.close()
-            if failed || sent != item.size {
-                conn.cancel()
-                return "Upload failed mid-transfer"
-            }
-            let pct = Int(Double(i + 1) / Double(items.count) * 100)
-            progress("Sending \(pct)% (\(i + 1)/\(items.count))")
+        }
+        try? fh.close()
+        if failed || sent != size {
+            conn.cancel()
+            return "Upload failed mid-transfer"
         }
 
         var done = Data([21])
@@ -242,6 +219,33 @@ final class DesktopSender: ObservableObject {
         Thread.sleep(forTimeInterval: 1.0)
         conn.cancel()
         return "Sent — on the PC: incoming/\(packageName)"
+    }
+
+    /// One session folder zips as-is. A project is copied under a staging
+    /// directory named after the project, then zipped, so the archive holds
+    /// every capture.
+    nonisolated private static func makeZip(
+        folders: [URL], packageName: String, nestUnderPackage: Bool
+    ) async throws -> URL {
+        if folders.count == 1, !nestUnderPackage {
+            return try await ZipExporter.zipDirectory(
+                at: folders[0], name: packageName + ".zip")
+        }
+        let fm = FileManager.default
+        let stageRoot = fm.temporaryDirectory
+            .appendingPathComponent("desktop-stage-\(UUID().uuidString)",
+                                    isDirectory: true)
+        let stage = stageRoot.appendingPathComponent(packageName, isDirectory: true)
+        try fm.createDirectory(at: stage, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: stageRoot) }
+        for folder in folders {
+            try fm.copyItem(
+                at: folder,
+                to: stage.appendingPathComponent(folder.lastPathComponent,
+                                                 isDirectory: true))
+        }
+        return try await ZipExporter.zipDirectory(
+            at: stage, name: packageName + ".zip")
     }
 }
 

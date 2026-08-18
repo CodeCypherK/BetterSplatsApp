@@ -80,10 +80,10 @@ def handle(conn, addr):
             elif mtype == 21:
                 (nlen,) = struct.unpack(">H", recv_exact(conn, 2))
                 name = recv_exact(conn, nlen).decode("utf-8", "replace")
-                out = os.path.join(ROOT, re.sub(r"[^\w\-.]", "_", name))
+                safe = re.sub(r"[^\w\-.]", "_", name)
                 print(f"[✓] '{name}' complete: {files} files, {total / 1e6:.1f} MB")
-                print(f"    → {out}")
-                extract_zips(out)
+                unpacked = unpack_package(safe)
+                print(f"    → {unpacked}")
                 return
     except ConnectionError:
         if files:
@@ -94,7 +94,36 @@ def handle(conn, addr):
         conn.close()
 
 
-def extract_zips(session_dir):
+def unpack_package(name):
+    """Unpack a zipped send. The phone now ships one .zip; older sends were
+    a folder of loose files (and maybe a zip inside)."""
+    zip_at_root = os.path.join(ROOT, name + ".zip")
+    if os.path.isfile(zip_at_root):
+        dest = os.path.join(ROOT, name)
+        count = extract_zip(zip_at_root, dest)
+        print(f"    unzipped {name}.zip → {dest} ({count} files)")
+        return dest
+    folder = os.path.join(ROOT, name)
+    extract_zips_inside(folder)
+    return folder
+
+
+def extract_zip(zpath, dest):
+    count = 0
+    with zipfile.ZipFile(zpath) as z:
+        for m in z.infolist():
+            rel = safe_rel(m.filename)
+            if rel is None or m.is_dir():
+                continue
+            target = os.path.join(dest, rel)
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            with z.open(m) as src, open(target, "wb") as f:
+                f.write(src.read())
+            count += 1
+    return count
+
+
+def extract_zips_inside(session_dir):
     if not os.path.isdir(session_dir):
         return
     for root, _, names in os.walk(session_dir):
@@ -104,17 +133,7 @@ def extract_zips(session_dir):
             zpath = os.path.join(root, n)
             dest = os.path.join(root, os.path.splitext(n)[0])
             try:
-                with zipfile.ZipFile(zpath) as z:
-                    count = 0
-                    for m in z.infolist():
-                        rel = safe_rel(m.filename)
-                        if rel is None or m.is_dir():
-                            continue
-                        target = os.path.join(dest, rel)
-                        os.makedirs(os.path.dirname(target), exist_ok=True)
-                        with z.open(m) as src, open(target, "wb") as f:
-                            f.write(src.read())
-                        count += 1
+                count = extract_zip(zpath, dest)
                 print(f"    unzipped {n} → {dest} ({count} files)")
             except Exception as e:
                 print(f"    could not unzip {n}: {e}")

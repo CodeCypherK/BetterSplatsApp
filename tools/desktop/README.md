@@ -1,7 +1,8 @@
 # Send to desktop
 
-The iPhone app ships session and project folders over TCP using the same
-bytes as PhoneStreamer. This receiver writes them under `incoming/`.
+The iPhone app zips a session or project, then sends that one archive over
+TCP using the same bytes as PhoneStreamer. This receiver writes the zip
+under `incoming/` and unpacks it.
 
 ```
 py capture_receiver.py

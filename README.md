@@ -69,10 +69,11 @@ docs/         ARCHITECTURE.md · FORMATS.md · SIDELOADING.md
 
 ## Send a session or project to the PC
 
-Same on-wire protocol as PhoneStreamer (TCP port 9999, type-20 files + type-21 done).
+Same on-wire protocol as PhoneStreamer (TCP port 9999, type-20 file + type-21 done).
+The phone zips the session or project first and sends that one archive.
 
 1. On the PC: `tools/desktop/capture-server.cmd` (or PhoneStreamer's `capture-server.cmd`).
 2. On the phone home screen: enter the PC's Tailscale or LAN IP.
 3. Open a **session** or a **project** and tap **Send to desktop**.
 
-Folders land in `tools/desktop/incoming/<name>/`. A project nests each session underneath the project name.
+The zip lands in `tools/desktop/incoming/<name>.zip` and is unpacked next to it.

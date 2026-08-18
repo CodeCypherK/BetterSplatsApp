@@ -43,7 +43,7 @@ struct RootView: View {
                     }
                 }
 
-                Section("Desktop PC") {
+                Section {
                     TextField("PC IP (Tailscale or LAN)", text: $desktop.host)
                         .keyboardType(.numbersAndPunctuation)
                         .textInputAutocapitalization(.never)
@@ -68,6 +68,8 @@ struct RootView: View {
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
+                } header: {
+                    Text("Desktop PC")
                 } footer: {
                     Text("Run tools/desktop/capture-server.cmd on the PC, then Send to desktop from a session or a project. Same protocol as PhoneStreamer — either receiver works.")
                 }

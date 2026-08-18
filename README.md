@@ -52,6 +52,7 @@ ctest --preset linux-rel
 ```
 core/         portable C++17 reconstruction engine + tests
 tools/        bs_synth (synthetic sessions), bs_replay (Linux session replay)
+              desktop/capture_receiver.py — TCP pull from the phone (PhoneStreamer protocol)
 ios/          SwiftUI app; Xcode project generated from project.yml (XcodeGen)
 scripts/      CI entry points, iOS dependency builder, IPA packaging
 third_party/  vendored single-file deps (licenses in third_party/README.md)
@@ -65,3 +66,13 @@ docs/         ARCHITECTURE.md · FORMATS.md · SIDELOADING.md
 - `docs/FORMATS.md` — normative on-disk formats (session, depth codec,
   COLMAP export conventions)
 - `docs/SIDELOADING.md` — installing CI-built IPAs with a free Apple ID
+
+## Send a session or project to the PC
+
+Same on-wire protocol as PhoneStreamer (TCP port 9999, type-20 files + type-21 done).
+
+1. On the PC: `tools/desktop/capture-server.cmd` (or PhoneStreamer's `capture-server.cmd`).
+2. On the phone home screen: enter the PC's Tailscale or LAN IP.
+3. Open a **session** or a **project** and tap **Send to desktop**.
+
+Folders land in `tools/desktop/incoming/<name>/`. A project nests each session underneath the project name.

@@ -27,3 +27,6 @@ __pycache__/
 # Editors
 .vscode/
 .idea/
+
+# Desktop receiver landing zone
+tools/desktop/incoming/

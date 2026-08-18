@@ -57,6 +57,9 @@ targets:
         NSMotionUsageDescription: >-
           Motion data helps the tracker follow fast camera movement. It is
           never used to compute camera poses.
+        NSLocalNetworkUsageDescription: >-
+          BetterSplats sends captured sessions to the capture receiver on
+          your computer.
         UIFileSharingEnabled: true
         LSSupportsOpeningDocumentsInPlace: true
         ITSAppUsesNonExemptEncryption: false
@@ -72,5 +75,6 @@ targets:
       - sdk: CoreVideo.framework
       - sdk: Metal.framework
       - sdk: MetalKit.framework
+      - sdk: Network.framework
       - sdk: QuartzCore.framework
       - sdk: UIKit.framework

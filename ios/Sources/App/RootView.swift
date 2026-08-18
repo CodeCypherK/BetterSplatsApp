@@ -7,6 +7,7 @@ import SwiftUI
 struct RootView: View {
     @State private var cameraStatus = AVCaptureDevice.authorizationStatus(for: .video)
     @State private var selftestResult: (ok: Bool, report: String)?
+    @ObservedObject private var desktop = DesktopSender.shared
 
     private var hasLiDAR: Bool { CaptureManager.hasLiDAR }
 
@@ -40,6 +41,35 @@ struct RootView: View {
                     } else {
                         Text("Sessions are saved to the Files app (On My iPhone → BetterSplats). Copy them to a computer to reconstruct — the phone only stores the capture.")
                     }
+                }
+
+                Section("Desktop PC") {
+                    TextField("PC IP (Tailscale or LAN)", text: $desktop.host)
+                        .keyboardType(.numbersAndPunctuation)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .onSubmit {
+                            desktop.host = desktop.host
+                                .trimmingCharacters(in: .whitespacesAndNewlines)
+                        }
+                    HStack {
+                        Text("Port")
+                        Spacer()
+                        TextField("9999", text: Binding(
+                            get: { String(desktop.port) },
+                            set: { if let v = UInt16($0), v > 0 { desktop.port = v } }
+                        ))
+                        .keyboardType(.numberPad)
+                        .multilineTextAlignment(.trailing)
+                        .frame(width: 80)
+                    }
+                    if let status = desktop.status {
+                        Text(status)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                } footer: {
+                    Text("Run tools/desktop/capture-server.cmd on the PC, then Send to desktop from a session or a project. Same protocol as PhoneStreamer — either receiver works.")
                 }
 
                 Section("Diagnostics") {

@@ -22,6 +22,7 @@ struct SessionsView: View {
     @State private var shareError: String?
     @State private var isSharing = false
     @State private var pendingDelete: Entry?
+    @ObservedObject private var desktop = DesktopSender.shared
 
     var body: some View {
         List {
@@ -92,6 +93,14 @@ struct SessionsView: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.small)
+                .disabled(isSharing || desktop.isSending)
+
+                SendToDesktopButton(
+                    folders: [entry.url],
+                    packageName: entry.id,
+                    title: "Send to desktop",
+                    showStatus: false)
+                .controlSize(.small)
                 .disabled(isSharing)
 
                 Spacer(minLength: 0)
@@ -124,6 +133,11 @@ struct SessionsView: View {
                 }
                 .font(.caption)
                 .foregroundStyle(.secondary)
+            }
+            if desktop.isSending, let status = desktop.status {
+                Text(status)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
         }
         .padding(.vertical, 4)

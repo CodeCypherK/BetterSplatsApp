@@ -149,12 +149,17 @@ struct ProjectDetailView: View {
                 } label: {
                     Label("Redo a room", systemImage: "arrow.clockwise")
                 }
+                SendToDesktopButton(
+                    folders: current.captures.map(\.directory),
+                    packageName: current.name,
+                    nestUnderPackage: true)
             } header: {
                 Text("Continue")
             } footer: {
                 Text("Redoing a room replaces the old frames wherever you "
                    + "walk. They stay on the phone — the desktop solve just "
-                   + "stops using them.")
+                   + "stops using them. Send to desktop uses the same "
+                   + "transfer as PhoneStreamer.")
             }
 
             Section("Captures") {

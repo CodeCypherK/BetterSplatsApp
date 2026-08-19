@@ -131,6 +131,9 @@ EngineConfig EngineConfig::FromJson(const char* text, bool* ok) {
   get_to(j, "final_component_grow_iters", c.final_component_grow_iters);
   get_to(j, "final_max_components", c.final_max_components);
   get_to(j, "final_include_scout", c.final_include_scout);
+  get_to(j, "final_scout_fill_gaps", c.final_scout_fill_gaps);
+  get_to(j, "final_follow_chain", c.final_follow_chain);
+  get_to(j, "final_use_live_init", c.final_use_live_init);
   get_to(j, "final_use_masks", c.final_use_masks);
   get_to(j, "final_level_floor", c.final_level_floor);
   get_to(j, "final_square_walls", c.final_square_walls);

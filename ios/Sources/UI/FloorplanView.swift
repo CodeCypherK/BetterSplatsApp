@@ -1,12 +1,13 @@
 import SwiftUI
 import simd
 
-/// Top-down route after the scout circuit: path, auto-found rooms, and a
-/// way to draw a room by tapping corners.
+/// Plan after the scout circuit: LiDAR occupancy of the space, plus rooms
+/// the user draws on top. Rooms are never invented automatically.
 struct FloorplanView: View {
     @Bindable var model: CaptureViewModel
     @State private var renaming: Floorplan.Room?
     @State private var renameText = ""
+    @State private var pendingDelete: Floorplan.Room?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -28,14 +29,44 @@ struct FloorplanView: View {
                 renaming = nil
             }
         }
+        .alert(deleteTitle, isPresented: Binding(
+            get: { pendingDelete != nil },
+            set: { if !$0 { pendingDelete = nil } })) {
+            Button("Cancel", role: .cancel) { pendingDelete = nil }
+            Button(deleteActionTitle, role: .destructive) {
+                if let room = pendingDelete {
+                    model.deleteRoom(room.id)
+                }
+                pendingDelete = nil
+            }
+        } message: {
+            Text(deleteMessage)
+        }
+    }
+
+    private var deleteTitle: String {
+        guard let room = pendingDelete else { return "Remove room" }
+        return room.scanned ? "Delete \(room.name)?" : "Remove \(room.name)?"
+    }
+    private var deleteActionTitle: String {
+        (pendingDelete?.scanned ?? false) ? "Delete room and photos" : "Remove outline"
+    }
+    private var deleteMessage: String {
+        guard let room = pendingDelete else { return "" }
+        if room.scanned {
+            return "Removes the outline and deletes \(room.captureCount) extra "
+                 + "photos for this room. Route photos stay."
+        }
+        return "Removes the outline. Nothing has been scanned here yet."
     }
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text("Your route")
+            Text("The space")
                 .font(.headline)
-            Text("\(model.scoutFramesStored) route photos — they do not count "
-               + "against a room. Each room gets up to "
+            Text("Gray is what LiDAR saw. Draw each room on top. "
+               + "\(model.scoutFramesStored) route photos stay off the "
+               + "room budget — each room gets up to "
                + "\(FrameFeedContext.roomCaptureCap) extra photos.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -58,6 +89,17 @@ struct FloorplanView: View {
                     return
                 }
                 let map = PlanMap(bounds: bounds, size: size)
+                for ring in plan.footprints {
+                    var path = Path()
+                    let pts = ring.map { map.point($0) }
+                    guard let first = pts.first, pts.count >= 3 else { continue }
+                    path.move(to: first)
+                    for p in pts.dropFirst() { path.addLine(to: p) }
+                    path.closeSubpath()
+                    ctx.fill(path, with: .color(.white.opacity(0.10)))
+                    ctx.stroke(path, with: .color(.white.opacity(0.55)),
+                               lineWidth: 1.6)
+                }
                 for room in plan.rooms {
                     var path = Path()
                     let pts = room.polygon.map { map.point($0) }
@@ -84,14 +126,8 @@ struct FloorplanView: View {
                                  with: .color(.white))
                     }
                 }
-                var route = Path()
-                let pathPts = plan.path.map { map.point($0) }
-                if let first = pathPts.first {
-                    route.move(to: first)
-                    for p in pathPts.dropFirst() { route.addLine(to: p) }
-                    ctx.stroke(route, with: .color(.white.opacity(0.9)),
-                               lineWidth: 2)
-                }
+                // Camera path is not the plan — occupancy is. Keep a faint
+                // trail so the walk is still visible if LiDAR was thin.
             }
             .contentShape(Rectangle())
             .onTapGesture { loc in
@@ -129,21 +165,13 @@ struct FloorplanView: View {
                 }
             } else {
                 roomList
-                HStack(spacing: 10) {
-                    Button {
-                        model.beginDrawingRoom()
-                    } label: {
-                        Label("Draw a room", systemImage: "pencil.tip.crop.circle")
-                    }
-                    .buttonStyle(.bordered)
-                    Button {
-                        model.detectRoomsAgain()
-                    } label: {
-                        Label("Find rooms", systemImage: "square.grid.3x3")
-                    }
-                    .buttonStyle(.bordered)
+                Button {
+                    model.beginDrawingRoom()
+                } label: {
+                    Label("Add a room", systemImage: "plus.viewfinder")
+                        .frame(maxWidth: .infinity)
                 }
-                .font(.caption)
+                .buttonStyle(.bordered)
 
                 if let id = model.selectedRoomId,
                    let room = model.floorplan?.rooms.first(where: { $0.id == id }) {
@@ -155,6 +183,14 @@ struct FloorplanView: View {
                     }
                     .buttonStyle(.borderedProminent)
                     .controlSize(.large)
+                    Button(role: .destructive) {
+                        pendingDelete = room
+                    } label: {
+                        Label(room.scanned ? "Delete room and photos"
+                                           : "Remove this room",
+                              systemImage: "trash")
+                    }
+                    .font(.caption)
                 }
 
                 Button("End session") { model.stop() }
@@ -198,11 +234,18 @@ struct FloorplanView: View {
                             renameText = room.name
                             renaming = room
                         }
+                        Button(role: .destructive) {
+                            pendingDelete = room
+                        } label: {
+                            Label(room.scanned ? "Delete room and photos"
+                                               : "Remove outline",
+                                  systemImage: "trash")
+                        }
                     }
                 }
             }
         } else {
-            Text("No rooms yet — draw one, or tap Find rooms.")
+            Text("No rooms yet — tap Add a room and outline it on the plan.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }

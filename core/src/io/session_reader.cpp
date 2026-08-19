@@ -10,7 +10,8 @@ namespace bs {
 
 namespace fs = std::filesystem;
 
-std::optional<SessionReader> SessionReader::Open(const std::string& session_dir) {
+std::optional<SessionReader> SessionReader::Open(const std::string& session_dir,
+                                                 bool follow_chain) {
   SessionReader r;
   r.dir_ = session_dir;
 
@@ -46,7 +47,7 @@ std::optional<SessionReader> SessionReader::Open(const std::string& session_dir)
   // string in a JSON file the app wrote; a bug or a hand-edit could point a
   // session at itself or round a loop, and neither should hang the solve.
   std::vector<std::string> ancestry;
-  {
+  if (follow_chain) {
     std::vector<std::string> seen;
     std::string dir = session_dir;
     SessionInfo info_at = r.info_;

@@ -252,6 +252,17 @@ struct EngineConfig {
   // Scout-pass frames are a localization scaffold, not reconstruction input.
   // Set true only to study what they would contribute.
   bool final_include_scout = false;
+  // When include_scout is false: still pull in a scout frame whose pose sits
+  // in a place (or looks a direction) the capture pass barely covered. The
+  // rest of the walkthrough stays out of the solve.
+  bool final_scout_fill_gaps = true;
+  // Follow parent_session into sibling captures. Studio lists rooms
+  // separately, so it turns this off and reconstructs only the picked session.
+  bool final_follow_chain = true;
+  // Seed the model from live/ARKit poses. A drifted live pass can lock the
+  // solve into a handful of cameras; desktop turns this off and bootstraps
+  // from image geometry the way COLMAP does.
+  bool final_use_live_init = true;
 
   // --- exclusion masks ---
   // Honour <session>/masks/NNNNNN.png when present: keypoints are detected

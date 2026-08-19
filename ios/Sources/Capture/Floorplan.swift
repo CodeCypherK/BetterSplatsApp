@@ -27,6 +27,10 @@ struct Floorplan: Equatable {
 
     var poses: [Pose]
     var rooms: [Room]
+    /// Occupied-floor outlines from the live map (LiDAR / reconstruction
+    /// points projected onto the floor), not the camera path. Each ring is
+    /// one connected blob of space the sensors actually saw.
+    var footprints: [[SIMD2<Double>]]
     /// World-space origin of the plan, and which two axes are the floor.
     var origin: SIMD3<Double>
     var axisU: SIMD3<Double>
@@ -35,19 +39,26 @@ struct Floorplan: Equatable {
     var path: [SIMD2<Double>] { poses.map(\.plan) }
 
     var bounds: (min: SIMD2<Double>, max: SIMD2<Double>) {
-        guard let first = poses.first?.plan else {
-            return (.zero, SIMD2(1, 1))
-        }
-        var lo = first, hi = first
-        for p in poses {
-            lo = simd_min(lo, p.plan)
-            hi = simd_max(hi, p.plan)
-        }
-        for room in rooms {
-            for v in room.polygon {
-                lo = simd_min(lo, v)
-                hi = simd_max(hi, v)
+        var lo: SIMD2<Double>?
+        var hi: SIMD2<Double>?
+        func absorb(_ p: SIMD2<Double>) {
+            if let a = lo, let b = hi {
+                lo = simd_min(a, p)
+                hi = simd_max(b, p)
+            } else {
+                lo = p
+                hi = p
             }
+        }
+        for p in poses { absorb(p.plan) }
+        for room in rooms {
+            for v in room.polygon { absorb(v) }
+        }
+        for ring in footprints {
+            for v in ring { absorb(v) }
+        }
+        guard let lo, let hi else {
+            return (.zero, SIMD2(1, 1))
         }
         let pad = 0.6
         return (lo - SIMD2(repeating: pad), hi + SIMD2(repeating: pad))
@@ -106,10 +117,28 @@ enum FloorplanBuilder {
                 plan: SIMD2(simd_dot(d, axisU), simd_dot(d, axisV)))
         }
 
-        var plan = Floorplan(poses: poses, rooms: [], origin: origin,
-                             axisU: axisU, axisV: axisV)
-        plan.rooms = autoRooms(in: plan, snapshot: snapshot)
+        var plan = Floorplan(poses: poses, rooms: [], footprints: [],
+                             origin: origin, axisU: axisU, axisV: axisV)
+        // Rooms are user-drawn. The plan itself is the space LiDAR and the
+        // live map actually occupied — not a hull of camera centres.
+        fillGeometry(&plan, snapshot: snapshot)
         return plan
+    }
+
+    /// Project map / patch points onto the floor and trace occupied blobs.
+    static func fillGeometry(_ plan: inout Floorplan,
+                             snapshot: CoreEngine.Snapshot) {
+        var pts: [SIMD2<Double>] = []
+        pts.reserveCapacity(snapshot.points.count + snapshot.patches.count)
+        for p in snapshot.points {
+            pts.append(plan.toPlan(SIMD3(Double(p.x), Double(p.y), Double(p.z))))
+        }
+        for patch in snapshot.patches {
+            pts.append(plan.toPlan(SIMD3(Double(patch.center.x),
+                                         Double(patch.center.y),
+                                         Double(patch.center.z))))
+        }
+        plan.footprints = occupancyRings(pts)
     }
 
     /// Drop the axis the walk barely moved on (height) and keep the other two
@@ -257,6 +286,156 @@ enum FloorplanBuilder {
             nextId += 1
         }
         return rooms
+    }
+
+    /// Occupancy grid of map points, then one simplified outline per blob.
+    /// This is the "floorplan": walls and space the depth sensor filled in,
+    /// not the polyline of where the photographer stood.
+    private static func occupancyRings(_ pts: [SIMD2<Double>])
+        -> [[SIMD2<Double>]] {
+        guard pts.count >= 12 else {
+            return pts.count >= 3 ? [pad(convexHull(pts), by: 0.35)] : []
+        }
+        let cell = 0.22
+        var lo = pts[0], hi = pts[0]
+        for p in pts {
+            lo = simd_min(lo, p)
+            hi = simd_max(hi, p)
+        }
+        lo -= SIMD2(repeating: cell)
+        hi += SIMD2(repeating: cell)
+        let w = max(1, Int(ceil((hi.x - lo.x) / cell)))
+        let h = max(1, Int(ceil((hi.y - lo.y) / cell)))
+        // Cap the grid so a noisy map cannot allocate a football pitch.
+        guard w <= 400, h <= 400 else {
+            return [pad(convexHull(pts), by: 0.35)]
+        }
+        var count = Array(repeating: Array(repeating: 0, count: w), count: h)
+        for p in pts {
+            let x = min(w - 1, max(0, Int((p.x - lo.x) / cell)))
+            let y = min(h - 1, max(0, Int((p.y - lo.y) / cell)))
+            count[y][x] += 1
+        }
+        let thresh = pts.count > 400 ? 2 : 1
+        var occ = Array(repeating: Array(repeating: 0, count: w), count: h)
+        for y in 0..<h {
+            for x in 0..<w where count[y][x] >= thresh {
+                occ[y][x] = 1
+            }
+        }
+        occ = dilate(occ)
+        let labels = connectedComponents(occ)
+        var byLab: [Int: [(Int, Int)]] = [:]
+        for y in 0..<h {
+            for x in 0..<w where labels[y][x] > 0 {
+                byLab[labels[y][x], default: []].append((x, y))
+            }
+        }
+        let minCells = 8
+        var rings: [[SIMD2<Double>]] = []
+        for lab in byLab.keys.sorted() {
+            guard let cells = byLab[lab], cells.count >= minCells else { continue }
+            let raw = boundaryLoop(label: lab, labels: labels, origin: lo, cell: cell)
+            let simple = simplify(raw, epsilon: cell * 1.4)
+            guard simple.count >= 3 else { continue }
+            rings.append(simple)
+        }
+        return rings
+    }
+
+    /// Outer edge walk of one connected blob, as a closed ring in metres.
+    private static func boundaryLoop(label: Int, labels: [[Int]],
+                                     origin: SIMD2<Double>, cell: Double)
+        -> [SIMD2<Double>] {
+        let h = labels.count
+        guard h > 0 else { return [] }
+        let w = labels[0].count
+        func occupied(_ x: Int, _ y: Int) -> Bool {
+            y >= 0 && y < h && x >= 0 && x < w && labels[y][x] == label
+        }
+        // Horizontal and vertical edges on the boundary, then stitch.
+        var segs: [(SIMD2<Double>, SIMD2<Double>)] = []
+        func corner(_ x: Int, _ y: Int) -> SIMD2<Double> {
+            origin + SIMD2(Double(x) * cell, Double(y) * cell)
+        }
+        for y in 0..<h {
+            for x in 0..<w where occupied(x, y) {
+                if !occupied(x, y - 1) {
+                    segs.append((corner(x, y), corner(x + 1, y)))
+                }
+                if !occupied(x, y + 1) {
+                    segs.append((corner(x, y + 1), corner(x + 1, y + 1)))
+                }
+                if !occupied(x - 1, y) {
+                    segs.append((corner(x, y), corner(x, y + 1)))
+                }
+                if !occupied(x + 1, y) {
+                    segs.append((corner(x + 1, y), corner(x + 1, y + 1)))
+                }
+            }
+        }
+        return stitch(segs)
+    }
+
+    private static func stitch(_ segs: [(SIMD2<Double>, SIMD2<Double>)])
+        -> [SIMD2<Double>] {
+        guard !segs.isEmpty else { return [] }
+        func key(_ p: SIMD2<Double>) -> Int {
+            Int(p.x * 200) &* 1_000_003 &+ Int(p.y * 200)
+        }
+        var outgoing: [Int: [SIMD2<Double>]] = [:]
+        for (a, b) in segs {
+            outgoing[key(a), default: []].append(b)
+        }
+        var ring: [SIMD2<Double>] = [segs[0].0]
+        var cur = segs[0].0
+        let start = segs[0].0
+        var guardCount = segs.count + 4
+        while guardCount > 0 {
+            guardCount -= 1
+            let k = key(cur)
+            guard var nexts = outgoing[k], !nexts.isEmpty else { break }
+            let nxt = nexts.removeLast()
+            outgoing[k] = nexts
+            ring.append(nxt)
+            cur = nxt
+            if simd_distance(cur, start) < 1e-4, ring.count > 3 { break }
+        }
+        if ring.count >= 2 { ring.removeLast() }
+        return ring
+    }
+
+    /// Ramer–Douglas–Peucker. Closed rings keep the first vertex once.
+    private static func simplify(_ pts: [SIMD2<Double>],
+                                 epsilon: Double) -> [SIMD2<Double>] {
+        guard pts.count > 4 else { return pts }
+        func rdp(_ a: Int, _ b: Int) -> [SIMD2<Double>] {
+            var maxD = 0.0
+            var idx = a
+            let pa = pts[a], pb = pts[b]
+            let ab = pb - pa
+            let len = max(simd_length(ab), 1e-9)
+            let dir = ab / len
+            for i in (a + 1)..<b {
+                let d = pts[i] - pa
+                let proj = simd_dot(d, dir)
+                let perp = d - dir * proj
+                let dist = simd_length(perp)
+                if dist > maxD { maxD = dist; idx = i }
+            }
+            if maxD > epsilon, idx != a {
+                let left = rdp(a, idx)
+                let right = rdp(idx, b)
+                return left + Array(right.dropFirst())
+            }
+            return [pa, pb]
+        }
+        var simple = rdp(0, pts.count - 1)
+        if simd_distance(simple.first ?? .zero, simple.last ?? .zero) < epsilon,
+           simple.count > 2 {
+            simple.removeLast()
+        }
+        return simple.count >= 3 ? simple : pts
     }
 
     static func assignScoutFrames(_ plan: inout Floorplan) {

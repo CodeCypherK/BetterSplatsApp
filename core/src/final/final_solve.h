@@ -41,6 +41,7 @@ struct FinalMetrics {
   uint32_t frames_recovered = 0;
   // Scout-circuit frames kept out of the reconstruction (localization only).
   uint32_t scout_frames_excluded = 0;
+  uint32_t scout_frames_filled = 0;
   // Frames a later rescan re-covered; on disk, but not reconstructed from.
   uint32_t frames_superseded = 0;
   uint32_t features_cached = 0;

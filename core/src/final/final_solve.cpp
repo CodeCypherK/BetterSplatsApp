@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -326,10 +327,11 @@ bool ReadMatchCache(const fs::path& path, std::vector<CachedPair>& pairs) {
   return true;
 }
 
-std::unordered_map<uint32_t, SE3> LoadLivePoses(const std::string& session_dir) {
+std::unordered_map<uint32_t, SE3> LoadLivePoses(
+    const std::string& session_dir, const char* filename = "poses.jsonl") {
   std::unordered_map<uint32_t, SE3> poses;
   std::map<unsigned, std::unordered_map<uint32_t, SE3>> by_segment;
-  std::ifstream in(fs::path(session_dir) / "live" / "poses.jsonl");
+  std::ifstream in(fs::path(session_dir) / "live" / filename);
   std::string line;
   while (std::getline(in, line)) {
     if (line.find("\"tracking\"") == std::string::npos) continue;
@@ -381,6 +383,91 @@ std::unordered_map<uint32_t, SE3> LoadLivePoses(const std::string& session_dir) 
   return poses;
 }
 
+// Pack a signed voxel + 8-way yaw into one key. 11 bits per axis is ±600 m
+// at 0.6 m voxels, which is more than a capture ever spans.
+uint64_t VoxelKey(int x, int y, int z, int yaw) {
+  auto u = [](int v) -> uint64_t {
+    return static_cast<uint64_t>(v + 1024) & 0x7FFu;
+  };
+  return (u(x) << 33) | (u(y) << 22) | (u(z) << 11) |
+         (static_cast<uint64_t>(yaw) & 7u);
+}
+
+int YawBin(const Eigen::Vector3d& fwd) {
+  const double a = std::atan2(fwd.x(), fwd.z());
+  int b = static_cast<int>(std::floor((a + 3.141592653589793) /
+                                      (2.0 * 3.141592653589793) * 8.0));
+  b %= 8;
+  if (b < 0) b += 8;
+  return b;
+}
+
+// Scout frames whose live pose sits in a voxel (or looks a yaw) the capture
+// pass barely occupied. Capture-only reconstruction leaves those holes empty;
+// dumping the whole walkthrough in would drag appearance. This is the middle.
+std::unordered_set<uint32_t> ScoutGapFillIds(
+    const SessionReader& session,
+    const std::unordered_map<uint32_t, SE3>& poses) {
+  std::vector<uint32_t> capture, scout;
+  for (const uint32_t id : session.frame_ids()) {
+    const auto meta = session.ReadMeta(id);
+    if (meta && meta->is_scout()) scout.push_back(id);
+    else capture.push_back(id);
+  }
+  if (scout.empty() || capture.empty()) return {};
+
+  std::vector<Eigen::Vector3d> caps;
+  caps.reserve(capture.size());
+  for (const uint32_t id : capture) {
+    const auto at = poses.find(id);
+    if (at != poses.end()) caps.push_back(at->second.CameraCenter());
+  }
+  if (caps.size() < 3) return {};
+
+  Eigen::Vector3d lo = caps[0], hi = caps[0];
+  for (const auto& c : caps) {
+    lo = lo.cwiseMin(c);
+    hi = hi.cwiseMax(c);
+  }
+  const double extent = (hi - lo).cwiseAbs().maxCoeff();
+  const double voxel = std::clamp(extent / 12.0, 0.35, 1.2);
+
+  std::unordered_map<uint64_t, int> spatial, views;
+  auto bin = [voxel](const SE3& pose, int* x, int* y, int* z, int* yaw) {
+    const Eigen::Vector3d c = pose.CameraCenter();
+    *x = static_cast<int>(std::floor(c.x() / voxel));
+    *y = static_cast<int>(std::floor(c.y() / voxel));
+    *z = static_cast<int>(std::floor(c.z() / voxel));
+    const Eigen::Vector3d fwd = pose.q.conjugate() * Eigen::Vector3d(0, 0, 1);
+    *yaw = YawBin(fwd);
+  };
+
+  for (const uint32_t id : capture) {
+    const auto at = poses.find(id);
+    if (at == poses.end()) continue;
+    int x, y, z, yaw;
+    bin(at->second, &x, &y, &z, &yaw);
+    spatial[VoxelKey(x, y, z, 0)] += 1;
+    views[VoxelKey(x, y, z, yaw)] += 1;
+  }
+
+  std::unordered_set<uint32_t> keep;
+  for (const uint32_t id : scout) {
+    const auto at = poses.find(id);
+    if (at == poses.end()) continue;
+    int x, y, z, yaw;
+    bin(at->second, &x, &y, &z, &yaw);
+    const int here = spatial[VoxelKey(x, y, z, 0)];
+    const int look = views[VoxelKey(x, y, z, yaw)];
+    // Only a real hole: capture never stood here, or stood once and never
+    // looked this way. `look == 0` alone is too greedy — 8 yaw bins in a
+    // well-covered voxel would pull in most of the walkthrough, which then
+    // fails to register and shows up as hundreds of "unplaced" images.
+    if (here == 0 || (here == 1 && look == 0)) keep.insert(id);
+  }
+  return keep;
+}
+
 }  // namespace
 
 FinalOutcome RunFinalSolve(const EngineConfig& config,
@@ -406,7 +493,7 @@ FinalOutcome RunFinalSolve(const EngineConfig& config,
     return outcome;
   };
 
-  const auto session = SessionReader::Open(session_dir);
+  const auto session = SessionReader::Open(session_dir, config.final_follow_chain);
   if (!session) return fail("cannot open session " + session_dir);
 
   // Distortion model for undistortion + export.
@@ -489,14 +576,30 @@ FinalOutcome RunFinalSolve(const EngineConfig& config,
 
   std::vector<uint32_t> solve_frame_ids;
   uint32_t scout_skipped = 0;
+  uint32_t scout_filled = 0;
   uint32_t superseded_skipped = 0;
   uint32_t superseded_unlocatable = 0;
+  std::unordered_map<uint32_t, SE3> live_for_gaps;
+  if (!config.final_include_scout && config.final_scout_fill_gaps) {
+    live_for_gaps = LoadLivePoses(session_dir);
+    for (auto& [id, pose] : LoadLivePoses(session_dir, "poses_scout.jsonl")) {
+      live_for_gaps.emplace(id, pose);
+    }
+  }
+  const auto scout_gaps =
+      (!live_for_gaps.empty())
+          ? ScoutGapFillIds(*session, live_for_gaps)
+          : std::unordered_set<uint32_t>{};
   for (const uint32_t frame_id : session->frame_ids()) {
     if (!config.final_include_scout) {
       const auto meta = session->ReadMeta(frame_id);
       if (meta && meta->is_scout()) {
-        ++scout_skipped;
-        continue;
+        if (scout_gaps.count(frame_id)) {
+          ++scout_filled;
+        } else {
+          ++scout_skipped;
+          continue;
+        }
       }
     }
     if (!session->supersessions().empty()) {
@@ -521,11 +624,14 @@ FinalOutcome RunFinalSolve(const EngineConfig& config,
             superseded_skipped, superseded_unlocatable);
   }
   metrics.frames_superseded = superseded_skipped;
-  if (scout_skipped > 0) {
-    BS_LOGI("final", "excluding %u scout frames; solving on %zu capture frames",
-            scout_skipped, solve_frame_ids.size());
+  if (scout_skipped > 0 || scout_filled > 0) {
+    BS_LOGI("final",
+            "scout: keeping %u frames that cover capture holes, excluding "
+            "%u others; solving on %zu frames",
+            scout_filled, scout_skipped, solve_frame_ids.size());
   }
   metrics.scout_frames_excluded = scout_skipped;
+  metrics.scout_frames_filled = scout_filled;
   if (solve_frame_ids.size() < 2) return fail("session has <2 capture frames");
 
   // Feature choice: SIFT for the quality preset when its descriptors fit the
@@ -1061,17 +1167,23 @@ FinalOutcome RunFinalSolve(const EngineConfig& config,
   // geometry instead, which is what "the final solve recomputes everything"
   // has to mean if a live failure is not to become a final failure.
   {
-    const auto live_poses = LoadLivePoses(session_dir);
     int posed = 0;
-    for (auto& frame : frames) {
-      const auto it = live_poses.find(frame.frame_id);
-      if (it != live_poses.end()) {
-        frame.pose = it->second;
-        frame.posed = true;
-        ++posed;
+    int live_used = 0;
+    if (config.final_use_live_init) {
+      const auto live_poses = LoadLivePoses(session_dir);
+      for (auto& frame : frames) {
+        const auto it = live_poses.find(frame.frame_id);
+        if (it != live_poses.end()) {
+          frame.pose = it->second;
+          frame.posed = true;
+          ++posed;
+        }
       }
+      live_used = posed;
+    } else {
+      BS_LOGI("final",
+              "live initialization off — bootstrapping from image geometry");
     }
-    int live_used = posed;
 
     // A THIN hint is worse than none, and "at least two poses" was not a
     // high enough bar. Measured on a 340-frame two-room capture whose live

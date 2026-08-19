@@ -18,7 +18,8 @@ class SessionReader {
  public:
   // Opens and validates the session. Returns nullopt when the directory is
   // missing, session.json is absent/incompatible, or frames/ is missing.
-  static std::optional<SessionReader> Open(const std::string& session_dir);
+  static std::optional<SessionReader> Open(const std::string& session_dir,
+                                           bool follow_chain = true);
 
   const std::string& dir() const { return dir_; }
   const SessionInfo& info() const { return info_; }

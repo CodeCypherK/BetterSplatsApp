@@ -257,6 +257,34 @@ actor SessionStore {
         }
     }
 
+    /// Removes extra photos tagged with this room. Scout/route frames stay —
+    /// those are the localization scaffold, not the room's detail pass.
+    @discardableResult
+    func deleteCaptureFrames(roomId: UInt32) -> Int {
+        let framesDir = directory.appendingPathComponent("frames")
+        let fm = FileManager.default
+        let decoder = JSONDecoder()
+        let names = (try? fm.contentsOfDirectory(atPath: framesDir.path)) ?? []
+        var removed = 0
+        var removedIds: [UInt32] = []
+        for name in names {
+            let dir = framesDir.appendingPathComponent(name)
+            let metaURL = dir.appendingPathComponent("meta.json")
+            guard let data = try? Data(contentsOf: metaURL),
+                  let meta = try? decoder.decode(FrameMetaJSON.self, from: data)
+            else { continue }
+            guard meta.pass != "scout", meta.roomId == roomId else { continue }
+            try? fm.removeItem(at: dir)
+            removedIds.append(meta.frameId)
+            removed += 1
+            if frameCount > 0 { frameCount -= 1 }
+        }
+        if removed > 0 {
+            sessionDoc.keyframeIds.removeAll { removedIds.contains($0) }
+        }
+        return removed
+    }
+
     /// Floorplan rooms live next to RAW, not inside it: the route photos are
     /// immutable, the room outlines are something the user can redraw.
     func writeRooms(_ plan: Floorplan) {

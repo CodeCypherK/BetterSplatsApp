@@ -888,14 +888,14 @@ final class CaptureViewModel {
                                               snapshot: handover.snap)
             FloorplanBuilder.assignScoutFrames(&built)
             floorplan = built
-            selectedRoomId = built.rooms.first?.id
+            selectedRoomId = nil
             await persistRooms()
 
             context.setCaptureCap(FrameFeedContext.roomCaptureCap)
             context.setAutoStore(false)
             autoCaptureEnabled = false
             state = .planning
-            guidance = "Pick a room to scan, or draw one on the plan"
+            guidance = "Draw each room on the plan, then scan it"
         }
     }
 
@@ -985,7 +985,7 @@ final class CaptureViewModel {
     func closeDrawnRoom() {
         guard drawingVertices.count >= 3 else { return }
         var plan = floorplan ?? Floorplan(
-            poses: [], rooms: [], origin: .zero,
+            poses: [], rooms: [], footprints: [], origin: .zero,
             axisU: SIMD3(1, 0, 0), axisV: SIMD3(0, 0, 1))
         let nextId = (plan.rooms.map(\.id).max() ?? 0) + 1
         var room = Floorplan.Room(
@@ -1011,13 +1011,32 @@ final class CaptureViewModel {
         Task { await persistRooms() }
     }
 
-    func detectRoomsAgain() {
-        guard var plan = floorplan else { return }
-        plan.rooms = FloorplanBuilder.autoRooms(in: plan, snapshot: snapshot)
-        FloorplanBuilder.assignScoutFrames(&plan)
+    /// Drops a user-drawn room. Route photos stay. Extra photos taken while
+    /// that room was the active capture are deleted from disk.
+    func deleteRoom(_ id: UInt32) {
+        if state == .capturing, activeRoom?.id == id {
+            setAutoCapture(false)
+            context?.roomId = 0
+            activeRoom = nil
+            dismissRouteCard()
+            floorPhase = nil
+            context?.wantsFloorFrames = false
+            state = .planning
+            guidance = "Draw each room on the plan, then scan it"
+        }
+        guard state == .planning, var plan = floorplan,
+              let i = plan.rooms.firstIndex(where: { $0.id == id }) else { return }
+        plan.rooms.remove(at: i)
         floorplan = plan
-        selectedRoomId = plan.rooms.first?.id
-        Task { await persistRooms() }
+        if selectedRoomId == id {
+            selectedRoomId = plan.rooms.first?.id
+        }
+        Task {
+            if let store = context?.store {
+                _ = await store.deleteCaptureFrames(roomId: id)
+            }
+            await persistRooms()
+        }
     }
 
     /// Begin the extra 200-photo pass for one room. Route frames that fell

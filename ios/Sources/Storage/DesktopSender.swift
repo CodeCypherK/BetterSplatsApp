@@ -121,7 +121,8 @@ final class DesktopSender: ObservableObject {
     }
 
     /// PhoneStreamer's path hygiene: keep letters, digits, `_`, `-`, `.`.
-    static func sanitize(_ name: String) -> String {
+    /// nonisolated so zip staging (off the main actor) can name folders.
+    nonisolated static func sanitize(_ name: String) -> String {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         let mapped = trimmed.map { ch -> Character in
             if ch.isLetter || ch.isNumber || ch == "_" || ch == "-" || ch == "." {
@@ -325,7 +326,7 @@ final class DesktopSender: ObservableObject {
     nonisolated private static func uniqueName(
         _ base: String, used: inout Set<String>
     ) -> String {
-        var name = base.isEmpty ? "Room" : base
+        let name = base.isEmpty ? "Room" : base
         var candidate = name
         var n = 2
         while used.contains(candidate.lowercased()) {

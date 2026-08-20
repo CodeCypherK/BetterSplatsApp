@@ -111,6 +111,54 @@ struct RegionJSON: Codable {
     var renamed: Bool
 }
 
+/// Floorplan rooms written beside RAW (`rooms.json`). Outlines and names are
+/// editable; the frames they point at are not.
+struct RoomsFileJSON: Codable {
+    var rooms: [RoomOutlineJSON]
+}
+
+struct RoomOutlineJSON: Codable {
+    var id: UInt32
+    var name: String
+    var polygon: [[Double]]
+    var scoutFrameIds: [UInt32]
+    var captureCount: UInt32
+
+    enum CodingKeys: String, CodingKey {
+        case id, name, polygon
+        case scoutFrameIds = "scout_frame_ids"
+        case captureCount = "capture_count"
+    }
+}
+
+enum RoomsDocument {
+    static func load(from sessionDirectory: URL) -> RoomsFileJSON? {
+        let url = sessionDirectory.appendingPathComponent("rooms.json")
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        return try? JSONDecoder().decode(RoomsFileJSON.self, from: data)
+    }
+
+    static func save(_ file: RoomsFileJSON, to sessionDirectory: URL) {
+        let enc = JSONEncoder()
+        enc.outputFormatting = [.prettyPrinted, .sortedKeys]
+        guard let data = try? enc.encode(file) else { return }
+        try? data.write(
+            to: sessionDirectory.appendingPathComponent("rooms.json"),
+            options: .atomic)
+    }
+
+    static func rename(roomId: UInt32, to name: String,
+                       in sessionDirectory: URL) {
+        guard var file = load(from: sessionDirectory),
+              let i = file.rooms.firstIndex(where: { $0.id == roomId })
+        else { return }
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        file.rooms[i].name = trimmed
+        save(file, to: sessionDirectory)
+    }
+}
+
 struct SessionJSON: Codable {
     var schemaVersion = SchemaV.version
     var sessionId: String

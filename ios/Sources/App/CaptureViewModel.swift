@@ -982,14 +982,16 @@ final class CaptureViewModel {
         drawingVertices = []
     }
 
-    func closeDrawnRoom() {
+    func closeDrawnRoom(named name: String? = nil) {
         guard drawingVertices.count >= 3 else { return }
         var plan = floorplan ?? Floorplan(
             poses: [], rooms: [], footprints: [], origin: .zero,
             axisU: SIMD3(1, 0, 0), axisV: SIMD3(0, 0, 1))
         let nextId = (plan.rooms.map(\.id).max() ?? 0) + 1
+        let trimmed = name?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let label = trimmed.isEmpty ? "Room \(nextId)" : trimmed
         var room = Floorplan.Room(
-            id: nextId, name: "Room \(nextId)",
+            id: nextId, name: label,
             polygon: drawingVertices, scoutFrameIds: [], captureCount: 0)
         room.scoutFrameIds = plan.poses.filter {
             FloorplanBuilder.pointInPolygon($0.plan, drawingVertices)

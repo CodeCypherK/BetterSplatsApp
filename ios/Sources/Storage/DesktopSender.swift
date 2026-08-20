@@ -3,6 +3,32 @@ import Network
 import SwiftUI
 import UIKit
 
+/// How a project is laid out inside the zip sent to the desktop.
+enum DesktopPackageLayout: String, CaseIterable, Identifiable {
+    /// One folder per capture session (current behaviour).
+    case wholeSet
+    /// One folder per named room, each holding that room's frames.
+    case perRoom
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .wholeSet: return "Whole project"
+        case .perRoom: return "One folder per room"
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .wholeSet:
+            return "All captures together under the project name"
+        case .perRoom:
+            return "Each room is its own folder, named how you named it"
+        }
+    }
+}
+
 /// Zips a session or project, then sends that one archive to the desktop
 /// receiver over the same TCP protocol PhoneStreamer uses:
 ///
@@ -55,9 +81,10 @@ final class DesktopSender: ObservableObject {
 
     /// `nestUnderPackage` is true for a project (paths become
     /// `<project>/<session>/...`) and false for a single session (paths
-    /// stay `<session>/...`).
+    /// stay `<session>/...`). `layout` only applies when nesting a project.
     func send(folders: [URL], packageName: String,
-              nestUnderPackage: Bool) {
+              nestUnderPackage: Bool,
+              layout: DesktopPackageLayout = .wholeSet) {
         let name = Self.sanitize(packageName)
         guard !isSending else { return }
         guard !host.trimmingCharacters(in: .whitespaces).isEmpty else {
@@ -79,6 +106,7 @@ final class DesktopSender: ObservableObject {
             let result = await Self.upload(
                 folders: folders, packageName: name,
                 nestUnderPackage: nestUnderPackage,
+                layout: layout,
                 host: host, port: port) { message in
                 Task { @MainActor in
                     DesktopSender.shared.status = message
@@ -109,14 +137,16 @@ final class DesktopSender: ObservableObject {
 
     nonisolated private static func upload(
         folders: [URL], packageName: String, nestUnderPackage: Bool,
+        layout: DesktopPackageLayout,
         host: String, port: UInt16,
         progress: @escaping @Sendable (String) -> Void
     ) async -> String {
         progress("Zipping…")
         let zipURL: URL
         do {
-            zipURL = try await makeZip(folders: folders, packageName: packageName,
-                                       nestUnderPackage: nestUnderPackage)
+            zipURL = try await makeZip(
+                folders: folders, packageName: packageName,
+                nestUnderPackage: nestUnderPackage, layout: layout)
         } catch {
             return "Zip failed: \(error.localizedDescription)"
         }
@@ -221,12 +251,16 @@ final class DesktopSender: ObservableObject {
         return "Sent — on the PC: incoming/\(packageName)"
     }
 
-    /// One session folder zips as-is. A project is copied under a staging
-    /// directory named after the project, then zipped, so the archive holds
-    /// every capture.
+    /// Zip named after the project/session. Whole-set nests capture folders;
+    /// per-room nests folders named after each room.
     nonisolated private static func makeZip(
-        folders: [URL], packageName: String, nestUnderPackage: Bool
+        folders: [URL], packageName: String, nestUnderPackage: Bool,
+        layout: DesktopPackageLayout
     ) async throws -> URL {
+        if nestUnderPackage, layout == .perRoom {
+            return try await makePerRoomZip(folders: folders,
+                                            packageName: packageName)
+        }
         if folders.count == 1, !nestUnderPackage {
             return try await ZipExporter.zipDirectory(
                 at: folders[0], name: packageName + ".zip")
@@ -247,6 +281,106 @@ final class DesktopSender: ObservableObject {
         return try await ZipExporter.zipDirectory(
             at: stage, name: packageName + ".zip")
     }
+
+    /// `ProjectName.zip` → `ProjectName/Kitchen/…`, `ProjectName/Living_Room/…`
+    nonisolated private static func makePerRoomZip(
+        folders: [URL], packageName: String
+    ) async throws -> URL {
+        let fm = FileManager.default
+        let stageRoot = fm.temporaryDirectory
+            .appendingPathComponent("desktop-rooms-\(UUID().uuidString)",
+                                    isDirectory: true)
+        let stage = stageRoot.appendingPathComponent(packageName, isDirectory: true)
+        try fm.createDirectory(at: stage, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: stageRoot) }
+
+        var usedNames = Set<String>()
+        var wroteAny = false
+        for sessionDir in folders {
+            let rooms = RoomsDocument.load(from: sessionDir)?.rooms ?? []
+            if rooms.isEmpty {
+                let folderName = uniqueName(
+                    sanitize(sessionDir.lastPathComponent), used: &usedNames)
+                try copyWholeSession(sessionDir,
+                                     into: stage.appendingPathComponent(folderName))
+                wroteAny = true
+                continue
+            }
+            for room in rooms {
+                let folderName = uniqueName(sanitize(room.name), used: &usedNames)
+                try packRoom(room, from: sessionDir,
+                             into: stage.appendingPathComponent(folderName))
+                wroteAny = true
+            }
+        }
+        guard wroteAny else {
+            throw NSError(domain: "DesktopSender", code: 1,
+                          userInfo: [NSLocalizedDescriptionKey:
+                                        "No rooms or captures to pack"])
+        }
+        return try await ZipExporter.zipDirectory(
+            at: stage, name: packageName + ".zip")
+    }
+
+    nonisolated private static func uniqueName(
+        _ base: String, used: inout Set<String>
+    ) -> String {
+        var name = base.isEmpty ? "Room" : base
+        var candidate = name
+        var n = 2
+        while used.contains(candidate.lowercased()) {
+            candidate = "\(name)_\(n)"
+            n += 1
+        }
+        used.insert(candidate.lowercased())
+        return candidate
+    }
+
+    nonisolated private static func copyWholeSession(
+        _ sessionDir: URL, into dest: URL
+    ) throws {
+        try FileManager.default.copyItem(at: sessionDir, to: dest)
+    }
+
+    nonisolated private static func packRoom(
+        _ room: RoomOutlineJSON, from sessionDir: URL, into dest: URL
+    ) throws {
+        let fm = FileManager.default
+        try fm.createDirectory(at: dest, withIntermediateDirectories: true)
+        let framesOut = dest.appendingPathComponent("frames", isDirectory: true)
+        try fm.createDirectory(at: framesOut, withIntermediateDirectories: true)
+
+        for name in ["session.json", "calibration.json"] {
+            let src = sessionDir.appendingPathComponent(name)
+            if fm.fileExists(atPath: src.path) {
+                try fm.copyItem(at: src, to: dest.appendingPathComponent(name))
+            }
+        }
+        RoomsDocument.save(RoomsFileJSON(rooms: [room]), to: dest)
+
+        var frameIds = Set(room.scoutFrameIds)
+        let framesDir = sessionDir.appendingPathComponent("frames")
+        let decoder = JSONDecoder()
+        let names = (try? fm.contentsOfDirectory(atPath: framesDir.path)) ?? []
+        for name in names {
+            let metaURL = framesDir.appendingPathComponent(name)
+                .appendingPathComponent("meta.json")
+            guard let data = try? Data(contentsOf: metaURL),
+                  let meta = try? decoder.decode(FrameMetaJSON.self, from: data)
+            else { continue }
+            if meta.roomId == room.id {
+                frameIds.insert(meta.frameId)
+            }
+        }
+
+        for id in frameIds.sorted() {
+            let folder = String(format: "%06u", id)
+            let src = framesDir.appendingPathComponent(folder)
+            guard fm.fileExists(atPath: src.path) else { continue }
+            try fm.copyItem(at: src,
+                            to: framesOut.appendingPathComponent(folder))
+        }
+    }
 }
 
 private extension Data {
@@ -261,12 +395,13 @@ private extension Data {
     }
 }
 
-/// Button + live status, used on both the session row and the project page.
+/// Button + live status, used on session rows (whole single capture).
 struct SendToDesktopButton: View {
     @ObservedObject private var sender = DesktopSender.shared
     let folders: [URL]
     let packageName: String
     var nestUnderPackage: Bool = false
+    var layout: DesktopPackageLayout = .wholeSet
     var title: String = "Send to desktop"
     var showStatus: Bool = true
 
@@ -274,13 +409,58 @@ struct SendToDesktopButton: View {
         VStack(alignment: .leading, spacing: 4) {
             Button {
                 sender.send(folders: folders, packageName: packageName,
-                            nestUnderPackage: nestUnderPackage)
+                            nestUnderPackage: nestUnderPackage,
+                            layout: layout)
             } label: {
                 Label(sender.isSending ? "Sending…" : title,
                       systemImage: "desktopcomputer")
             }
             .disabled(sender.isSending || folders.isEmpty)
             if showStatus, let status = sender.status {
+                Text(status)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+}
+
+/// Project send: choose whole-set vs one folder per room. Zip is always
+/// named after the project.
+struct ProjectSendToDesktopButton: View {
+    @ObservedObject private var sender = DesktopSender.shared
+    let folders: [URL]
+    let projectName: String
+    @State private var pickingLayout = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Button {
+                pickingLayout = true
+            } label: {
+                Label(sender.isSending ? "Sending…" : "Send to desktop",
+                      systemImage: "desktopcomputer")
+            }
+            .disabled(sender.isSending || folders.isEmpty)
+            .confirmationDialog("How should this project arrive?",
+                                isPresented: $pickingLayout,
+                                titleVisibility: .visible) {
+                ForEach(DesktopPackageLayout.allCases) { layout in
+                    Button(layout.title) {
+                        sender.send(folders: folders,
+                                    packageName: projectName,
+                                    nestUnderPackage: true,
+                                    layout: layout)
+                    }
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("Zip is named \(DesktopSender.sanitize(projectName)). "
+                   + "Whole project keeps every capture together; per room "
+                   + "makes a folder for each room name.")
+            }
+            if let status = sender.status {
                 Text(status)
                     .font(.caption)
                     .foregroundStyle(.secondary)

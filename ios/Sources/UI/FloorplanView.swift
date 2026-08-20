@@ -8,6 +8,8 @@ struct FloorplanView: View {
     @State private var renaming: Floorplan.Room?
     @State private var renameText = ""
     @State private var pendingDelete: Floorplan.Room?
+    @State private var namingNewRoom = false
+    @State private var newRoomName = ""
 
     var body: some View {
         VStack(spacing: 0) {
@@ -17,6 +19,17 @@ struct FloorplanView: View {
             footer
         }
         .background(.black.opacity(0.92))
+        .alert("Name this room", isPresented: $namingNewRoom) {
+            TextField("Kitchen, living room…", text: $newRoomName)
+            Button("Cancel", role: .cancel) { namingNewRoom = false }
+            Button("Save") {
+                model.closeDrawnRoom(named: newRoomName)
+                namingNewRoom = false
+            }
+        } message: {
+            Text("This name is what the folder will be called when you send "
+               + "rooms to the desktop.")
+        }
         .alert("Rename room", isPresented: Binding(
             get: { renaming != nil },
             set: { if !$0 { renaming = nil } })) {
@@ -159,7 +172,11 @@ struct FloorplanView: View {
                 HStack {
                     Button("Cancel") { model.cancelDrawing() }
                     Spacer()
-                    Button("Close room") { model.closeDrawnRoom() }
+                    Button("Close room") {
+                        let next = (model.floorplan?.rooms.map(\.id).max() ?? 0) + 1
+                        newRoomName = "Room \(next)"
+                        namingNewRoom = true
+                    }
                         .disabled(model.drawingVertices.count < 3)
                         .buttonStyle(.borderedProminent)
                 }
@@ -183,6 +200,14 @@ struct FloorplanView: View {
                     }
                     .buttonStyle(.borderedProminent)
                     .controlSize(.large)
+                    Button {
+                        renameText = room.name
+                        renaming = room
+                    } label: {
+                        Label("Rename \(room.name)", systemImage: "pencil")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.bordered)
                     Button(role: .destructive) {
                         pendingDelete = room
                     } label: {

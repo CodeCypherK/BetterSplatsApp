@@ -865,7 +865,7 @@ final class CaptureViewModel {
             let sessionURL = context.store.directory
             let handover = await Task.detached(priority: .userInitiated) {
                 () -> (keyframes: UInt32, ok: Bool, error: String,
-                       snap: CoreEngine.Snapshot) in
+                       snap: CoreEngine.Snapshot, plan: Floorplan) in
                 let engine = CoreEngine.shared
                 // Capture the scout map BEFORE liveEnd/liveBegin. End writes
                 // map.bin and Begin rebuilds a fresh LiveSystem from disk —
@@ -883,7 +883,10 @@ final class CaptureViewModel {
                 if snap.points.isEmpty && snap.patches.isEmpty {
                     snap = engine.snapshot()
                 }
-                return (keyframes, ok, engine.lastError, snap)
+                // LiDAR occupancy from scout frames — keep off the main actor.
+                let plan = FloorplanBuilder.load(sessionDirectory: sessionURL,
+                                                 snapshot: snap)
+                return (keyframes, ok, engine.lastError, snap, plan)
             }.value
 
             scaffoldKeyframes = handover.keyframes
@@ -895,8 +898,7 @@ final class CaptureViewModel {
             context.pass = "capture"
             applySnapshot(handover.snap)
 
-            var built = FloorplanBuilder.load(sessionDirectory: sessionURL,
-                                              snapshot: handover.snap)
+            var built = handover.plan
             FloorplanBuilder.assignScoutFrames(&built)
             floorplan = built
             selectedRoomId = nil

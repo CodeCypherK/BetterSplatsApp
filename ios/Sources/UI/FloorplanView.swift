@@ -77,10 +77,10 @@ struct FloorplanView: View {
         VStack(alignment: .leading, spacing: 4) {
             Text("The space")
                 .font(.headline)
-            Text("Gray is the occupied floor. Cyan is your route. Draw each "
-               + "room on top. \(model.scoutFramesStored) route photos stay "
-               + "off the room budget — each room gets up to "
-               + "\(FrameFeedContext.roomCaptureCap) extra photos.")
+            Text("Gray is LiDAR occupancy from the route. Cyan is where you "
+               + "walked. Draw each room on top. \(model.scoutFramesStored) "
+               + "route photos stay off the room budget — each room gets up "
+               + "to \(FrameFeedContext.roomCaptureCap) extra photos.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)

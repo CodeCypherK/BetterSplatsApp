@@ -174,4 +174,25 @@ const uint8_t* bs_depth_encode(const uint16_t* f16, int32_t width,
 
 void bs_buffer_release(const uint8_t* buf) { delete[] buf; }
 
+const float* bs_depth_decode_f32(const uint8_t* data, size_t len,
+                                 int32_t* out_width, int32_t* out_height) {
+  if (data == nullptr || len == 0 || out_width == nullptr ||
+      out_height == nullptr) {
+    return nullptr;
+  }
+  bs::DepthImage depth;
+  if (bs::DecodeDepth(data, len, depth) != bs::DepthCodecError::kOk) {
+    return nullptr;
+  }
+  std::vector<float> meters = depth.ToFloat();
+  float* buf = new (std::nothrow) float[meters.size()];
+  if (buf == nullptr) return nullptr;
+  std::memcpy(buf, meters.data(), meters.size() * sizeof(float));
+  *out_width = depth.width;
+  *out_height = depth.height;
+  return buf;
+}
+
+void bs_f32_buffer_release(const float* buf) { delete[] buf; }
+
 }  // extern "C"

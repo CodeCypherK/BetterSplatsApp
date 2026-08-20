@@ -68,6 +68,13 @@ const uint8_t* bs_depth_encode(const uint16_t* f16, int32_t width,
                                int32_t height, size_t* out_len);
 void bs_buffer_release(const uint8_t* buf);
 
+/* Decode a BSDP `lidar.depth` blob into float32 meters (row-major).
+ * Returns a newly allocated buffer of width*height floats; release with
+ * bs_f32_buffer_release. Invalid / missing samples are 0. NULL on failure. */
+const float* bs_depth_decode_f32(const uint8_t* data, size_t len,
+                                 int32_t* out_width, int32_t* out_height);
+void bs_f32_buffer_release(const float* buf);
+
 /* ------------------------------------------------------------ live input */
 
 /* One synchronized RGB+depth observation. All buffers are borrowed for the

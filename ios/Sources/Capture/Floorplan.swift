@@ -79,72 +79,148 @@ enum FloorplanBuilder {
         var p: [Double]?
     }
 
+    /// Tracked world-to-camera pose from the scout log (COLMAP convention).
+    private struct TrackedPose {
+        var frameId: UInt32
+        var q: simd_quatd
+        var t: SIMD3<Double>
+        var center: SIMD3<Double> { -(q.inverse.act(t)) }
+    }
+
     static func load(sessionDirectory: URL,
                      snapshot: CoreEngine.Snapshot) -> Floorplan {
-        let posesURL = sessionDirectory
-            .appendingPathComponent("live/poses_scout.jsonl")
-        var worldCentres: [(UInt32, SIMD3<Double>)] = []
-        if let text = try? String(contentsOf: posesURL, encoding: .utf8) {
-            let decoder = JSONDecoder()
-            for line in text.split(separator: "\n") where !line.isEmpty {
-                guard let data = line.data(using: .utf8),
-                      let row = try? decoder.decode(PoseLine.self, from: data),
-                      row.state != "lost",
-                      let q = row.q, q.count == 4,
-                      let p = row.p, p.count == 3
-                else { continue }
-                let quat = simd_quatd(ix: q[1], iy: q[2], iz: q[3], r: q[0])
-                let t = SIMD3(p[0], p[1], p[2])
-                let center = -(quat.inverse.act(t))
-                worldCentres.append((row.frame_id, center))
-            }
-        }
-        if worldCentres.isEmpty {
+        var tracked = loadTrackedPoses(sessionDirectory: sessionDirectory)
+        if tracked.isEmpty {
             // Snapshot cameras have no frame ids; still enough to draw a path.
             for (i, cam) in snapshot.cameras.enumerated() {
                 let quat = simd_quatd(ix: Double(cam.q.y), iy: Double(cam.q.z),
                                       iz: Double(cam.q.w), r: Double(cam.q.x))
                 let t = SIMD3(Double(cam.t.x), Double(cam.t.y), Double(cam.t.z))
-                worldCentres.append((UInt32(i + 1), -(quat.inverse.act(t))))
+                tracked.append(TrackedPose(frameId: UInt32(i + 1), q: quat, t: t))
             }
         }
 
-        let (origin, axisU, axisV) = basis(from: worldCentres.map(\.1))
-        let poses: [Floorplan.Pose] = worldCentres.map { id, world in
-            let d = world - origin
+        let (origin, axisU, axisV) = basis(from: tracked.map(\.center))
+        let poses: [Floorplan.Pose] = tracked.map { pose in
+            let d = pose.center - origin
             return Floorplan.Pose(
-                frameId: id, world: world,
+                frameId: pose.frameId, world: pose.center,
                 plan: SIMD2(simd_dot(d, axisU), simd_dot(d, axisV)))
         }
 
         var plan = Floorplan(poses: poses, rooms: [], footprints: [],
                              origin: origin, axisU: axisU, axisV: axisV)
-        // Rooms are user-drawn. The plan itself is the space LiDAR and the
-        // live map actually occupied — not a hull of camera centres.
-        fillGeometry(&plan, snapshot: snapshot)
+        // Prefer a quick LiDAR occupancy from the scout frames; sparse map
+        // points and the walk path are backups when depth is thin.
+        fillGeometry(&plan, snapshot: snapshot, sessionDirectory: sessionDirectory,
+                     tracked: tracked)
         return plan
     }
 
-    /// Project map / patch points onto the floor and trace occupied blobs.
-    /// Falls back to the camera path when the sparse map is empty so the
-    /// user still has a plan to draw rooms on.
-    static func fillGeometry(_ plan: inout Floorplan,
-                             snapshot: CoreEngine.Snapshot) {
-        var pts: [SIMD2<Double>] = []
-        pts.reserveCapacity(snapshot.points.count + snapshot.patches.count
-                            + plan.poses.count)
-        for p in snapshot.points {
-            pts.append(plan.toPlan(SIMD3(Double(p.x), Double(p.y), Double(p.z))))
+    private static func loadTrackedPoses(sessionDirectory: URL) -> [TrackedPose] {
+        let posesURL = sessionDirectory
+            .appendingPathComponent("live/poses_scout.jsonl")
+        guard let text = try? String(contentsOf: posesURL, encoding: .utf8)
+        else { return [] }
+        let decoder = JSONDecoder()
+        var out: [TrackedPose] = []
+        for line in text.split(separator: "\n") where !line.isEmpty {
+            guard let data = line.data(using: .utf8),
+                  let row = try? decoder.decode(PoseLine.self, from: data),
+                  row.state != "lost",
+                  let q = row.q, q.count == 4,
+                  let p = row.p, p.count == 3
+            else { continue }
+            let quat = simd_quatd(ix: q[1], iy: q[2], iz: q[3], r: q[0])
+            out.append(TrackedPose(
+                frameId: row.frame_id, q: quat,
+                t: SIMD3(p[0], p[1], p[2])))
         }
-        for patch in snapshot.patches {
-            pts.append(plan.toPlan(SIMD3(Double(patch.center.x),
-                                         Double(patch.center.y),
-                                         Double(patch.center.z))))
+        return out
+    }
+
+    /// Project LiDAR (preferred), then map / patch points, onto the floor
+    /// and trace occupied blobs. Falls back to the camera path when both
+    /// are empty so the user still has a plan to draw rooms on.
+    private static func fillGeometry(_ plan: inout Floorplan,
+                                     snapshot: CoreEngine.Snapshot,
+                                     sessionDirectory: URL,
+                                     tracked: [TrackedPose]) {
+        var pts: [SIMD2<Double>] = []
+        if !tracked.isEmpty {
+            pts = lidarPlanPoints(sessionDirectory: sessionDirectory,
+                                  tracked: tracked, plan: plan)
+        }
+        if pts.count < 40 {
+            pts.reserveCapacity(pts.count + snapshot.points.count
+                                + snapshot.patches.count)
+            for p in snapshot.points {
+                pts.append(plan.toPlan(SIMD3(Double(p.x), Double(p.y),
+                                             Double(p.z))))
+            }
+            for patch in snapshot.patches {
+                pts.append(plan.toPlan(SIMD3(Double(patch.center.x),
+                                             Double(patch.center.y),
+                                             Double(patch.center.z))))
+            }
         }
         if pts.count < 3 {
             pts.append(contentsOf: plan.path)
         }
         plan.footprints = occupancyRings(pts)
+    }
+
+    /// Subsample each scout frame's LiDAR depth into plan points. Stride and
+    /// frame thinning keep this fast on a long walk (tens of ms, not seconds).
+    private static func lidarPlanPoints(sessionDirectory: URL,
+                                        tracked: [TrackedPose],
+                                        plan: Floorplan) -> [SIMD2<Double>] {
+        let framesRoot = sessionDirectory.appendingPathComponent("frames")
+        let decoder = JSONDecoder()
+        // Cap how many depth maps we open — evenly spaced across the route.
+        let maxFrames = 64
+        let strideFrames = max(1, tracked.count / maxFrames)
+        var samples: [TrackedPose] = []
+        for (i, pose) in tracked.enumerated() where i % strideFrames == 0 {
+            samples.append(pose)
+            if samples.count >= maxFrames { break }
+        }
+
+        var pts: [SIMD2<Double>] = []
+        pts.reserveCapacity(samples.count * 800)
+        let pixelStride = 6
+        let zMin: Float = 0.25
+        let zMax: Float = 6.0
+
+        for pose in samples {
+            let folder = String(format: "%06u", pose.frameId)
+            let frameDir = framesRoot.appendingPathComponent(folder)
+            let depthURL = frameDir.appendingPathComponent("lidar.depth")
+            let metaURL = frameDir.appendingPathComponent("meta.json")
+            guard let depth = CoreEngine.decodeLidarDepth(at: depthURL),
+                  let metaData = try? Data(contentsOf: metaURL),
+                  let meta = try? decoder.decode(FrameMetaJSON.self, from: metaData)
+            else { continue }
+            let K = meta.depthIntrinsics
+            let fx = Float(K.fx), fy = Float(K.fy)
+            let cx = Float(K.cx), cy = Float(K.cy)
+            guard fx > 1, fy > 1 else { continue }
+            let Rinv = pose.q.inverse
+            let t = pose.t
+            let w = depth.width, h = depth.height
+            for v in stride(from: 0, to: h, by: pixelStride) {
+                for u in stride(from: 0, to: w, by: pixelStride) {
+                    let z = depth.meters[v * w + u]
+                    guard z.isFinite, z >= zMin, z <= zMax else { continue }
+                    let x = (Float(u) - cx) / fx * z
+                    let y = (Float(v) - cy) / fy * z
+                    let Xc = SIMD3(Double(x), Double(y), Double(z))
+                    let Xw = Rinv.act(Xc - t)
+                    pts.append(plan.toPlan(Xw))
+                }
+            }
+        }
+        return pts
     }
 
     /// Drop the axis the walk barely moved on (height) and keep the other two

@@ -69,6 +69,26 @@ final class CoreEngine: @unchecked Sendable {
             inliers: out.inliers)
     }
 
+    /// Decode a RAW `lidar.depth` (BSDP) file into float32 meters.
+    static func decodeLidarDepth(at url: URL)
+        -> (width: Int, height: Int, meters: [Float])? {
+        guard let data = try? Data(contentsOf: url), !data.isEmpty else {
+            return nil
+        }
+        var w: Int32 = 0
+        var h: Int32 = 0
+        let ptr: UnsafePointer<Float>? = data.withUnsafeBytes { raw in
+            guard let base = raw.bindMemory(to: UInt8.self).baseAddress
+            else { return nil }
+            return bs_depth_decode_f32(base, raw.count, &w, &h)
+        }
+        guard let ptr, w > 0, h > 0 else { return nil }
+        defer { bs_f32_buffer_release(ptr) }
+        let count = Int(w) * Int(h)
+        let meters = Array(UnsafeBufferPointer(start: ptr, count: count))
+        return (Int(w), Int(h), meters)
+    }
+
     // MARK: - Live session
 
     @discardableResult

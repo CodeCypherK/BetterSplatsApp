@@ -77,9 +77,9 @@ struct FloorplanView: View {
         VStack(alignment: .leading, spacing: 4) {
             Text("The space")
                 .font(.headline)
-            Text("Gray is what LiDAR saw. Draw each room on top. "
-               + "\(model.scoutFramesStored) route photos stay off the "
-               + "room budget — each room gets up to "
+            Text("Gray is the occupied floor. Cyan is your route. Draw each "
+               + "room on top. \(model.scoutFramesStored) route photos stay "
+               + "off the room budget — each room gets up to "
                + "\(FrameFeedContext.roomCaptureCap) extra photos.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -102,6 +102,22 @@ struct FloorplanView: View {
                     return
                 }
                 let map = PlanMap(bounds: bounds, size: size)
+                // Walk trail first — under the occupancy fill — so a thin
+                // LiDAR map still shows where the route went.
+                if plan.poses.count >= 2 {
+                    var trail = Path()
+                    let pts = plan.poses.map { map.point($0.plan) }
+                    trail.move(to: pts[0])
+                    for p in pts.dropFirst() { trail.addLine(to: p) }
+                    ctx.stroke(trail, with: .color(.cyan.opacity(0.55)),
+                               style: StrokeStyle(lineWidth: 1.4, lineCap: .round,
+                                                  lineJoin: .round))
+                    for p in pts {
+                        ctx.fill(Path(ellipseIn: CGRect(x: p.x - 2.2, y: p.y - 2.2,
+                                                        width: 4.4, height: 4.4)),
+                                 with: .color(.cyan.opacity(0.8)))
+                    }
+                }
                 for ring in plan.footprints {
                     var path = Path()
                     let pts = ring.map { map.point($0) }
@@ -139,9 +155,6 @@ struct FloorplanView: View {
                                  with: .color(.white))
                     }
                 }
-                // Camera path is not the plan — occupancy is. Keep a faint
-                // trail so the walk is still visible if LiDAR was thin.
-            }
             .contentShape(Rectangle())
             .onTapGesture { loc in
                 let map = PlanMap(bounds: bounds, size: geo.size)

@@ -867,11 +867,22 @@ final class CaptureViewModel {
                 () -> (keyframes: UInt32, ok: Bool, error: String,
                        snap: CoreEngine.Snapshot) in
                 let engine = CoreEngine.shared
+                // Capture the scout map BEFORE liveEnd/liveBegin. End writes
+                // map.bin and Begin rebuilds a fresh LiveSystem from disk —
+                // a failed write or empty reload would leave the room plan
+                // with nothing to draw. The in-memory map is what the walk
+                // actually produced.
+                let scoutSnap = engine.snapshot()
                 engine.liveEnd()
                 let keyframes = engine.livePollStatus().keyframes
                 let ok = engine.liveBegin(sessionDir: sessionURL.path,
                                           pass: BS_PASS_CAPTURE) == BS_OK
-                let snap = engine.snapshot()
+                // Prefer the pre-handover cloud; fall back to the reloaded
+                // scaffold if the scout snapshot was somehow empty.
+                var snap = scoutSnap
+                if snap.points.isEmpty && snap.patches.isEmpty {
+                    snap = engine.snapshot()
+                }
                 return (keyframes, ok, engine.lastError, snap)
             }.value
 

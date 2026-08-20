@@ -126,10 +126,13 @@ enum FloorplanBuilder {
     }
 
     /// Project map / patch points onto the floor and trace occupied blobs.
+    /// Falls back to the camera path when the sparse map is empty so the
+    /// user still has a plan to draw rooms on.
     static func fillGeometry(_ plan: inout Floorplan,
                              snapshot: CoreEngine.Snapshot) {
         var pts: [SIMD2<Double>] = []
-        pts.reserveCapacity(snapshot.points.count + snapshot.patches.count)
+        pts.reserveCapacity(snapshot.points.count + snapshot.patches.count
+                            + plan.poses.count)
         for p in snapshot.points {
             pts.append(plan.toPlan(SIMD3(Double(p.x), Double(p.y), Double(p.z))))
         }
@@ -137,6 +140,9 @@ enum FloorplanBuilder {
             pts.append(plan.toPlan(SIMD3(Double(patch.center.x),
                                          Double(patch.center.y),
                                          Double(patch.center.z))))
+        }
+        if pts.count < 3 {
+            pts.append(contentsOf: plan.path)
         }
         plan.footprints = occupancyRings(pts)
     }

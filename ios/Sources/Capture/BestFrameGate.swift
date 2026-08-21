@@ -44,15 +44,16 @@ final class BestFrameGate {
         if windowStart == nil { windowStart = t }
 
         // Rank only frames that already pass quality — blurry ones never win.
+        // Copy the pixel buffer only when it becomes the new window best so we
+        // do not allocate a full-res clone on every good preview frame.
         let stats = FrameAnalysis.lumaStats(of: pixelBuffer)
-        if let scored = score(stats: stats),
-           let retained = copyBuffer(pixelBuffer) {
-            let cand = Candidate(pixelBuffer: retained, time: time,
+        if let scored = score(stats: stats) {
+            let beats = best == nil
+                || scored > best!.score
+                || (pose != nil && best?.pose == nil && scored >= best!.score * 0.9)
+            if beats, let retained = copyBuffer(pixelBuffer) {
+                best = Candidate(pixelBuffer: retained, time: time,
                                  stats: stats, score: scored, pose: pose)
-            if best == nil || cand.score > best!.score
-                || (cand.pose != nil && best?.pose == nil
-                    && cand.score >= best!.score * 0.9) {
-                best = cand
             }
         }
 

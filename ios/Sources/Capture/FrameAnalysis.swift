@@ -17,7 +17,8 @@ enum FrameAnalysis {
         CVPixelBufferLockBaseAddress(pixelBuffer, .readOnly)
         defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, .readOnly) }
 
-        guard let base = CVPixelBufferGetBaseAddressOfPlane(pixelBuffer, 0) else {
+        guard CVPixelBufferGetPlaneCount(pixelBuffer) >= 1,
+              let base = CVPixelBufferGetBaseAddressOfPlane(pixelBuffer, 0) else {
             return LumaStats(laplacianVariance: 0, overexposedFraction: 0,
                              meanLuma: 0)
         }

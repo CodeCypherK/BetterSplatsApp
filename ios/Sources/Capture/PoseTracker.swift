@@ -19,12 +19,20 @@ final class PoseTracker {
         guard motion.isDeviceMotionAvailable else { return }
         queue.name = "bs.pose"
         queue.maxConcurrentOperationCount = 1
-        motion.deviceMotionUpdateInterval = 1.0 / 60.0
+        motion.deviceMotionUpdateInterval = 1.0 / 30.0
         lastTime = nil
         position = .zero
         velocity = .zero
-        motion.startDeviceMotionUpdates(using: .xArbitraryZVertical,
-                                        to: queue) { [weak self] data, _ in
+        // Prefer reference frame that does not require attitude reference
+        // calibration; unavailable frames are ignored.
+        let frame: CMAttitudeReferenceFrame
+        if CMMotionManager.availableAttitudeReferenceFrames()
+            .contains(.xArbitraryZVertical) {
+            frame = .xArbitraryZVertical
+        } else {
+            frame = .xArbitraryCorrectedZVertical
+        }
+        motion.startDeviceMotionUpdates(using: frame, to: queue) { [weak self] data, _ in
             guard let self, let data else { return }
             self.ingest(data)
         }

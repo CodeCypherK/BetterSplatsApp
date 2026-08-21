@@ -8,14 +8,15 @@ import UIKit
 /// frame luma so brightness can still track the room.
 enum ExposureAxisLock: Equatable {
     case none
-    /// ISO frozen; shutter duration is nudged from luma.
     case iso
-    /// Shutter frozen; ISO is nudged from luma.
     case shutter
 }
 
-/// True 0.5× rear ultra-wide via AVCapture at the highest video resolution
-/// the device offers for that lens.
+/// True 0.5× rear ultra-wide via AVCapture at max video resolution.
+///
+/// Session configuration and the preview layer run on the **main** thread.
+/// Only `startRunning` / frame callbacks use the capture queue — creating
+/// `AVCaptureVideoPreviewLayer` off-main was crashing on Start.
 final class UltraWideCapture: NSObject {
     enum CaptureError: LocalizedError {
         case noUltraWide
@@ -43,7 +44,6 @@ final class UltraWideCapture: NSObject {
     private let session = AVCaptureSession()
     private let videoOut = AVCaptureVideoDataOutput()
     private let queue = DispatchQueue(label: "bs.ultrawide", qos: .userInitiated)
-    private var input: AVCaptureDeviceInput?
     private var device: AVCaptureDevice?
     private(set) var previewLayer: AVCaptureVideoPreviewLayer?
     private(set) var dimensions: (width: Int, height: Int) = (1920, 1440)
@@ -54,7 +54,6 @@ final class UltraWideCapture: NSObject {
     private var frozenShutter: CMTime?
     private var lastSteerUptime: Double = 0
 
-    /// Called on `queue` for every frame.
     var onFrame: ((CVPixelBuffer, CMTime) -> Void)?
 
     var exposureAxisLock: ExposureAxisLock {
@@ -73,32 +72,39 @@ final class UltraWideCapture: NSObject {
         return CMTimeGetSeconds(t)
     }
 
+    /// Call from the main actor only.
     func start() throws {
-        let auth = AVCaptureDevice.authorizationStatus(for: .video)
-        if auth == .notDetermined {
-            let sem = DispatchSemaphore(value: 0)
-            var granted = false
-            AVCaptureDevice.requestAccess(for: .video) { ok in
-                granted = ok
-                sem.signal()
-            }
-            _ = sem.wait(timeout: .now() + 15)
-            if !granted { throw CaptureError.notAuthorized }
-        } else if auth != .authorized {
+        assert(Thread.isMainThread)
+
+        switch AVCaptureDevice.authorizationStatus(for: .video) {
+        case .authorized:
+            break
+        case .notDetermined:
+            throw CaptureError.configurationFailed(
+                "Grant camera access on the home screen, then try again")
+        default:
             throw CaptureError.notAuthorized
         }
 
-        var thrown: Error?
-        queue.sync {
-            do {
-                try self.configureLocked()
-            } catch {
-                thrown = error
-            }
+        if session.isRunning {
+            session.stopRunning()
         }
-        if let thrown { throw thrown }
+        clearExposureLock()
+
+        try configureSessionOnMain()
+
+        if previewLayer == nil {
+            let preview = AVCaptureVideoPreviewLayer(session: session)
+            preview.videoGravity = .resizeAspectFill
+            previewLayer = preview
+        } else {
+            previewLayer?.session = session
+        }
+
         queue.async { [session] in
-            if !session.isRunning { session.startRunning() }
+            if !session.isRunning {
+                session.startRunning()
+            }
         }
     }
 
@@ -111,60 +117,17 @@ final class UltraWideCapture: NSObject {
         }
     }
 
-    /// Freeze ISO at the current value; shutter stays adjustable (steered).
-    func lockISO() {
-        queue.async { [weak self] in self?.applyLockISO() }
-    }
+    func lockISO() { queue.async { [weak self] in self?.applyLockISO() } }
+    func lockShutter() { queue.async { [weak self] in self?.applyLockShutter() } }
+    func unlockExposure() { queue.async { [weak self] in self?.applyUnlockExposure() } }
 
-    /// Freeze shutter at the current duration; ISO stays adjustable (steered).
-    func lockShutter() {
-        queue.async { [weak self] in self?.applyLockShutter() }
-    }
-
-    func unlockExposure() {
-        queue.async { [weak self] in self?.applyUnlockExposure() }
-    }
-
-    /// Called on the capture queue with luma stats for the current frame.
-    func steerExposure(stats: FrameAnalysis.LumaStats) {
-        exposureLock.lock()
-        let mode = axisLock
-        let iso = frozenISO
-        let shutter = frozenShutter
-        exposureLock.unlock()
-
-        guard mode != .none, let device, device.exposureMode == .custom,
-              !device.isAdjustingExposure
-        else { return }
-
-        let now = ProcessInfo.processInfo.systemUptime
-        guard now - lastSteerUptime >= 0.15 else { return }
-        lastSteerUptime = now
-
-        switch mode {
-        case .iso:
-            guard let iso else { return }
-            steerShutter(device: device, iso: iso, stats: stats)
-        case .shutter:
-            guard let shutter else { return }
-            steerISO(device: device, shutter: shutter, stats: stats)
-        case .none:
-            break
-        }
-    }
-
-    private func configureLocked() throws {
-        if session.isRunning { session.stopRunning() }
-        clearExposureLock()
-
+    private func configureSessionOnMain() throws {
         session.beginConfiguration()
         defer { session.commitConfiguration() }
-
         session.sessionPreset = .inputPriority
 
         for old in session.inputs { session.removeInput(old) }
         for old in session.outputs { session.removeOutput(old) }
-        input = nil
         device = nil
 
         let cam: AVCaptureDevice
@@ -181,7 +144,8 @@ final class UltraWideCapture: NSObject {
             throw CaptureError.noUltraWide
         }
 
-        guard let format = Self.pickMaxFormat(cam) else {
+        let formats = Self.rankedFormats(cam)
+        guard let format = formats.first else {
             throw CaptureError.configurationFailed("no suitable ultra-wide format")
         }
 
@@ -189,19 +153,19 @@ final class UltraWideCapture: NSObject {
             try cam.lockForConfiguration()
             cam.activeFormat = format
             if useDualHalfZoom {
-                let z = cam.minAvailableVideoZoomFactor
-                cam.videoZoomFactor = min(max(z, 0.5), cam.maxAvailableVideoZoomFactor)
+                cam.videoZoomFactor = cam.minAvailableVideoZoomFactor
             }
-            // Prefer 30 fps at max res when the format allows it.
-            let duration = CMTime(value: 1, timescale: 30)
-            if format.videoSupportedFrameRateRanges.contains(where: {
-                $0.minFrameDuration <= duration && duration <= $0.maxFrameDuration
+            let want = CMTime(value: 1, timescale: 30)
+            if let range = format.videoSupportedFrameRateRanges.first(where: {
+                CMTimeCompare($0.minFrameDuration, want) <= 0
+                    && CMTimeCompare(want, $0.maxFrameDuration) <= 0
             }) {
-                cam.activeVideoMinFrameDuration = duration
-                cam.activeVideoMaxFrameDuration = duration
+                _ = range
+                cam.activeVideoMinFrameDuration = want
+                cam.activeVideoMaxFrameDuration = want
             }
-            let dims = CMVideoFormatDescriptionGetDimensions(format.formatDescription)
-            dimensions = (Int(dims.width), Int(dims.height))
+            let d = CMVideoFormatDescriptionGetDimensions(format.formatDescription)
+            dimensions = (Int(d.width), Int(d.height))
             cam.unlockForConfiguration()
         } catch {
             throw CaptureError.configurationFailed(
@@ -219,58 +183,60 @@ final class UltraWideCapture: NSObject {
             throw CaptureError.configurationFailed("cannot add ultra-wide input")
         }
         session.addInput(newInput)
-        input = newInput
         device = cam
 
         videoOut.alwaysDiscardsLateVideoFrames = true
-        videoOut.videoSettings = [
-            kCVPixelBufferPixelFormatTypeKey as String:
-                kCVPixelFormatType_420YpCbCr8BiPlanarFullRange
-        ]
         videoOut.setSampleBufferDelegate(self, queue: queue)
         guard session.canAddOutput(videoOut) else {
             throw CaptureError.configurationFailed("cannot add video output")
         }
         session.addOutput(videoOut)
 
-        if let conn = videoOut.connection(with: .video) {
-            if #available(iOS 17.0, *) {
-                if conn.isVideoRotationAngleSupported(90) {
-                    conn.videoRotationAngle = 90
-                }
-            } else if conn.isVideoOrientationSupported {
-                conn.videoOrientation = .portrait
-            }
-        }
-
-        if previewLayer == nil {
-            let preview = AVCaptureVideoPreviewLayer(session: session)
-            preview.videoGravity = .resizeAspectFill
-            previewLayer = preview
+        let wanted = kCVPixelFormatType_420YpCbCr8BiPlanarFullRange
+        if videoOut.availableVideoPixelFormatTypes.contains(wanted) {
+            videoOut.videoSettings = [
+                kCVPixelBufferPixelFormatTypeKey as String: wanted
+            ]
         } else {
-            previewLayer?.session = session
+            videoOut.videoSettings = nil
         }
     }
 
-    /// Highest-resolution format that still supports ≥30 fps.
-    private static func pickMaxFormat(_ device: AVCaptureDevice) -> AVCaptureDevice.Format? {
-        let candidates = device.formats.filter { format in
-            let dims = CMVideoFormatDescriptionGetDimensions(format.formatDescription)
-            let okFps = format.videoSupportedFrameRateRanges.contains {
-                $0.maxFrameRate >= 29.5
+    private static func rankedFormats(_ device: AVCaptureDevice) -> [AVCaptureDevice.Format] {
+        device.formats
+            .filter { format in
+                let dims = CMVideoFormatDescriptionGetDimensions(format.formatDescription)
+                let okFps = format.videoSupportedFrameRateRanges.contains {
+                    $0.maxFrameRate >= 29.5
+                }
+                return okFps && dims.width >= 1280
             }
-            return okFps && dims.width >= 1280
-        }
-        return candidates.max { a, b in
-            let da = CMVideoFormatDescriptionGetDimensions(a.formatDescription)
-            let db = CMVideoFormatDescriptionGetDimensions(b.formatDescription)
-            let aa = Int(da.width) * Int(da.height)
-            let bb = Int(db.width) * Int(db.height)
-            if aa != bb { return aa < bb }
-            // Prefer 4:3-ish room capture when area ties.
-            let ra = abs(Float(da.width) / Float(max(1, da.height)) - 4.0 / 3.0)
-            let rb = abs(Float(db.width) / Float(max(1, db.height)) - 4.0 / 3.0)
-            return ra > rb
+            .sorted { a, b in
+                let da = CMVideoFormatDescriptionGetDimensions(a.formatDescription)
+                let db = CMVideoFormatDescriptionGetDimensions(b.formatDescription)
+                return Int(da.width) * Int(da.height) > Int(db.width) * Int(db.height)
+            }
+    }
+
+    func steerExposure(stats: FrameAnalysis.LumaStats) {
+        exposureLock.lock()
+        let mode = axisLock
+        let iso = frozenISO
+        let shutter = frozenShutter
+        exposureLock.unlock()
+        guard mode != .none, let device, device.exposureMode == .custom,
+              !device.isAdjustingExposure else { return }
+        let now = ProcessInfo.processInfo.systemUptime
+        guard now - lastSteerUptime >= 0.15 else { return }
+        lastSteerUptime = now
+        switch mode {
+        case .iso:
+            guard let iso else { return }
+            steerShutter(device: device, iso: iso, stats: stats)
+        case .shutter:
+            guard let shutter else { return }
+            steerISO(device: device, shutter: shutter, stats: stats)
+        case .none: break
         }
     }
 
@@ -281,13 +247,10 @@ final class UltraWideCapture: NSObject {
             defer { device.unlockForConfiguration() }
             let iso = min(device.activeFormat.maxISO,
                           max(device.activeFormat.minISO, device.iso))
-            let duration = device.exposureDuration
-            device.setExposureModeCustom(duration: duration, iso: iso,
+            device.setExposureModeCustom(duration: device.exposureDuration, iso: iso,
                                          completionHandler: nil)
             exposureLock.lock()
-            axisLock = .iso
-            frozenISO = iso
-            frozenShutter = nil
+            axisLock = .iso; frozenISO = iso; frozenShutter = nil
             exposureLock.unlock()
         } catch {}
     }
@@ -303,9 +266,7 @@ final class UltraWideCapture: NSObject {
             device.setExposureModeCustom(duration: duration, iso: iso,
                                          completionHandler: nil)
             exposureLock.lock()
-            axisLock = .shutter
-            frozenShutter = duration
-            frozenISO = nil
+            axisLock = .shutter; frozenShutter = duration; frozenISO = nil
             exposureLock.unlock()
         } catch {}
     }
@@ -324,9 +285,7 @@ final class UltraWideCapture: NSObject {
 
     private func clearExposureLock() {
         exposureLock.lock()
-        axisLock = .none
-        frozenISO = nil
-        frozenShutter = nil
+        axisLock = .none; frozenISO = nil; frozenShutter = nil
         exposureLock.unlock()
     }
 
@@ -337,11 +296,9 @@ final class UltraWideCapture: NSObject {
         let formatMax = device.activeFormat.maxExposureDuration.seconds
         let maxS = min(formatMax, frameS > 0 ? frameS : formatMax)
         var seconds = device.exposureDuration.seconds
-        if stats.overexposedFraction > 0.03 {
-            seconds *= 0.72
-        } else if stats.meanLuma > 1 {
-            let ratio = 110.0 / stats.meanLuma
-            seconds *= min(1.22, max(0.82, ratio))
+        if stats.overexposedFraction > 0.03 { seconds *= 0.72 }
+        else if stats.meanLuma > 1 {
+            seconds *= min(1.22, max(0.82, 110.0 / stats.meanLuma))
         }
         seconds = min(maxS, max(minS, seconds))
         let current = device.exposureDuration.seconds
@@ -349,9 +306,9 @@ final class UltraWideCapture: NSObject {
         do {
             try device.lockForConfiguration()
             defer { device.unlockForConfiguration() }
-            let duration = CMTime(seconds: seconds, preferredTimescale: 1_000_000)
-            device.setExposureModeCustom(duration: duration, iso: iso,
-                                         completionHandler: nil)
+            device.setExposureModeCustom(
+                duration: CMTime(seconds: seconds, preferredTimescale: 1_000_000),
+                iso: iso, completionHandler: nil)
         } catch {}
     }
 
@@ -360,11 +317,9 @@ final class UltraWideCapture: NSObject {
         let minISO = device.activeFormat.minISO
         let maxISO = device.activeFormat.maxISO
         var iso = device.iso
-        if stats.overexposedFraction > 0.03 {
-            iso *= 0.72
-        } else if stats.meanLuma > 1 {
-            let ratio = Float(110.0 / stats.meanLuma)
-            iso *= min(1.22, max(0.82, ratio))
+        if stats.overexposedFraction > 0.03 { iso *= 0.72 }
+        else if stats.meanLuma > 1 {
+            iso *= min(1.22, max(0.82, Float(110.0 / stats.meanLuma)))
         }
         iso = min(maxISO, max(minISO, iso))
         guard abs(iso - device.iso) / max(device.iso, 1) > 0.06 else { return }
@@ -383,15 +338,11 @@ extension UltraWideCapture: AVCaptureVideoDataOutputSampleBufferDelegate {
                        from connection: AVCaptureConnection) {
         guard let buf = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
         let t = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
-        // Steer at most ~6.5 Hz so max-res luma does not run every frame.
         exposureLock.lock()
-        let mode = axisLock
-        let due = mode != .none
+        let due = axisLock != .none
             && ProcessInfo.processInfo.systemUptime - lastSteerUptime >= 0.15
         exposureLock.unlock()
-        if due {
-            steerExposure(stats: FrameAnalysis.lumaStats(of: buf))
-        }
+        if due { steerExposure(stats: FrameAnalysis.lumaStats(of: buf)) }
         onFrame?(buf, t)
     }
 }

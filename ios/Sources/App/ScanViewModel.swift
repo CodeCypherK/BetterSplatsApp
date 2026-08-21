@@ -56,14 +56,16 @@ final class ScanViewModel {
     func start() {
         guard phase == .ready || phase == .done else { return }
         do {
-            try capture.start()
-            pipeline.poses.start()
-            let dims = capture.dimensions
+            // Create the room folder first so a store failure never leaves the
+            // camera running half-started.
             let store = try ImageSessionStore(
                 osVersion: UIDevice.current.systemVersion,
                 continuing: continuingProject,
                 newProjectName: newProjectName,
-                videoW: dims.width, videoH: dims.height)
+                videoW: 1920, videoH: 1440)
+            try capture.start()
+            let dims = capture.dimensions
+            pipeline.poses.start()
             self.store = store
             photos = []
             photoCount = 0
@@ -84,7 +86,11 @@ final class ScanViewModel {
                                 dims.width, dims.height)
             startLockPoll()
         } catch {
+            capture.onFrame = nil
+            capture.stop()
             pipeline.poses.stop()
+            lockPoll?.invalidate()
+            lockPoll = nil
             fail(error.localizedDescription)
         }
     }

@@ -33,11 +33,13 @@ struct ScanPreview: UIViewRepresentable {
                 return
             }
             attached?.removeFromSuperlayer()
+            attached = nil
+            guard let layer else { return }
+            // Layer may still be parented elsewhere after a prior scan.
+            layer.removeFromSuperlayer()
+            layer.frame = bounds
+            self.layer.insertSublayer(layer, at: 0)
             attached = layer
-            if let layer {
-                layer.frame = bounds
-                self.layer.insertSublayer(layer, at: 0)
-            }
         }
 
         override func layoutSubviews() {

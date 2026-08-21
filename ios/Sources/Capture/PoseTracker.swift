@@ -2,9 +2,7 @@ import CoreMotion
 import Foundation
 import simd
 
-/// Approximate pose from CoreMotion while the ultra-wide camera is owned by
-/// AVCapture (ARKit cannot share that camera). Good enough for novelty + the
-/// corner map; desktop DA3 re-estimates poses from the images.
+/// Approximate pose from CoreMotion while AVCapture owns the ultra-wide camera.
 final class PoseTracker {
     private let motion = CMMotionManager()
     private let queue = OperationQueue()
@@ -17,22 +15,16 @@ final class PoseTracker {
 
     func start() {
         guard motion.isDeviceMotionAvailable else { return }
+        motion.stopDeviceMotionUpdates()
         queue.name = "bs.pose"
         queue.maxConcurrentOperationCount = 1
         motion.deviceMotionUpdateInterval = 1.0 / 30.0
         lastTime = nil
         position = .zero
         velocity = .zero
-        // Prefer reference frame that does not require attitude reference
-        // calibration; unavailable frames are ignored.
-        let frame: CMAttitudeReferenceFrame
-        if CMMotionManager.availableAttitudeReferenceFrames()
-            .contains(.xArbitraryZVertical) {
-            frame = .xArbitraryZVertical
-        } else {
-            frame = .xArbitraryCorrectedZVertical
-        }
-        motion.startDeviceMotionUpdates(using: frame, to: queue) { [weak self] data, _ in
+        // Default reference frame — avoids crashes when a corrected frame
+        // is unavailable on the device.
+        motion.startDeviceMotionUpdates(to: queue) { [weak self] data, _ in
             guard let self, let data else { return }
             self.ingest(data)
         }
@@ -58,7 +50,6 @@ final class PoseTracker {
         let quat = simd_quatf(ix: Float(q.x), iy: Float(q.y),
                               iz: Float(q.z), r: Float(q.w))
         let r = simd_float3x3(quat)
-
         let now = data.timestamp
         lock.lock()
         defer { lock.unlock() }
@@ -70,7 +61,6 @@ final class PoseTracker {
         let dt = Float(now - prev)
         lastTime = now
         guard dt > 0, dt < 0.25 else { return }
-
         let a = SIMD3(Float(data.userAcceleration.x),
                       Float(data.userAcceleration.y),
                       Float(data.userAcceleration.z))

@@ -3,13 +3,13 @@ import CoreVideo
 import Foundation
 import simd
 
-/// Evaluates every preview frame; accepts at most one JPEG per second, and
-/// only when that second's best frame is sharp, well-exposed, and a new
-/// viewpoint. Blurry / bad / near-duplicate windows save nothing — rate can
-/// fall well below 1 fps.
+/// Evaluates every preview frame; accepts at most one JPEG per second when
+/// sharp enough and a new viewpoint. Candidates are stored as JPEG bytes so
+/// max-res ultra-wide does not depend on a second full-size pixel-buffer copy
+/// (those copies were failing silently → zero saves).
 final class BestFrameGate {
     struct Candidate {
-        var pixelBuffer: CVPixelBuffer
+        var jpeg: Data
         var time: CMTime
         var stats: FrameAnalysis.LumaStats
         var score: Double
@@ -17,20 +17,25 @@ final class BestFrameGate {
     }
 
     struct Accepted {
-        var pixelBuffer: CVPixelBuffer
+        var jpeg: Data
         var time: CMTime
         var stats: FrameAnalysis.LumaStats
         var pose: simd_float4x4?
     }
 
-    /// Hard ceiling: never accept twice within this interval.
     var minIntervalSeconds: Double = 1.0
-    /// Must move or turn enough vs the last kept photo.
-    var minMoveM: Float = 0.15
-    var minTurnRad: Float = 0.18  // ~10°
-    var minSharpness: Double = 70
-    var maxOverexposed: Double = 0.12
-    var lumaRange: ClosedRange<Double> = 28...210
+    var minMoveM: Float = 0.12
+    var minTurnRad: Float = 0.14
+    /// Ultra-wide is softer than 1×; keep this low.
+    var minSharpness: Double = 18
+    var maxOverexposed: Double = 0.22
+    /// Video-range luma lives roughly 16…235.
+    var lumaRange: ClosedRange<Double> = 18...230
+
+    /// Encode the live buffer to JPEG when it becomes the window best.
+    var encodeJPEG: ((CVPixelBuffer) -> Data?)?
+
+    private(set) var lastSkipReason = "waiting"
 
     private var windowStart: Double?
     private var best: Candidate?
@@ -38,77 +43,120 @@ final class BestFrameGate {
     private var lastAcceptedStats: FrameAnalysis.LumaStats?
     private var lastAcceptTime: Double?
 
+    func reset() {
+        windowStart = nil
+        best = nil
+        lastAcceptedPose = nil
+        lastAcceptedStats = nil
+        lastAcceptTime = nil
+        lastSkipReason = "waiting"
+    }
+
     func consider(pixelBuffer: CVPixelBuffer, time: CMTime,
                   pose: simd_float4x4?) -> Accepted? {
         let t = CMTimeGetSeconds(time)
         if windowStart == nil { windowStart = t }
 
-        // Rank only frames that already pass quality — blurry ones never win.
-        // Copy the pixel buffer only when it becomes the new window best so we
-        // do not allocate a full-res clone on every good preview frame.
         let stats = FrameAnalysis.lumaStats(of: pixelBuffer)
         if let scored = score(stats: stats) {
             let beats = best == nil
                 || scored > best!.score
                 || (pose != nil && best?.pose == nil && scored >= best!.score * 0.9)
-            if beats, let retained = copyBuffer(pixelBuffer) {
-                best = Candidate(pixelBuffer: retained, time: time,
-                                 stats: stats, score: scored, pose: pose)
+            if beats {
+                if let jpeg = encodeJPEG?(pixelBuffer) {
+                    best = Candidate(jpeg: jpeg, time: time,
+                                     stats: stats, score: scored, pose: pose)
+                    lastSkipReason = "holding candidate"
+                } else {
+                    lastSkipReason = "JPEG encode failed"
+                }
             }
+        } else {
+            lastSkipReason = rejectReason(stats)
         }
 
         guard let start = windowStart,
               t - start >= minIntervalSeconds else { return nil }
 
-        // Close the window either way — no obligation to accept.
         let winner = best
         windowStart = t
         best = nil
 
-        guard let winner else { return nil }
-
-        // Absolute 1 fps ceiling (even across window edge jitter).
-        if let lastT = lastAcceptTime, t - lastT < minIntervalSeconds {
+        // Soft fallback: if nothing passed the sharp gate, still keep a usable
+        // exposure frame so a scan is never stuck at 0 photos.
+        let chosen: Candidate?
+        if let winner {
+            chosen = winner
+        } else if lumaRange.contains(stats.meanLuma),
+                  stats.overexposedFraction <= maxOverexposed,
+                  let jpeg = encodeJPEG?(pixelBuffer) {
+            chosen = Candidate(jpeg: jpeg, time: time, stats: stats,
+                               score: 0, pose: pose)
+            lastSkipReason = "soft keep (low sharpness)"
+        } else {
+            lastSkipReason = rejectReason(stats)
             return nil
         }
-        guard passesNovelty(winner) else { return nil }
 
-        lastAcceptedPose = winner.pose
-        lastAcceptedStats = winner.stats
-        lastAcceptTime = CMTimeGetSeconds(winner.time)
-        return Accepted(pixelBuffer: winner.pixelBuffer, time: winner.time,
-                        stats: winner.stats, pose: winner.pose)
+        guard let chosen else { return nil }
+
+        if let lastT = lastAcceptTime, t - lastT < minIntervalSeconds {
+            lastSkipReason = "rate limit"
+            return nil
+        }
+        guard passesNovelty(chosen) else {
+            lastSkipReason = "need new viewpoint"
+            return nil
+        }
+
+        lastAcceptedPose = chosen.pose
+        lastAcceptedStats = chosen.stats
+        lastAcceptTime = CMTimeGetSeconds(chosen.time)
+        lastSkipReason = "saved"
+        return Accepted(jpeg: chosen.jpeg, time: chosen.time,
+                        stats: chosen.stats, pose: chosen.pose)
     }
 
     private func score(stats: FrameAnalysis.LumaStats) -> Double? {
         guard stats.laplacianVariance >= minSharpness else { return nil }
         guard stats.overexposedFraction <= maxOverexposed else { return nil }
         guard lumaRange.contains(stats.meanLuma) else { return nil }
-        let sharp = min(stats.laplacianVariance / 400.0, 1.5)
-        let exposure = 1.0 - abs(stats.meanLuma - 120.0) / 120.0
+        let sharp = min(stats.laplacianVariance / 200.0, 1.5)
+        let exposure = 1.0 - abs(stats.meanLuma - 110.0) / 110.0
         let clipPenalty = stats.overexposedFraction * 2.5
         return sharp * 2.0 + exposure - clipPenalty
     }
 
-    private func passesNovelty(_ cand: Candidate) -> Bool {
-        // First keep is always allowed if it passed quality.
-        guard lastAcceptedStats != nil else { return true }
-
-        // Got a pose now but the first keep had none — treat as new.
-        if lastAcceptedPose == nil {
-            return cand.pose != nil
+    private func rejectReason(_ stats: FrameAnalysis.LumaStats) -> String {
+        if stats.laplacianVariance < minSharpness {
+            return String(format: "blurry (%.0f)", stats.laplacianVariance)
         }
+        if stats.overexposedFraction > maxOverexposed {
+            return String(format: "blown highlights (%.0f%%)",
+                          stats.overexposedFraction * 100)
+        }
+        if stats.meanLuma < lumaRange.lowerBound {
+            return String(format: "too dark (%.0f)", stats.meanLuma)
+        }
+        if stats.meanLuma > lumaRange.upperBound {
+            return String(format: "too bright (%.0f)", stats.meanLuma)
+        }
+        return "waiting"
+    }
 
-        // No pose on this candidate: allow only after a longer gap and a
-        // clear photometry change (avoid freezing capture when tracking dips).
+    private func passesNovelty(_ cand: Candidate) -> Bool {
+        guard lastAcceptedStats != nil else { return true }
+        if lastAcceptedPose == nil {
+            return true
+        }
         guard let pose = cand.pose, let prev = lastAcceptedPose else {
             guard let lastT = lastAcceptTime,
                   let last = lastAcceptedStats else { return true }
             let t = CMTimeGetSeconds(cand.time)
-            guard t - lastT >= minIntervalSeconds * 2 else { return false }
+            guard t - lastT >= minIntervalSeconds * 1.5 else { return false }
             let dLap = abs(cand.stats.laplacianVariance - last.laplacianVariance)
             let dLuma = abs(cand.stats.meanLuma - last.meanLuma)
-            return dLap > 40 || dLuma > 18
+            return dLap > 25 || dLuma > 12
         }
 
         let p0 = SIMD3(prev.columns.3.x, prev.columns.3.y, prev.columns.3.z)
@@ -118,46 +166,6 @@ final class BestFrameGate {
         let f1 = -SIMD3(pose.columns.2.x, pose.columns.2.y, pose.columns.2.z)
         let turn = acos(min(1, max(-1, simd_dot(simd_normalize(f0),
                                                 simd_normalize(f1)))))
-        // Need a meaningful new viewpoint: move OR turn enough.
         return moved >= minMoveM || turn >= minTurnRad
-    }
-
-    private func copyBuffer(_ src: CVPixelBuffer) -> CVPixelBuffer? {
-        let w = CVPixelBufferGetWidth(src)
-        let h = CVPixelBufferGetHeight(src)
-        let fmt = CVPixelBufferGetPixelFormatType(src)
-        var dst: CVPixelBuffer?
-        let status = CVPixelBufferCreate(nil, w, h, fmt, [
-            kCVPixelBufferIOSurfacePropertiesKey as String: [:]
-        ] as CFDictionary, &dst)
-        guard status == kCVReturnSuccess, let dst else { return nil }
-        CVPixelBufferLockBaseAddress(src, .readOnly)
-        CVPixelBufferLockBaseAddress(dst, [])
-        defer {
-            CVPixelBufferUnlockBaseAddress(src, .readOnly)
-            CVPixelBufferUnlockBaseAddress(dst, [])
-        }
-        let planes = CVPixelBufferGetPlaneCount(src)
-        if planes == 0 {
-            if let s = CVPixelBufferGetBaseAddress(src),
-               let d = CVPixelBufferGetBaseAddress(dst) {
-                memcpy(d, s, CVPixelBufferGetDataSize(src))
-            }
-        } else {
-            for p in 0..<planes {
-                guard let s = CVPixelBufferGetBaseAddressOfPlane(src, p),
-                      let d = CVPixelBufferGetBaseAddressOfPlane(dst, p)
-                else { continue }
-                let rows = CVPixelBufferGetHeightOfPlane(src, p)
-                let bytes = CVPixelBufferGetBytesPerRowOfPlane(src, p)
-                let dstBytes = CVPixelBufferGetBytesPerRowOfPlane(dst, p)
-                for r in 0..<rows {
-                    memcpy(d.advanced(by: r * dstBytes),
-                           s.advanced(by: r * bytes),
-                           min(bytes, dstBytes))
-                }
-            }
-        }
-        return dst
     }
 }

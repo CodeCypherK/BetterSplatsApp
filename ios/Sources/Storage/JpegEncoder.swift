@@ -3,12 +3,10 @@ import CoreVideo
 import Foundation
 import ImageIO
 
-/// GPU-backed JPEG encoding of capture pixel buffers. One shared CIContext;
-/// encodes are submitted from the storage path only (~3 fps), never for
-/// every capture frame.
+/// GPU-backed JPEG encoding of capture pixel buffers.
 final class JpegEncoder {
     private let context: CIContext
-    private let colorSpace = CGColorSpace(name: CGColorSpace.sRGB)!
+    private let fallbackColorSpace = CGColorSpace(name: CGColorSpace.sRGB)!
     private let quality: Double
 
     init(quality: Double = 0.85) {
@@ -17,17 +15,15 @@ final class JpegEncoder {
     }
 
     func encode(_ pixelBuffer: CVPixelBuffer) -> Data? {
-        let image = CIImage(cvPixelBuffer: pixelBuffer)
-        return encode(image)
+        encode(CIImage(cvPixelBuffer: pixelBuffer))
     }
 
-    /// ARKit `capturedImage` is YCbCr biplanar; CIImage handles it. Apply
-    /// portrait upright orientation so desktop training sees the photo the
-    /// way the user held the phone.
+    /// AVCapture portrait buffers are already upright (orientation `.up`).
+    /// Uses the buffer's attached color space when CIImage exposes one so
+    /// video-range YCbCr does not get forced through the wrong transfer.
     func encodeYUV(_ pixelBuffer: CVPixelBuffer,
-                   orientation: CGImagePropertyOrientation = .right) -> Data? {
-        let image = CIImage(cvPixelBuffer: pixelBuffer)
-            .oriented(orientation)
+                   orientation: CGImagePropertyOrientation = .up) -> Data? {
+        let image = CIImage(cvPixelBuffer: pixelBuffer).oriented(orientation)
         return encode(image)
     }
 
@@ -36,7 +32,8 @@ final class JpegEncoder {
             CIImageRepresentationOption(
                 rawValue: kCGImageDestinationLossyCompressionQuality as String): quality
         ]
+        let space = image.colorSpace ?? fallbackColorSpace
         return context.jpegRepresentation(
-            of: image, colorSpace: colorSpace, options: options)
+            of: image, colorSpace: space, options: options)
     }
 }

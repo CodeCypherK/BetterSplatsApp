@@ -155,6 +155,11 @@ final class UltraWideCapture: NSObject {
             if useDualHalfZoom {
                 cam.videoZoomFactor = cam.minAvailableVideoZoomFactor
             }
+            // HDR video looks washed out in preview + JPEGs for this pipeline.
+            if cam.activeFormat.isVideoHDRSupported {
+                cam.automaticallyAdjustsVideoHDREnabled = false
+                cam.isVideoHDREnabled = false
+            }
             let want = CMTime(value: 1, timescale: 30)
             if let range = format.videoSupportedFrameRateRanges.first(where: {
                 CMTimeCompare($0.minFrameDuration, want) <= 0
@@ -192,10 +197,17 @@ final class UltraWideCapture: NSObject {
         }
         session.addOutput(videoOut)
 
-        let wanted = kCVPixelFormatType_420YpCbCr8BiPlanarFullRange
-        if videoOut.availableVideoPixelFormatTypes.contains(wanted) {
+        // Prefer video-range 420v — full-range 420f reads washed/pastel on many
+        // UW formats when preview + CIImage assume video levels.
+        let videoRange = kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
+        let fullRange = kCVPixelFormatType_420YpCbCr8BiPlanarFullRange
+        if videoOut.availableVideoPixelFormatTypes.contains(videoRange) {
             videoOut.videoSettings = [
-                kCVPixelBufferPixelFormatTypeKey as String: wanted
+                kCVPixelBufferPixelFormatTypeKey as String: videoRange
+            ]
+        } else if videoOut.availableVideoPixelFormatTypes.contains(fullRange) {
+            videoOut.videoSettings = [
+                kCVPixelBufferPixelFormatTypeKey as String: fullRange
             ]
         } else {
             videoOut.videoSettings = nil
@@ -203,19 +215,21 @@ final class UltraWideCapture: NSObject {
     }
 
     private static func rankedFormats(_ device: AVCaptureDevice) -> [AVCaptureDevice.Format] {
-        device.formats
-            .filter { format in
-                let dims = CMVideoFormatDescriptionGetDimensions(format.formatDescription)
-                let okFps = format.videoSupportedFrameRateRanges.contains {
-                    $0.maxFrameRate >= 29.5
-                }
-                return okFps && dims.width >= 1280
+        let all = device.formats.filter { format in
+            let dims = CMVideoFormatDescriptionGetDimensions(format.formatDescription)
+            let okFps = format.videoSupportedFrameRateRanges.contains {
+                $0.maxFrameRate >= 29.5
             }
-            .sorted { a, b in
-                let da = CMVideoFormatDescriptionGetDimensions(a.formatDescription)
-                let db = CMVideoFormatDescriptionGetDimensions(b.formatDescription)
-                return Int(da.width) * Int(da.height) > Int(db.width) * Int(db.height)
-            }
+            return okFps && dims.width >= 1280
+        }
+        // Prefer max resolution among SDR formats when possible.
+        let sdr = all.filter { !$0.isVideoHDRSupported }
+        let pool = sdr.isEmpty ? all : sdr
+        return pool.sorted { a, b in
+            let da = CMVideoFormatDescriptionGetDimensions(a.formatDescription)
+            let db = CMVideoFormatDescriptionGetDimensions(b.formatDescription)
+            return Int(da.width) * Int(da.height) > Int(db.width) * Int(db.height)
+        }
     }
 
     func steerExposure(stats: FrameAnalysis.LumaStats) {

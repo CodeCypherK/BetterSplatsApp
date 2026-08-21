@@ -9,14 +9,22 @@ import UIKit
 final class FramePipeline: @unchecked Sendable {
     let gate = BestFrameGate()
     let poses = PoseTracker()
+    let jpeg = JpegEncoder(quality: 0.9)
+
+    init() {
+        gate.encodeJPEG = { [jpeg] buffer in
+            jpeg.encodeYUV(buffer, orientation: .up)
+        }
+    }
 }
 
-/// 0.5× ultra-wide AVCapture + CoreMotion poses: ≤1 accepted JPEG per second.
+/// Preview → lock exposure → then save ≤1 JPEG/s from 0.5× ultra-wide.
 @MainActor
 @Observable
 final class ScanViewModel {
     enum Phase: Equatable {
         case ready
+        case previewing
         case scanning
         case finishing
         case done
@@ -27,7 +35,7 @@ final class ScanViewModel {
     var photoCount = 0
     var megabytes: Double = 0
     var photos: [CapturedPoseSample] = []
-    var statusLine = "0.5× · at most 1/s when sharp and a new view"
+    var statusLine = "Open the camera, set exposure, then start saving"
     var exposureLock: ExposureAxisLock = .none
     var exposureLockLabel = "AE auto"
 
@@ -37,14 +45,26 @@ final class ScanViewModel {
     private var store: ImageSessionStore?
     private let capture = UltraWideCapture()
     private let pipeline = FramePipeline()
-    private let jpeg = JpegEncoder(quality: 0.9)
     private var saving = false
     private var lockPoll: Timer?
+    private var savingEnabled = false
 
     var previewLayer: AVCaptureVideoPreviewLayer? { capture.previewLayer }
 
+    var showsCamera: Bool {
+        switch phase {
+        case .previewing, .scanning: return true
+        default: return false
+        }
+    }
+
     var isScanning: Bool {
         if case .scanning = phase { return true }
+        return false
+    }
+
+    var isPreviewing: Bool {
+        if case .previewing = phase { return true }
         return false
     }
 
@@ -53,63 +73,100 @@ final class ScanViewModel {
         statusLine = message
     }
 
-    func start() {
+    /// Open the ultra-wide feed so exposure can be locked before any saves.
+    func openCamera() {
         guard phase == .ready || phase == .done else { return }
         do {
-            // Create the room folder first so a store failure never leaves the
-            // camera running half-started.
+            try capture.start()
+            pipeline.poses.start()
+            pipeline.gate.reset()
+            savingEnabled = false
+            photos = []
+            photoCount = 0
+            megabytes = 0
+            store = nil
+            exposureLock = .none
+            exposureLockLabel = "AE auto"
+            // Preview only — exposure steer runs inside UltraWideCapture.
+            // Saving attaches the frame gate in beginSaving().
+            capture.onFrame = nil
+            phase = .previewing
+            let dims = capture.dimensions
+            statusLine = String(format: "Preview %d×%d — lock ISO/shutter, then Start saving",
+                                dims.width, dims.height)
+            startLockPoll()
+        } catch {
+            capture.stop()
+            pipeline.poses.stop()
+            fail(error.localizedDescription)
+        }
+    }
+
+    /// Begin accepting ≤1 photo/s into the room folder.
+    private var lastStatusUptime: TimeInterval = 0
+
+    func beginSaving() {
+        guard phase == .previewing else { return }
+        do {
+            let dims = capture.dimensions
             let store = try ImageSessionStore(
                 osVersion: UIDevice.current.systemVersion,
                 continuing: continuingProject,
                 newProjectName: newProjectName,
-                videoW: 1920, videoH: 1440)
-            try capture.start()
-            let dims = capture.dimensions
-            pipeline.poses.start()
+                videoW: dims.width, videoH: dims.height)
             self.store = store
-            photos = []
-            photoCount = 0
-            megabytes = 0
-            exposureLock = .none
-            exposureLockLabel = "AE auto"
+            pipeline.gate.reset()
+            savingEnabled = true
+            lastStatusUptime = 0
             capture.onFrame = { [weak self, pipeline] buffer, time in
                 let pose = pipeline.poses.currentPose()
                 guard let accepted = pipeline.gate.consider(
                     pixelBuffer: buffer, time: time, pose: pose)
-                else { return }
+                else {
+                    let reason = pipeline.gate.lastSkipReason
+                    let now = ProcessInfo.processInfo.systemUptime
+                    Task { @MainActor [weak self] in
+                        guard let self else { return }
+                        if now - self.lastStatusUptime >= 0.5 {
+                            self.lastStatusUptime = now
+                            self.statusLine = reason
+                        }
+                    }
+                    return
+                }
                 Task { @MainActor [weak self] in
                     await self?.saveAccepted(accepted)
                 }
             }
             phase = .scanning
-            statusLine = String(format: "0.5× %d×%d · waiting for a sharp new view…",
-                                dims.width, dims.height)
-            startLockPoll()
+            statusLine = "Saving… move or turn for new views"
         } catch {
-            capture.onFrame = nil
-            capture.stop()
-            pipeline.poses.stop()
-            lockPoll?.invalidate()
-            lockPoll = nil
             fail(error.localizedDescription)
         }
     }
 
     func stop() {
-        guard isScanning else { return }
+        guard showsCamera else { return }
+        let wasSaving = isScanning
         phase = .finishing
         lockPoll?.invalidate()
         lockPoll = nil
+        savingEnabled = false
         capture.onFrame = nil
         capture.stop()
         pipeline.poses.stop()
         Task {
-            do {
-                try await store?.finalize()
-                phase = .done
-                statusLine = "Saved \(photoCount) photos"
-            } catch {
-                fail(error.localizedDescription)
+            if wasSaving {
+                do {
+                    try await store?.finalize()
+                    phase = .done
+                    statusLine = "Saved \(photoCount) photos"
+                } catch {
+                    fail(error.localizedDescription)
+                }
+            } else {
+                phase = .ready
+                statusLine = "Open the camera, set exposure, then start saving"
             }
         }
     }
@@ -160,11 +217,9 @@ final class ScanViewModel {
         guard isScanning, let store, !saving else { return }
         saving = true
         defer { saving = false }
-        guard let data = jpeg.encodeYUV(accepted.pixelBuffer,
-                                        orientation: .up) else { return }
         let transform = accepted.pose ?? matrix_identity_float4x4
         do {
-            let id = try await store.writeJPEG(data, transform: transform)
+            let id = try await store.writeJPEG(accepted.jpeg, transform: transform)
             let pos = SIMD3(transform.columns.3.x, transform.columns.3.y,
                             transform.columns.3.z)
             photos.append(CapturedPoseSample(id: id, position: pos,

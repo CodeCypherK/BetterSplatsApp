@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// Minimal scan UI: live preview, image count, pose pins, start/stop.
+/// Preview → lock exposure → save photos. Minimal chrome on the live feed.
 struct ScanView: View {
     @State private var model = ScanViewModel()
     @Environment(\.dismiss) private var dismiss
@@ -16,7 +16,7 @@ struct ScanView: View {
 
     var body: some View {
         ZStack {
-            ScanPreview(previewLayer: model.isScanning ? model.previewLayer : nil)
+            ScanPreview(previewLayer: model.showsCamera ? model.previewLayer : nil)
                 .ignoresSafeArea()
                 .background(Color.black)
 
@@ -30,68 +30,24 @@ struct ScanView: View {
                         Text(model.statusLine)
                             .font(.caption)
                             .foregroundStyle(.white.opacity(0.9))
+                            .lineLimit(2)
                     }
                     Spacer()
-                    PoseTrailView(poses: model.photos)
-                        .frame(width: 120, height: 120)
-                        .clipShape(RoundedRectangle(cornerRadius: 12))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 12)
-                                .stroke(.white.opacity(0.2), lineWidth: 1))
+                    if model.isScanning {
+                        PoseTrailView(poses: model.photos)
+                            .frame(width: 120, height: 120)
+                            .clipShape(RoundedRectangle(cornerRadius: 12))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 12)
+                                    .stroke(.white.opacity(0.2), lineWidth: 1))
+                    }
                 }
                 .padding(16)
 
                 Spacer()
 
-                if model.isScanning {
-                    VStack(spacing: 10) {
-                        Text(model.exposureLockLabel)
-                            .font(.caption.monospacedDigit())
-                            .foregroundStyle(.white.opacity(0.9))
-
-                        HStack(spacing: 8) {
-                            Button {
-                                model.lockISO()
-                            } label: {
-                                Text("Lock ISO")
-                                    .frame(maxWidth: .infinity)
-                            }
-                            .buttonStyle(.borderedProminent)
-                            .tint(model.exposureLock == .iso ? .orange : .gray.opacity(0.7))
-
-                            Button {
-                                model.lockShutter()
-                            } label: {
-                                Text("Lock shutter")
-                                    .frame(maxWidth: .infinity)
-                            }
-                            .buttonStyle(.borderedProminent)
-                            .tint(model.exposureLock == .shutter ? .orange : .gray.opacity(0.7))
-
-                            Button {
-                                model.unlockExposure()
-                            } label: {
-                                Text("Auto")
-                                    .frame(maxWidth: .infinity)
-                            }
-                            .buttonStyle(.bordered)
-                            .tint(.white)
-                        }
-                        .controlSize(.small)
-
-                        Button {
-                            model.stop()
-                        } label: {
-                            Text("Stop")
-                                .font(.headline)
-                                .frame(maxWidth: .infinity)
-                                .padding(.vertical, 16)
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .tint(.red)
-                    }
-                    .padding(.horizontal, 24)
-                    .padding(.bottom, 28)
+                if model.showsCamera {
+                    cameraControls
                 }
             }
 
@@ -99,12 +55,70 @@ struct ScanView: View {
             if model.phase == .done { doneCard }
             if case .failed(let msg) = model.phase { errorCard(msg) }
         }
-        .navigationBarBackButtonHidden(model.isScanning)
+        .navigationBarBackButtonHidden(model.showsCamera)
         .toolbar(.hidden, for: .tabBar)
         .statusBarHidden()
         .onDisappear {
-            if model.isScanning { model.stop() }
+            if model.showsCamera { model.stop() }
         }
+    }
+
+    private var cameraControls: some View {
+        VStack(spacing: 10) {
+            Text(model.exposureLockLabel)
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.white.opacity(0.9))
+
+            HStack(spacing: 8) {
+                Button { model.lockISO() } label: {
+                    Text("Lock ISO").frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(model.exposureLock == .iso ? .orange : .gray.opacity(0.7))
+
+                Button { model.lockShutter() } label: {
+                    Text("Lock shutter").frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(model.exposureLock == .shutter ? .orange : .gray.opacity(0.7))
+
+                Button { model.unlockExposure() } label: {
+                    Text("Auto").frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+                .tint(.white)
+            }
+            .controlSize(.small)
+
+            if model.isPreviewing {
+                Button { model.beginSaving() } label: {
+                    Text("Start saving")
+                        .font(.headline)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 16)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(.green)
+
+                Button { model.stop() } label: {
+                    Text("Close camera")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+                .tint(.white)
+            } else if model.isScanning {
+                Button { model.stop() } label: {
+                    Text("Stop")
+                        .font(.headline)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 16)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(.red)
+            }
+        }
+        .padding(.horizontal, 24)
+        .padding(.bottom, 28)
     }
 
     private var startCard: some View {
@@ -113,16 +127,14 @@ struct ScanView: View {
             VStack(spacing: 14) {
                 Text("0.5× ultra-wide")
                     .font(.title3.weight(.semibold))
-                Text("Uses the ultra-wide camera at max resolution. Keeps at "
-                   + "most one photo per second when sharp and a new view. "
-                   + "During the scan you can lock ISO or lock shutter.")
+                Text("Opens a live preview so you can lock ISO or shutter, "
+                   + "then start saving. At most one photo per second when "
+                   + "the view is sharp enough and new.")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
-                Button {
-                    model.start()
-                } label: {
-                    Text("Start")
+                Button { model.openCamera() } label: {
+                    Text("Open camera")
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.borderedProminent)

@@ -1,4 +1,4 @@
-import ARKit
+import AVFoundation
 import CoreMedia
 import Foundation
 import Observation
@@ -8,10 +8,10 @@ import UIKit
 
 final class FramePipeline: @unchecked Sendable {
     let gate = BestFrameGate()
+    let poses = PoseTracker()
 }
 
-/// 1× ARKit world tracking (no mesh): ≤1 accepted JPEG per second, gated on
-/// sharpness / exposure / new viewpoint.
+/// 0.5× ultra-wide AVCapture + CoreMotion poses: ≤1 accepted JPEG per second.
 @MainActor
 @Observable
 final class ScanViewModel {
@@ -27,18 +27,18 @@ final class ScanViewModel {
     var photoCount = 0
     var megabytes: Double = 0
     var photos: [CapturedPoseSample] = []
-    var statusLine = "At most 1/s — only when sharp and a new view"
+    var statusLine = "0.5× · at most 1/s when sharp and a new view"
 
     var continuingProject: ProjectStore.Project?
     var newProjectName: String?
 
     private var store: ImageSessionStore?
-    private let capture = UltraWideARCapture()
+    private let capture = UltraWideCapture()
     private let pipeline = FramePipeline()
     private let jpeg = JpegEncoder(quality: 0.9)
     private var saving = false
 
-    var arSession: ARSession { capture.arSession }
+    var previewLayer: AVCaptureVideoPreviewLayer? { capture.previewLayer }
 
     var isScanning: Bool {
         if case .scanning = phase { return true }
@@ -54,6 +54,7 @@ final class ScanViewModel {
         guard phase == .ready || phase == .done else { return }
         do {
             try capture.start()
+            pipeline.poses.start()
             let dims = capture.dimensions
             let store = try ImageSessionStore(
                 osVersion: UIDevice.current.systemVersion,
@@ -64,7 +65,8 @@ final class ScanViewModel {
             photos = []
             photoCount = 0
             megabytes = 0
-            capture.onFrame = { [weak self, pipeline] buffer, time, pose, _ in
+            capture.onFrame = { [weak self, pipeline] buffer, time in
+                let pose = pipeline.poses.currentPose()
                 guard let accepted = pipeline.gate.consider(
                     pixelBuffer: buffer, time: time, pose: pose)
                 else { return }
@@ -73,8 +75,9 @@ final class ScanViewModel {
                 }
             }
             phase = .scanning
-            statusLine = "Waiting for a sharp new viewpoint…"
+            statusLine = "0.5× ultra-wide · waiting for a sharp new view…"
         } catch {
+            pipeline.poses.stop()
             fail(error.localizedDescription)
         }
     }
@@ -84,6 +87,7 @@ final class ScanViewModel {
         phase = .finishing
         capture.onFrame = nil
         capture.stop()
+        pipeline.poses.stop()
         Task {
             do {
                 try await store?.finalize()
@@ -99,8 +103,9 @@ final class ScanViewModel {
         guard isScanning, let store, !saving else { return }
         saving = true
         defer { saving = false }
+        // AVCapture portrait connection — buffers are already upright.
         guard let data = jpeg.encodeYUV(accepted.pixelBuffer,
-                                        orientation: .right) else { return }
+                                        orientation: .up) else { return }
         let transform = accepted.pose ?? matrix_identity_float4x4
         do {
             let id = try await store.writeJPEG(data, transform: transform)

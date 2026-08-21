@@ -6,8 +6,8 @@ struct RootView: View {
     @State private var cameraStatus = AVCaptureDevice.authorizationStatus(for: .video)
     @ObservedObject private var desktop = DesktopSender.shared
 
-    private var canMesh: Bool {
-        UltraWideARCapture.isAvailable
+    private var canScan: Bool {
+        UltraWideCapture.isAvailable
     }
 
     var body: some View {
@@ -20,14 +20,14 @@ struct RootView: View {
                         Label("Projects", systemImage: "square.stack.3d.up.fill")
                             .font(.headline)
                     }
-                    .disabled(!canMesh)
+                    .disabled(!canScan)
 
                     NavigationLink {
                         ScanView()
                     } label: {
                         Label("Scan", systemImage: "cube.transparent")
                     }
-                    .disabled(!canMesh)
+                    .disabled(!canScan)
 
                     NavigationLink {
                         SessionsView()
@@ -35,10 +35,10 @@ struct RootView: View {
                         Label("Sessions", systemImage: "square.stack.3d.up")
                     }
                 } footer: {
-                    if !canMesh {
-                        Text("Scanning needs ARKit world tracking.")
+                    if !canScan {
+                        Text("Scanning needs a rear ultra-wide (0.5×) camera.")
                     } else {
-                        Text("1× ARKit capture keeps the best frame each "
+                        Text("0.5× ultra-wide keeps the best frame each "
                            + "second. One folder of images per room goes to "
                            + "the desktop.")
                     }
@@ -78,9 +78,9 @@ struct RootView: View {
                 }
 
                 Section("Device") {
-                    LabeledContent("World tracking") {
-                        Text(canMesh ? "Available" : "Not found")
-                            .foregroundStyle(canMesh ? .green : .red)
+                    LabeledContent("Ultra-wide 0.5×") {
+                        Text(canScan ? "Available" : "Not found")
+                            .foregroundStyle(canScan ? .green : .red)
                     }
                     LabeledContent("Camera access") {
                         Text(cameraStatusLabel)

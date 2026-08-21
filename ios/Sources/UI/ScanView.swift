@@ -16,7 +16,7 @@ struct ScanView: View {
 
     var body: some View {
         ZStack {
-            ScanPreview(session: model.isScanning ? model.arSession : nil)
+            ScanPreview(previewLayer: model.isScanning ? model.previewLayer : nil)
                 .ignoresSafeArea()
                 .background(Color.black)
 
@@ -75,12 +75,11 @@ struct ScanView: View {
         VStack {
             Spacer()
             VStack(spacing: 14) {
-                Text("Room scan")
+                Text("0.5× ultra-wide")
                     .font(.title3.weight(.semibold))
-                Text("Uses the 1× camera with ARKit for tracking. Keeps at "
-                   + "most one photo per second when the frame is sharp, "
-                   + "well exposed, and a new viewpoint. Images land in one "
-                   + "folder for this room.")
+                Text("Uses the ultra-wide camera. Keeps at most one photo per "
+                   + "second when the frame is sharp, well exposed, and a new "
+                   + "viewpoint. Images land in one folder for this room.")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)

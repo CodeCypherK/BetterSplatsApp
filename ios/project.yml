@@ -52,10 +52,10 @@ targets:
         UIRequiredDeviceCapabilities:
           - arm64
         NSCameraUsageDescription: >-
-          BetterSplats uses the camera to capture photos for 3D reconstruction
-          on your computer.
+          BetterSplats uses the ultra-wide camera to capture photos for 3D
+          reconstruction on your computer.
         NSMotionUsageDescription: >-
-          Motion helps ARKit track where you move while scanning a room.
+          Motion places capture positions on the on-screen trail while you scan.
         NSLocalNetworkUsageDescription: >-
           BetterSplats sends captured sessions to the capture receiver on
           your computer.

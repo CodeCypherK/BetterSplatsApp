@@ -1,7 +1,8 @@
-import ARKit
+import AVFoundation
 import SceneKit
 import SwiftUI
 import simd
+import UIKit
 
 struct CapturedPoseSample: Identifiable, Equatable {
     var id: UInt32
@@ -9,22 +10,39 @@ struct CapturedPoseSample: Identifiable, Equatable {
     var transform: simd_float4x4
 }
 
-/// Live AR camera only — no mesh, no pose gizmos in the feed.
+/// Live ultra-wide preview (AVCapture) — no pose gizmos in the feed.
 struct ScanPreview: UIViewRepresentable {
-    var session: ARSession?
+    var previewLayer: AVCaptureVideoPreviewLayer?
 
-    func makeUIView(context: Context) -> ARSCNView {
-        let view = ARSCNView(frame: .zero)
-        view.scene = SCNScene()
-        view.automaticallyUpdatesLighting = false
-        view.rendersCameraGrain = false
-        view.debugOptions = []
-        return view
+    func makeUIView(context: Context) -> PreviewHost {
+        let host = PreviewHost()
+        host.backgroundColor = .black
+        return host
     }
 
-    func updateUIView(_ view: ARSCNView, context: Context) {
-        if let session, view.session !== session {
-            view.session = session
+    func updateUIView(_ host: PreviewHost, context: Context) {
+        host.attach(previewLayer)
+    }
+
+    final class PreviewHost: UIView {
+        private weak var attached: AVCaptureVideoPreviewLayer?
+
+        func attach(_ layer: AVCaptureVideoPreviewLayer?) {
+            if attached === layer {
+                attached?.frame = bounds
+                return
+            }
+            attached?.removeFromSuperlayer()
+            attached = layer
+            if let layer {
+                layer.frame = bounds
+                self.layer.insertSublayer(layer, at: 0)
+            }
+        }
+
+        override func layoutSubviews() {
+            super.layoutSubviews()
+            attached?.frame = bounds
         }
     }
 }

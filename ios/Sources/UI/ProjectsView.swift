@@ -58,8 +58,8 @@ struct ProjectsView: View {
             Button("Cancel", role: .cancel) {}
             Button("Create") { startNewProject() }
         } message: {
-            Text("You will capture a room at a time. Every capture in the "
-               + "project shares one coordinate frame.")
+            Text("You will scan with a live mesh so you can see coverage. "
+               + "Photos go to the desktop for reconstruction.")
         }
         .alert("Rename project", isPresented: Binding(
             get: { renaming != nil },
@@ -75,7 +75,7 @@ struct ProjectsView: View {
             }
         }
         .navigationDestination(item: $startingProject) { request in
-            CaptureView(project: nil, newProjectName: request.name)
+            ScanView(project: nil, newProjectName: request.name)
         }
     }
 
@@ -170,15 +170,9 @@ struct ProjectDetailView: View {
 
             Section {
                 NavigationLink {
-                    CaptureView(project: current, newProjectName: nil)
+                    ScanView(project: current, newProjectName: nil)
                 } label: {
-                    Label("Capture another room", systemImage: "camera.badge.ellipsis")
-                }
-                Button {
-                    rescanName = ""
-                    namingRescan = true
-                } label: {
-                    Label("Redo a room", systemImage: "arrow.clockwise")
+                    Label("Scan more", systemImage: "cube.transparent")
                 }
                 ProjectSendToDesktopButton(
                     folders: current.captures.map(\.directory),
@@ -186,10 +180,8 @@ struct ProjectDetailView: View {
             } header: {
                 Text("Continue")
             } footer: {
-                Text("Redoing a room replaces the old frames wherever you "
-                   + "walk. They stay on the phone — the desktop solve just "
-                   + "stops using them. Send asks whether you want the whole "
-                   + "project or one folder per room.")
+                Text("Each scan adds photos to this project. Send packages "
+                   + "images for desktop Depth Anything.")
             }
 
             Section("Captures") {
@@ -216,11 +208,6 @@ struct ProjectDetailView: View {
                 renaming = nil
             }
         }
-        .sheet(isPresented: $namingRescan) { roomPicker }
-        .navigationDestination(item: $startingRescan) { rescan in
-            CaptureView(project: current, newProjectName: nil,
-                        rescanLabel: rescan.label)
-        }
     }
 
     private func reload() {
@@ -243,40 +230,6 @@ struct ProjectDetailView: View {
         rooms = rows
     }
 
-    private var roomPicker: some View {
-        NavigationStack {
-            List {
-                Section {
-                    TextField("Room name (e.g. Kitchen)", text: $rescanName)
-                    Button("Start") {
-                        namingRescan = false
-                        startingRescan = Rescan(
-                            label: rescanName.isEmpty ? "this room"
-                                                      : rescanName)
-                    }
-                } footer: {
-                    Text("Name the room and walk it again — the new frames "
-                       + "take over wherever you go.")
-                }
-            }
-            .navigationTitle("Redo which room?")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                Button("Cancel") { namingRescan = false }
-            }
-        }
-        .presentationDetents([.medium, .large])
-    }
-
-    @State private var namingRescan = false
-    @State private var rescanName = ""
-    @State private var startingRescan: Rescan?
-
-    struct Rescan: Identifiable, Hashable {
-        let label: String
-        var id: String { label }
-    }
-
     struct ProjectRoomRow: Identifiable {
         let sessionDirectory: URL
         let roomId: UInt32
@@ -297,31 +250,9 @@ struct ProjectDetailView: View {
                 Spacer()
                 Text("\(capture.frameCount)")
                     .font(.caption.monospacedDigit())
-                    .foregroundStyle(coverageColor(capture.frameCount))
-            }
-            if !capture.supersedes.isEmpty {
-                Label(capture.supersedes.map(\.label)
-                        .filter { !$0.isEmpty }
-                        .joined(separator: ", "),
-                      systemImage: "arrow.clockwise")
-                    .font(.caption2)
                     .foregroundStyle(.secondary)
-            }
-            // A thin capture is worth flagging here as well as during
-            // capture: this is where someone decides what to redo, and
-            // "which of these is weak" is exactly the question.
-            if capture.frameCount < FrameFeedContext.storedFrameTarget
-                && capture.frameCount > 0 {
-                Text("Thin — under \(FrameFeedContext.storedFrameTarget) frames")
-                    .font(.caption2)
-                    .foregroundStyle(.orange)
             }
         }
         .padding(.vertical, 2)
-    }
-
-    private func coverageColor(_ frames: UInt32) -> Color {
-        frames >= UInt32(FrameFeedContext.storedFrameTarget)
-            ? .secondary : .orange
     }
 }

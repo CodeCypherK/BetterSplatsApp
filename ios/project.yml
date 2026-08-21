@@ -52,8 +52,8 @@ targets:
         UIRequiredDeviceCapabilities:
           - arm64
         NSCameraUsageDescription: >-
-          BetterSplats uses the camera and LiDAR sensor to capture 3D scans of
-          your environment.
+          BetterSplats uses the camera and LiDAR to mesh the space and capture
+          photos for 3D reconstruction on your computer.
         NSMotionUsageDescription: >-
           Motion data helps the tracker follow fast camera movement. It is
           never used to compute camera poses.
@@ -66,6 +66,7 @@ targets:
     dependencies:
       - framework: ../ios-deps/opencv2.framework
         embed: false
+      - sdk: ARKit.framework
       - sdk: Accelerate.framework
       - sdk: AVFoundation.framework
       - sdk: CoreGraphics.framework
@@ -77,4 +78,5 @@ targets:
       - sdk: MetalKit.framework
       - sdk: Network.framework
       - sdk: QuartzCore.framework
+      - sdk: SceneKit.framework
       - sdk: UIKit.framework

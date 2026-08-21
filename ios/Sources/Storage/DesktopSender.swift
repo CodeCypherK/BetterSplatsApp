@@ -5,10 +5,12 @@ import UIKit
 
 /// How a project is laid out inside the zip sent to the desktop.
 enum DesktopPackageLayout: String, CaseIterable, Identifiable {
-    /// One folder per capture session (current behaviour).
+    /// One folder per capture session (legacy full tree).
     case wholeSet
     /// One folder per named room, each holding that room's frames.
     case perRoom
+    /// Session.json + JPEGs only — what GSplatStudio / DA3 wants.
+    case imagesOnly
 
     var id: String { rawValue }
 
@@ -16,6 +18,7 @@ enum DesktopPackageLayout: String, CaseIterable, Identifiable {
         switch self {
         case .wholeSet: return "Whole project"
         case .perRoom: return "One folder per room"
+        case .imagesOnly: return "Images only"
         }
     }
 
@@ -25,8 +28,13 @@ enum DesktopPackageLayout: String, CaseIterable, Identifiable {
             return "All captures together under the project name"
         case .perRoom:
             return "Each room is its own folder, named how you named it"
+        case .imagesOnly:
+            return "session.json and image.jpg files for desktop depth"
         }
     }
+
+    /// Layouts offered when sending a multi-capture project from Projects.
+    static var projectChoices: [DesktopPackageLayout] { [.imagesOnly, .wholeSet] }
 }
 
 /// Zips a session or project, then sends that one archive to the desktop
@@ -253,11 +261,17 @@ final class DesktopSender: ObservableObject {
     }
 
     /// Zip named after the project/session. Whole-set nests capture folders;
-    /// per-room nests folders named after each room.
+    /// per-room nests folders named after each room; images-only strips to
+    /// session.json + JPEGs.
     nonisolated private static func makeZip(
         folders: [URL], packageName: String, nestUnderPackage: Bool,
         layout: DesktopPackageLayout
     ) async throws -> URL {
+        if layout == .imagesOnly {
+            return try await makeImagesOnlyZip(folders: folders,
+                                               packageName: packageName,
+                                               nestUnderPackage: nestUnderPackage)
+        }
         if nestUnderPackage, layout == .perRoom {
             return try await makePerRoomZip(folders: folders,
                                             packageName: packageName)
@@ -281,6 +295,67 @@ final class DesktopSender: ObservableObject {
         }
         return try await ZipExporter.zipDirectory(
             at: stage, name: packageName + ".zip")
+    }
+
+    /// `Package/session/frames/000001/image.jpg` (+ session.json). No depth.
+    nonisolated private static func makeImagesOnlyZip(
+        folders: [URL], packageName: String, nestUnderPackage: Bool
+    ) async throws -> URL {
+        let fm = FileManager.default
+        let stageRoot = fm.temporaryDirectory
+            .appendingPathComponent("desktop-img-\(UUID().uuidString)",
+                                    isDirectory: true)
+        defer { try? fm.removeItem(at: stageRoot) }
+
+        let toZip: URL
+        if nestUnderPackage || folders.count > 1 {
+            let stage = stageRoot.appendingPathComponent(packageName,
+                                                         isDirectory: true)
+            try fm.createDirectory(at: stage, withIntermediateDirectories: true)
+            for folder in folders {
+                let dest = stage.appendingPathComponent(folder.lastPathComponent,
+                                                        isDirectory: true)
+                try packImagesOnly(from: folder, into: dest)
+            }
+            toZip = stage
+        } else {
+            let stage = stageRoot.appendingPathComponent(
+                sanitize(packageName), isDirectory: true)
+            try packImagesOnly(from: folders[0], into: stage)
+            toZip = stage
+        }
+        return try await ZipExporter.zipDirectory(
+            at: toZip, name: packageName + ".zip")
+    }
+
+    nonisolated private static func packImagesOnly(from sessionDir: URL,
+                                                   into dest: URL) throws {
+        let fm = FileManager.default
+        try fm.createDirectory(at: dest, withIntermediateDirectories: true)
+        for name in ["session.json"] {
+            let src = sessionDir.appendingPathComponent(name)
+            if fm.fileExists(atPath: src.path) {
+                try fm.copyItem(at: src, to: dest.appendingPathComponent(name))
+            }
+        }
+        let framesSrc = sessionDir.appendingPathComponent("frames")
+        let framesDst = dest.appendingPathComponent("frames", isDirectory: true)
+        try fm.createDirectory(at: framesDst, withIntermediateDirectories: true)
+        let names = (try? fm.contentsOfDirectory(atPath: framesSrc.path)) ?? []
+        for name in names {
+            let srcFrame = framesSrc.appendingPathComponent(name)
+            var isDir: ObjCBool = false
+            guard fm.fileExists(atPath: srcFrame.path, isDirectory: &isDir),
+                  isDir.boolValue else { continue }
+            let dstFrame = framesDst.appendingPathComponent(name, isDirectory: true)
+            try fm.createDirectory(at: dstFrame, withIntermediateDirectories: true)
+            for file in ["image.jpg", "meta.json"] {
+                let src = srcFrame.appendingPathComponent(file)
+                if fm.fileExists(atPath: src.path) {
+                    try fm.copyItem(at: src, to: dstFrame.appendingPathComponent(file))
+                }
+            }
+        }
     }
 
     /// `ProjectName.zip` → `ProjectName/Kitchen/…`, `ProjectName/Living_Room/…`
@@ -447,7 +522,7 @@ struct ProjectSendToDesktopButton: View {
             .confirmationDialog("How should this project arrive?",
                                 isPresented: $pickingLayout,
                                 titleVisibility: .visible) {
-                ForEach(DesktopPackageLayout.allCases) { layout in
+                ForEach(DesktopPackageLayout.projectChoices) { layout in
                     Button(layout.title) {
                         sender.send(folders: folders,
                                     packageName: projectName,
@@ -458,8 +533,8 @@ struct ProjectSendToDesktopButton: View {
                 Button("Cancel", role: .cancel) {}
             } message: {
                 Text("Zip is named \(DesktopSender.sanitize(projectName)). "
-                   + "Whole project keeps every capture together; per room "
-                   + "makes a folder for each room name.")
+                   + "Images only is what the desktop expects for Depth "
+                   + "Anything.")
             }
             if let status = sender.status {
                 Text(status)

@@ -1,15 +1,15 @@
+import ARKit
 import AVFoundation
 import SwiftUI
 
-/// Home screen: entry to capture and sessions, plus the device diagnostics
-/// that prove the toolchain on a side-loaded build (engine link, LiDAR
-/// presence, camera permission, Metal).
+/// Home screen: projects, mesh scan, sessions, desktop PC.
 struct RootView: View {
     @State private var cameraStatus = AVCaptureDevice.authorizationStatus(for: .video)
-    @State private var selftestResult: (ok: Bool, report: String)?
     @ObservedObject private var desktop = DesktopSender.shared
 
-    private var hasLiDAR: Bool { CaptureManager.hasLiDAR }
+    private var canMesh: Bool {
+        ARWorldTrackingConfiguration.supportsSceneReconstruction(.mesh)
+    }
 
     var body: some View {
         NavigationStack {
@@ -21,14 +21,14 @@ struct RootView: View {
                         Label("Projects", systemImage: "square.stack.3d.up.fill")
                             .font(.headline)
                     }
-                    .disabled(!hasLiDAR)
+                    .disabled(!canMesh)
 
                     NavigationLink {
-                        CaptureView()
+                        ScanView()
                     } label: {
-                        Label("Quick Capture", systemImage: "camera.viewfinder")
+                        Label("Scan", systemImage: "cube.transparent")
                     }
-                    .disabled(!hasLiDAR)
+                    .disabled(!canMesh)
 
                     NavigationLink {
                         SessionsView()
@@ -36,10 +36,12 @@ struct RootView: View {
                         Label("Sessions", systemImage: "square.stack.3d.up")
                     }
                 } footer: {
-                    if !hasLiDAR {
-                        Text("Capture requires a LiDAR iPhone (12 Pro or later Pro model).")
+                    if !canMesh {
+                        Text("Scanning needs a LiDAR iPhone (12 Pro or later Pro).")
                     } else {
-                        Text("Sessions are saved to the Files app (On My iPhone → BetterSplats). Copy them to a computer to reconstruct — the phone only stores the capture.")
+                        Text("Walk the space while ARKit meshes it. Cyan is "
+                           + "covered by photos; orange still needs shots. "
+                           + "Only images go to the desktop for Depth Anything.")
                     }
                 }
 
@@ -71,31 +73,15 @@ struct RootView: View {
                 } header: {
                     Text("Desktop PC")
                 } footer: {
-                    Text("Run tools/desktop/capture-server.cmd on the PC, then Send to desktop from a session or a project. Same protocol as PhoneStreamer — either receiver works.")
+                    Text("Run the capture receiver on the PC, then Send from "
+                       + "a finished scan. Images only — depth is estimated "
+                       + "on the desktop.")
                 }
 
-                Section("Diagnostics") {
-                    LabeledContent("Engine", value: CoreEngine.version)
-                    HStack {
-                        Text("Dependency selftest")
-                        Spacer()
-                        if let result = selftestResult {
-                            Image(systemName: result.ok
-                                  ? "checkmark.circle.fill"
-                                  : "xmark.octagon.fill")
-                                .foregroundStyle(result.ok ? .green : .red)
-                        } else {
-                            ProgressView()
-                        }
-                    }
-                    if let result = selftestResult, !result.ok {
-                        Text(result.report)
-                            .font(.caption.monospaced())
-                            .foregroundStyle(.secondary)
-                    }
-                    LabeledContent("LiDAR camera") {
-                        Text(hasLiDAR ? "Available" : "Not found")
-                            .foregroundStyle(hasLiDAR ? .green : .red)
+                Section("Device") {
+                    LabeledContent("Mesh reconstruction") {
+                        Text(canMesh ? "Available" : "Not found")
+                            .foregroundStyle(canMesh ? .green : .red)
                     }
                     LabeledContent("Camera access") {
                         Text(cameraStatusLabel)
@@ -113,10 +99,6 @@ struct RootView: View {
                 }
             }
             .navigationTitle("BetterSplats")
-        }
-        .task {
-            let engine = CoreEngine.shared
-            selftestResult = await Task.detached { engine.selftest() }.value
         }
     }
 

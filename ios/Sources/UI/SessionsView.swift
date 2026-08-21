@@ -98,6 +98,7 @@ struct SessionsView: View {
                 SendToDesktopButton(
                     folders: [entry.url],
                     packageName: entry.id,
+                    layout: .imagesOnly,
                     title: "Send to desktop",
                     showStatus: false)
                 .controlSize(.small)

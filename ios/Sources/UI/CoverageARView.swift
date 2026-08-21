@@ -19,7 +19,7 @@ struct CoverageARView: UIViewRepresentable {
         view.backgroundColor = .black
         view.debugOptions = []
         context.coordinator.view = view
-        context.coordinator.model = model
+        context.coordinator.sync(from: model)
         DispatchQueue.main.async {
             self.model.arCoordinator = context.coordinator
             context.coordinator.startSessionIfNeeded()
@@ -28,14 +28,17 @@ struct CoverageARView: UIViewRepresentable {
     }
 
     func updateUIView(_ uiView: ARSCNView, context: Context) {
-        context.coordinator.model = model
+        context.coordinator.sync(from: model)
         context.coordinator.refreshPhotoMarkers()
         context.coordinator.recolorMeshes()
     }
 
-
     final class Coordinator: NSObject, ARSCNViewDelegate, ARSessionDelegate {
-        var model: ScanViewModel
+        /// Snapshots of MainActor model state for ARKit callback threads.
+        private var thinIds = Set<UUID>()
+        private var photoSamples: [CapturedPoseSample] = []
+        private weak var modelRef: ScanViewModel?
+
         weak var view: ARSCNView?
         private var meshNodes: [UUID: SCNNode] = [:]
         private var photoNodes: [UInt32: SCNNode] = [:]
@@ -43,15 +46,25 @@ struct CoverageARView: UIViewRepresentable {
         private var started = false
         private var lastCoverageRefresh: TimeInterval = 0
 
-        init(model: ScanViewModel) { self.model = model }
+        init(model: ScanViewModel) {
+            modelRef = model
+            super.init()
+        }
+
+        func sync(from model: ScanViewModel) {
+            modelRef = model
+            thinIds = model.thinAnchorIds
+            photoSamples = model.photos
+        }
 
         func startSessionIfNeeded() {
             guard !started, let view else { return }
             guard ARWorldTrackingConfiguration.supportsSceneReconstruction(.mesh)
             else {
                 DispatchQueue.main.async {
-                    self.model.fail("This device cannot build an ARKit mesh "
-                                    + "(needs a LiDAR iPhone).")
+                    self.modelRef?.fail(
+                        "This device cannot build an ARKit mesh "
+                        + "(needs a LiDAR iPhone).")
                 }
                 return
             }
@@ -59,12 +72,9 @@ struct CoverageARView: UIViewRepresentable {
             config.sceneReconstruction = .mesh
             config.environmentTexturing = .none
             config.frameSemantics = []
-            if ARWorldTrackingConfiguration.supportsFrameSemantics(.sceneDepth) {
-                // Depth stays on-device for meshing quality only — never written.
-            }
             view.session.run(config, options: [.resetTracking, .removeExistingAnchors])
             started = true
-            DispatchQueue.main.async { self.model.sessionStarted() }
+            DispatchQueue.main.async { self.modelRef?.sessionStarted() }
         }
 
         func pause() {
@@ -78,7 +88,7 @@ struct CoverageARView: UIViewRepresentable {
             -> SCNNode? {
             guard let mesh = anchor as? ARMeshAnchor else { return nil }
             meshAnchors[mesh.identifier] = mesh
-            let thin = model.thinAnchorIds.contains(mesh.identifier)
+            let thin = thinIds.contains(mesh.identifier)
             let geo = CoverageMeshBuilder.geometry(from: mesh, thin: thin)
             let node = SCNNode(geometry: geo)
             meshNodes[mesh.identifier] = node
@@ -90,7 +100,7 @@ struct CoverageARView: UIViewRepresentable {
                       for anchor: ARAnchor) {
             guard let mesh = anchor as? ARMeshAnchor else { return }
             meshAnchors[mesh.identifier] = mesh
-            let thin = model.thinAnchorIds.contains(mesh.identifier)
+            let thin = thinIds.contains(mesh.identifier)
             node.geometry = CoverageMeshBuilder.geometry(from: mesh, thin: thin)
             scheduleCoverageRefresh()
         }
@@ -105,19 +115,19 @@ struct CoverageARView: UIViewRepresentable {
         func recolorMeshes() {
             for (id, node) in meshNodes {
                 guard let mesh = meshAnchors[id] else { continue }
-                let thin = model.thinAnchorIds.contains(id)
+                let thin = thinIds.contains(id)
                 node.geometry = CoverageMeshBuilder.geometry(from: mesh, thin: thin)
             }
         }
 
         func refreshPhotoMarkers() {
             guard let root = view?.scene.rootNode else { return }
-            let ids = Set(model.photos.map(\.id))
+            let ids = Set(photoSamples.map(\.id))
             for (id, node) in photoNodes where !ids.contains(id) {
                 node.removeFromParentNode()
                 photoNodes.removeValue(forKey: id)
             }
-            for sample in model.photos {
+            for sample in photoSamples {
                 if let existing = photoNodes[sample.id] {
                     existing.simdTransform = sample.transform
                     continue
@@ -134,12 +144,12 @@ struct CoverageARView: UIViewRepresentable {
             guard now - lastCoverageRefresh > 0.35 else { return }
             lastCoverageRefresh = now
             let anchors = Array(meshAnchors.values)
-            let photos = model.photos
+            let photos = photoSamples
             DispatchQueue.global(qos: .userInitiated).async {
                 let (stats, thin) = CoverageAnalyzer.analyze(anchors: anchors,
                                                              photos: photos)
                 DispatchQueue.main.async {
-                    self.model.applyCoverage(stats: stats, thinIds: thin)
+                    self.modelRef?.applyCoverage(stats: stats, thinIds: thin)
                 }
             }
         }
@@ -147,17 +157,23 @@ struct CoverageARView: UIViewRepresentable {
         // MARK: - Frame / capture
 
         func session(_ session: ARSession, didUpdate frame: ARFrame) {
-            model.noteFrame(frame)
+            let transform = frame.camera.transform
+            let ok = frame.camera.trackingState == .normal
+            DispatchQueue.main.async {
+                self.modelRef?.noteFrame(transform: transform, trackingOK: ok)
+            }
         }
 
         func session(_ session: ARSession, didFailWithError error: Error) {
             DispatchQueue.main.async {
-                self.model.fail(error.localizedDescription)
+                self.modelRef?.fail(error.localizedDescription)
             }
         }
 
         func sessionWasInterrupted(_ session: ARSession) {
-            DispatchQueue.main.async { self.model.guidance = "AR interrupted" }
+            DispatchQueue.main.async {
+                self.modelRef?.guidance = "AR interrupted"
+            }
         }
 
         func sessionInterruptionEnded(_ session: ARSession) {
@@ -168,7 +184,6 @@ struct CoverageARView: UIViewRepresentable {
             -> (Data, simd_float4x4, ARCamera)? {
             guard let frame = view?.session.currentFrame else { return nil }
             let buffer = frame.capturedImage
-            // Portrait app: ARKit buffer is landscape-right relative to device.
             guard let jpeg = encoder.encodeYUV(buffer, orientation: .right)
             else { return nil }
             return (jpeg, frame.camera.transform, frame.camera)

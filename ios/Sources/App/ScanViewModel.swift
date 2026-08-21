@@ -65,10 +65,9 @@ final class ScanViewModel {
         }
     }
 
-    func noteFrame(_ frame: ARFrame) {
-        guard isScanning, autoCapture else { return }
-        guard frame.camera.trackingState == .normal else { return }
-        maybeAutoCapture(transform: frame.camera.transform)
+    func noteFrame(transform: simd_float4x4, trackingOK: Bool) {
+        guard isScanning, autoCapture, trackingOK else { return }
+        maybeAutoCapture(transform: transform)
     }
 
     func start() {

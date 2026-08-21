@@ -14,8 +14,8 @@ private extension ARMeshGeometry {
 
     func faceIndices(at faceIndex: Int) -> [Int32] {
         let count = faces.indexCountPerPrimitive
-        let offset = faces.offset + faces.stride * faceIndex
-        let ptr = faces.buffer.contents().advanced(by: offset)
+        let byteOffset = faceIndex * count * faces.bytesPerIndex
+        let ptr = faces.buffer.contents().advanced(by: byteOffset)
         var out = [Int32](repeating: 0, count: count)
         if faces.bytesPerIndex == 2 {
             let u16 = ptr.assumingMemoryBound(to: UInt16.self)

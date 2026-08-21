@@ -27,7 +27,7 @@ final class ScanViewModel {
     var photoCount = 0
     var megabytes: Double = 0
     var photos: [CapturedPoseSample] = []
-    var statusLine = "Ultra-wide · best frame each second"
+    var statusLine = "At most 1/s — only when sharp and a new view"
 
     var continuingProject: ProjectStore.Project?
     var newProjectName: String?
@@ -73,7 +73,7 @@ final class ScanViewModel {
                 }
             }
             phase = .scanning
-            statusLine = "Scanning — best frame each second"
+            statusLine = "Waiting for a sharp new viewpoint…"
         } catch {
             fail(error.localizedDescription)
         }

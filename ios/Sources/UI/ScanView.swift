@@ -72,9 +72,9 @@ struct ScanView: View {
             VStack(spacing: 14) {
                 Text("Ultra-wide capture")
                     .font(.title3.weight(.semibold))
-                Text("Keeps at most one sharp, well-exposed frame per second. "
-                   + "Yellow marks show where photos were taken and which "
-                   + "way the camera faced. No photo limit.")
+                Text("Keeps at most one photo per second, and only when the "
+                   + "frame is sharp, well exposed, and a new viewpoint. "
+                   + "Standing still or blurry motion saves nothing.")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)

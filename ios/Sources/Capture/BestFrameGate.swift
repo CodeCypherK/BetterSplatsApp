@@ -3,8 +3,10 @@ import CoreVideo
 import Foundation
 import simd
 
-/// One-second windows: keep evaluating live frames, then accept at most the
-/// single best that clears quality + novelty gates.
+/// Evaluates every preview frame; accepts at most one JPEG per second, and
+/// only when that second's best frame is sharp, well-exposed, and a new
+/// viewpoint. Blurry / bad / near-duplicate windows save nothing — rate can
+/// fall well below 1 fps.
 final class BestFrameGate {
     struct Candidate {
         var pixelBuffer: CVPixelBuffer
@@ -21,23 +23,27 @@ final class BestFrameGate {
         var pose: simd_float4x4?
     }
 
-    var minSharpness: Double = 80
-    var maxOverexposed: Double = 0.12
-    var lumaRange: ClosedRange<Double> = 28...210
-    var minMoveM: Float = 0.12
-    var minTurnRad: Float = 0.12
-    var windowSeconds: Double = 1.0
+    /// Hard ceiling: never accept twice within this interval.
+    var minIntervalSeconds: Double = 1.0
+    var minSharpness: Double = 100
+    var maxOverexposed: Double = 0.10
+    var lumaRange: ClosedRange<Double> = 32...200
+    /// Must move or turn enough vs the last kept photo.
+    var minMoveM: Float = 0.22
+    var minTurnRad: Float = 0.22  // ~12.5°
 
     private var windowStart: Double?
     private var best: Candidate?
     private var lastAcceptedPose: simd_float4x4?
     private var lastAcceptedStats: FrameAnalysis.LumaStats?
+    private var lastAcceptTime: Double?
 
     func consider(pixelBuffer: CVPixelBuffer, time: CMTime,
                   pose: simd_float4x4?) -> Accepted? {
         let t = CMTimeGetSeconds(time)
         if windowStart == nil { windowStart = t }
 
+        // Rank only frames that already pass quality — blurry ones never win.
         let stats = FrameAnalysis.lumaStats(of: pixelBuffer)
         if let scored = score(stats: stats),
            let retained = copyBuffer(pixelBuffer) {
@@ -48,16 +54,25 @@ final class BestFrameGate {
             }
         }
 
-        guard let start = windowStart, t - start >= windowSeconds else { return nil }
-        defer {
-            windowStart = t
-            best = nil
+        guard let start = windowStart,
+              t - start >= minIntervalSeconds else { return nil }
+
+        // Close the window either way — no obligation to accept.
+        let winner = best
+        windowStart = t
+        best = nil
+
+        guard let winner else { return nil }
+
+        // Absolute 1 fps ceiling (even across window edge jitter).
+        if let lastT = lastAcceptTime, t - lastT < minIntervalSeconds {
+            return nil
         }
-        guard let winner = best else { return nil }
         guard passesNovelty(winner) else { return nil }
 
         lastAcceptedPose = winner.pose
         lastAcceptedStats = winner.stats
+        lastAcceptTime = CMTimeGetSeconds(winner.time)
         return Accepted(pixelBuffer: winner.pixelBuffer, time: winner.time,
                         stats: winner.stats, pose: winner.pose)
     }
@@ -68,21 +83,19 @@ final class BestFrameGate {
         guard lumaRange.contains(stats.meanLuma) else { return nil }
         let sharp = min(stats.laplacianVariance / 400.0, 1.5)
         let exposure = 1.0 - abs(stats.meanLuma - 120.0) / 120.0
-        let clipPenalty = stats.overexposedFraction * 2.0
+        let clipPenalty = stats.overexposedFraction * 2.5
         return sharp * 2.0 + exposure - clipPenalty
     }
 
     private func passesNovelty(_ cand: Candidate) -> Bool {
-        if let last = lastAcceptedStats {
-            let dLap = abs(cand.stats.laplacianVariance - last.laplacianVariance)
-            let dLuma = abs(cand.stats.meanLuma - last.meanLuma)
-            if dLap < 15, dLuma < 6, cand.pose == nil, lastAcceptedPose == nil {
-                return false
-            }
-        }
+        // First keep is always allowed if it passed quality.
+        guard lastAcceptedStats != nil else { return true }
+
+        // Without a pose we cannot judge viewpoint — do not spam similar frames.
         guard let pose = cand.pose, let prev = lastAcceptedPose else {
-            return true
+            return false
         }
+
         let p0 = SIMD3(prev.columns.3.x, prev.columns.3.y, prev.columns.3.z)
         let p1 = SIMD3(pose.columns.3.x, pose.columns.3.y, pose.columns.3.z)
         let moved = simd_distance(p0, p1)
@@ -90,8 +103,9 @@ final class BestFrameGate {
         let f1 = -SIMD3(pose.columns.2.x, pose.columns.2.y, pose.columns.2.z)
         let turn = acos(min(1, max(-1, simd_dot(simd_normalize(f0),
                                                 simd_normalize(f1)))))
-        if moved < minMoveM, turn < minTurnRad { return false }
-        return true
+        // Need a meaningful new viewpoint: move OR turn enough.
+        if moved >= minMoveM || turn >= minTurnRad { return true }
+        return false
     }
 
     private func copyBuffer(_ src: CVPixelBuffer) -> CVPixelBuffer? {

@@ -198,11 +198,18 @@ struct SessionsView: View {
         let dirs = (try? fm.contentsOfDirectory(
             at: docs, includingPropertiesForKeys: [.creationDateKey])) ?? []
         return dirs
-            .filter { $0.lastPathComponent.hasPrefix("session_") }
+            .filter { url in
+                fm.fileExists(atPath: url.appendingPathComponent("session.json").path)
+            }
             .map { url in
-                let frames = (try? fm.contentsOfDirectory(
+                let names = (try? fm.contentsOfDirectory(atPath: url.path)) ?? []
+                let flat = names.filter {
+                    $0.lowercased().hasSuffix(".jpg") || $0.lowercased().hasSuffix(".jpeg")
+                }.count
+                let legacy = (try? fm.contentsOfDirectory(
                     at: url.appendingPathComponent("frames"),
                     includingPropertiesForKeys: nil))?.count ?? 0
+                let frames = flat > 0 ? flat : legacy
                 let size = Self.directorySize(url)
                 let created = try? url.resourceValues(forKeys: [.creationDateKey])
                     .creationDate

@@ -10,8 +10,8 @@ final class FramePipeline: @unchecked Sendable {
     let gate = BestFrameGate()
 }
 
-/// Ultra-wide (when available) continuous capture via ARKit world tracking
-/// without mesh: ≤1 accepted JPEG per second.
+/// 1× ARKit world tracking (no mesh): ≤1 accepted JPEG per second, gated on
+/// sharpness / exposure / new viewpoint.
 @MainActor
 @Observable
 final class ScanViewModel {

@@ -29,7 +29,7 @@ enum DesktopPackageLayout: String, CaseIterable, Identifiable {
         case .perRoom:
             return "Each room is its own folder, named how you named it"
         case .imagesOnly:
-            return "session.json and image.jpg files for desktop depth"
+            return "One room folder of JPEGs for desktop depth"
         }
     }
 
@@ -297,7 +297,7 @@ final class DesktopSender: ObservableObject {
             at: stage, name: packageName + ".zip")
     }
 
-    /// `Package/session/frames/000001/image.jpg` (+ session.json). No depth.
+    /// One folder per room of flat `000001.jpg` files (+ optional session.json).
     nonisolated private static func makeImagesOnlyZip(
         folders: [URL], packageName: String, nestUnderPackage: Bool
     ) async throws -> URL {
@@ -332,29 +332,43 @@ final class DesktopSender: ObservableObject {
                                                    into dest: URL) throws {
         let fm = FileManager.default
         try fm.createDirectory(at: dest, withIntermediateDirectories: true)
-        for name in ["session.json"] {
+        let names = (try? fm.contentsOfDirectory(atPath: sessionDir.path)) ?? []
+        var wrote = false
+        for name in names {
+            let lower = name.lowercased()
+            guard lower.hasSuffix(".jpg") || lower.hasSuffix(".jpeg")
+                    || name == "session.json" else { continue }
             let src = sessionDir.appendingPathComponent(name)
-            if fm.fileExists(atPath: src.path) {
-                try fm.copyItem(at: src, to: dest.appendingPathComponent(name))
+            var isDir: ObjCBool = false
+            guard fm.fileExists(atPath: src.path, isDirectory: &isDir),
+                  !isDir.boolValue else { continue }
+            try fm.copyItem(at: src, to: dest.appendingPathComponent(name))
+            if lower.hasSuffix(".jpg") || lower.hasSuffix(".jpeg") {
+                wrote = true
             }
         }
-        let framesSrc = sessionDir.appendingPathComponent("frames")
-        let framesDst = dest.appendingPathComponent("frames", isDirectory: true)
-        try fm.createDirectory(at: framesDst, withIntermediateDirectories: true)
-        let names = (try? fm.contentsOfDirectory(atPath: framesSrc.path)) ?? []
-        for name in names {
-            let srcFrame = framesSrc.appendingPathComponent(name)
-            var isDir: ObjCBool = false
-            guard fm.fileExists(atPath: srcFrame.path, isDirectory: &isDir),
-                  isDir.boolValue else { continue }
-            let dstFrame = framesDst.appendingPathComponent(name, isDirectory: true)
-            try fm.createDirectory(at: dstFrame, withIntermediateDirectories: true)
-            for file in ["image.jpg", "meta.json"] {
-                let src = srcFrame.appendingPathComponent(file)
-                if fm.fileExists(atPath: src.path) {
-                    try fm.copyItem(at: src, to: dstFrame.appendingPathComponent(file))
-                }
+        // Legacy frames/NNNNNN/image.jpg → flatten into 000001.jpg
+        if !wrote {
+            let framesSrc = sessionDir.appendingPathComponent("frames")
+            let frameNames = (try? fm.contentsOfDirectory(atPath: framesSrc.path)) ?? []
+            for name in frameNames.sorted() {
+                let src = framesSrc.appendingPathComponent(name)
+                    .appendingPathComponent("image.jpg")
+                guard fm.fileExists(atPath: src.path) else { continue }
+                let destName = name.hasSuffix(".jpg") ? name : "\(name).jpg"
+                try fm.copyItem(at: src, to: dest.appendingPathComponent(destName))
+                wrote = true
             }
+            let sessionJson = sessionDir.appendingPathComponent("session.json")
+            if fm.fileExists(atPath: sessionJson.path) {
+                try? fm.copyItem(at: sessionJson,
+                                 to: dest.appendingPathComponent("session.json"))
+            }
+        }
+        guard wrote else {
+            throw NSError(domain: "DesktopSender", code: 2,
+                          userInfo: [NSLocalizedDescriptionKey:
+                                        "No images in \(sessionDir.lastPathComponent)"])
         }
     }
 

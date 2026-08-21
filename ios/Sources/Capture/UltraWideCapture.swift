@@ -5,8 +5,9 @@ import Foundation
 import simd
 import UIKit
 
-/// World tracking + preferred ultra-wide video, no mesh. One session gives
-/// both frames and poses without fighting AVCapture for the camera.
+/// World tracking on the **1× wide** camera (what ARKit actually supports
+/// for rear world tracking). Sharpness / exposure gates run on these
+/// frames; if 1× is clean we treat that as good enough for reconstruction.
 final class UltraWideARCapture: NSObject, ARSessionDelegate {
     enum CaptureError: LocalizedError {
         case unsupported
@@ -20,10 +21,6 @@ final class UltraWideARCapture: NSObject, ARSessionDelegate {
     }
 
     private let session = ARSession()
-    private let lock = NSLock()
-    private var latestPose: simd_float4x4?
-    private var trackingOK = false
-
     private(set) var dimensions: (width: Int, height: Int) = (1920, 1440)
 
     /// Called on the ARSession delegate queue for every camera frame.
@@ -35,20 +32,26 @@ final class UltraWideARCapture: NSObject, ARSessionDelegate {
         }
         let config = ARWorldTrackingConfiguration()
         config.environmentTexturing = .none
-        if let ultra = ARWorldTrackingConfiguration.supportedVideoFormats.first(
-            where: { $0.captureDeviceType == .builtInUltraWideCamera }) {
-            config.videoFormat = ultra
-            dimensions = (Int(ultra.imageResolution.width),
-                          Int(ultra.imageResolution.height))
-        } else if let best = ARWorldTrackingConfiguration.supportedVideoFormats
+
+        // Prefer the highest-res **wide** format. Do not select ultra-wide —
+        // rear UW is not available for ARWorldTrackingConfiguration, and
+        // falling back by max resolution still lands on 1× wide anyway.
+        let wide = ARWorldTrackingConfiguration.supportedVideoFormats.filter {
+            $0.captureDeviceType == .builtInWideAngleCamera
+        }
+        let pick = (wide.isEmpty
+            ? ARWorldTrackingConfiguration.supportedVideoFormats
+            : wide)
             .max(by: {
                 $0.imageResolution.width * $0.imageResolution.height
                     < $1.imageResolution.width * $1.imageResolution.height
-            }) {
-            config.videoFormat = best
-            dimensions = (Int(best.imageResolution.width),
-                          Int(best.imageResolution.height))
+            })
+        if let pick {
+            config.videoFormat = pick
+            dimensions = (Int(pick.imageResolution.width),
+                          Int(pick.imageResolution.height))
         }
+
         session.delegate = self
         session.run(config, options: [.resetTracking, .removeExistingAnchors])
     }
@@ -64,13 +67,7 @@ final class UltraWideARCapture: NSObject, ARSessionDelegate {
         let ok: Bool
         if case .normal = frame.camera.trackingState { ok = true } else { ok = false }
         let transform = frame.camera.transform
-        lock.lock()
-        latestPose = transform
-        trackingOK = ok
-        lock.unlock()
         let t = CMTime(seconds: frame.timestamp, preferredTimescale: 600)
-        // Always pass the pose — novelty needs it. Tracking quality is still
-        // reported separately for UI if we want it later.
         onFrame?(frame.capturedImage, t, transform, ok)
     }
 }

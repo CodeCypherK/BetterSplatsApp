@@ -43,12 +43,8 @@ struct ProjectStore {
         var lastFrameId: UInt32 {
             var highest: UInt32 = 0
             for capture in captures {
-                let frames = capture.directory.appendingPathComponent("frames")
-                let names = (try? FileManager.default.contentsOfDirectory(
-                    atPath: frames.path)) ?? []
-                for name in names {
-                    if let id = UInt32(name), id > highest { highest = id }
-                }
+                highest = max(highest,
+                              ImageSessionStore.highestImageId(in: capture.directory))
             }
             return highest
         }

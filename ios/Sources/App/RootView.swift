@@ -36,10 +36,11 @@ struct RootView: View {
                     }
                 } footer: {
                     if !canMesh {
-                        Text("Scanning needs an ultra-wide rear camera.")
+                        Text("Scanning needs ARKit world tracking.")
                     } else {
-                        Text("Ultra-wide capture keeps the best frame each "
-                           + "second. Only images go to the desktop.")
+                        Text("1× ARKit capture keeps the best frame each "
+                           + "second. One folder of images per room goes to "
+                           + "the desktop.")
                     }
                 }
 

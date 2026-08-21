@@ -16,13 +16,12 @@ struct ScanView: View {
 
     var body: some View {
         ZStack {
-            ScanPreview(session: model.isScanning ? model.arSession : nil,
-                        poses: model.photos)
+            ScanPreview(session: model.isScanning ? model.arSession : nil)
                 .ignoresSafeArea()
                 .background(Color.black)
 
             VStack {
-                HStack {
+                HStack(alignment: .top) {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("\(model.photoCount)")
                             .font(.system(size: 48, weight: .bold, design: .rounded))
@@ -33,6 +32,12 @@ struct ScanView: View {
                             .foregroundStyle(.white.opacity(0.9))
                     }
                     Spacer()
+                    PoseTrailView(poses: model.photos)
+                        .frame(width: 120, height: 120)
+                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 12)
+                                .stroke(.white.opacity(0.2), lineWidth: 1))
                 }
                 .padding(16)
 
@@ -74,7 +79,7 @@ struct ScanView: View {
                     .font(.title3.weight(.semibold))
                 Text("Keeps at most one photo per second, and only when the "
                    + "frame is sharp, well exposed, and a new viewpoint. "
-                   + "Standing still or blurry motion saves nothing.")
+                   + "The corner map shows where you have looked.")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)

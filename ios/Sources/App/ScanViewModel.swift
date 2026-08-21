@@ -28,6 +28,8 @@ final class ScanViewModel {
     var megabytes: Double = 0
     var photos: [CapturedPoseSample] = []
     var statusLine = "0.5× · at most 1/s when sharp and a new view"
+    var exposureLock: ExposureAxisLock = .none
+    var exposureLockLabel = "AE auto"
 
     var continuingProject: ProjectStore.Project?
     var newProjectName: String?
@@ -37,6 +39,7 @@ final class ScanViewModel {
     private let pipeline = FramePipeline()
     private let jpeg = JpegEncoder(quality: 0.9)
     private var saving = false
+    private var lockPoll: Timer?
 
     var previewLayer: AVCaptureVideoPreviewLayer? { capture.previewLayer }
 
@@ -65,6 +68,8 @@ final class ScanViewModel {
             photos = []
             photoCount = 0
             megabytes = 0
+            exposureLock = .none
+            exposureLockLabel = "AE auto"
             capture.onFrame = { [weak self, pipeline] buffer, time in
                 let pose = pipeline.poses.currentPose()
                 guard let accepted = pipeline.gate.consider(
@@ -75,7 +80,9 @@ final class ScanViewModel {
                 }
             }
             phase = .scanning
-            statusLine = "0.5× ultra-wide · waiting for a sharp new view…"
+            statusLine = String(format: "0.5× %d×%d · waiting for a sharp new view…",
+                                dims.width, dims.height)
+            startLockPoll()
         } catch {
             pipeline.poses.stop()
             fail(error.localizedDescription)
@@ -85,6 +92,8 @@ final class ScanViewModel {
     func stop() {
         guard isScanning else { return }
         phase = .finishing
+        lockPoll?.invalidate()
+        lockPoll = nil
         capture.onFrame = nil
         capture.stop()
         pipeline.poses.stop()
@@ -99,11 +108,52 @@ final class ScanViewModel {
         }
     }
 
+    func lockISO() {
+        capture.lockISO()
+        refreshExposureLabel()
+    }
+
+    func lockShutter() {
+        capture.lockShutter()
+        refreshExposureLabel()
+    }
+
+    func unlockExposure() {
+        capture.unlockExposure()
+        refreshExposureLabel()
+    }
+
+    private func startLockPoll() {
+        lockPoll?.invalidate()
+        lockPoll = Timer.scheduledTimer(withTimeInterval: 0.35, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.refreshExposureLabel() }
+        }
+    }
+
+    private func refreshExposureLabel() {
+        exposureLock = capture.exposureAxisLock
+        switch exposureLock {
+        case .none:
+            exposureLockLabel = "AE auto"
+        case .iso:
+            if let iso = capture.lockedISOValue {
+                exposureLockLabel = String(format: "ISO locked %.0f", iso)
+            } else {
+                exposureLockLabel = "ISO locked"
+            }
+        case .shutter:
+            if let s = capture.lockedShutterSeconds, s > 0 {
+                exposureLockLabel = String(format: "Shutter locked 1/%.0f", 1.0 / s)
+            } else {
+                exposureLockLabel = "Shutter locked"
+            }
+        }
+    }
+
     private func saveAccepted(_ accepted: BestFrameGate.Accepted) async {
         guard isScanning, let store, !saving else { return }
         saving = true
         defer { saving = false }
-        // AVCapture portrait connection — buffers are already upright.
         guard let data = jpeg.encodeYUV(accepted.pixelBuffer,
                                         orientation: .up) else { return }
         let transform = accepted.pose ?? matrix_identity_float4x4

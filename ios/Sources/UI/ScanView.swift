@@ -44,16 +44,52 @@ struct ScanView: View {
                 Spacer()
 
                 if model.isScanning {
-                    Button {
-                        model.stop()
-                    } label: {
-                        Text("Stop")
-                            .font(.headline)
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 16)
+                    VStack(spacing: 10) {
+                        Text(model.exposureLockLabel)
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(.white.opacity(0.9))
+
+                        HStack(spacing: 8) {
+                            Button {
+                                model.lockISO()
+                            } label: {
+                                Text("Lock ISO")
+                                    .frame(maxWidth: .infinity)
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .tint(model.exposureLock == .iso ? .orange : .gray.opacity(0.7))
+
+                            Button {
+                                model.lockShutter()
+                            } label: {
+                                Text("Lock shutter")
+                                    .frame(maxWidth: .infinity)
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .tint(model.exposureLock == .shutter ? .orange : .gray.opacity(0.7))
+
+                            Button {
+                                model.unlockExposure()
+                            } label: {
+                                Text("Auto")
+                                    .frame(maxWidth: .infinity)
+                            }
+                            .buttonStyle(.bordered)
+                            .tint(.white)
+                        }
+                        .controlSize(.small)
+
+                        Button {
+                            model.stop()
+                        } label: {
+                            Text("Stop")
+                                .font(.headline)
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 16)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(.red)
                     }
-                    .buttonStyle(.borderedProminent)
-                    .tint(.red)
                     .padding(.horizontal, 24)
                     .padding(.bottom, 28)
                 }
@@ -77,9 +113,9 @@ struct ScanView: View {
             VStack(spacing: 14) {
                 Text("0.5× ultra-wide")
                     .font(.title3.weight(.semibold))
-                Text("Uses the ultra-wide camera. Keeps at most one photo per "
-                   + "second when the frame is sharp, well exposed, and a new "
-                   + "viewpoint. Images land in one folder for this room.")
+                Text("Uses the ultra-wide camera at max resolution. Keeps at "
+                   + "most one photo per second when sharp and a new view. "
+                   + "During the scan you can lock ISO or lock shutter.")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)

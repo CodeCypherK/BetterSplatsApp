@@ -19,7 +19,9 @@ struct CoverageARView: UIViewRepresentable {
         view.backgroundColor = .black
         view.debugOptions = []
         context.coordinator.view = view
-        context.coordinator.sync(from: model)
+        context.coordinator.sync(model: model,
+                                 thinIds: model.thinAnchorIds,
+                                 photos: model.photos)
         DispatchQueue.main.async {
             self.model.arCoordinator = context.coordinator
             context.coordinator.startSessionIfNeeded()
@@ -28,7 +30,9 @@ struct CoverageARView: UIViewRepresentable {
     }
 
     func updateUIView(_ uiView: ARSCNView, context: Context) {
-        context.coordinator.sync(from: model)
+        context.coordinator.sync(model: model,
+                                 thinIds: model.thinAnchorIds,
+                                 photos: model.photos)
         context.coordinator.refreshPhotoMarkers()
         context.coordinator.recolorMeshes()
     }
@@ -51,10 +55,12 @@ struct CoverageARView: UIViewRepresentable {
             super.init()
         }
 
-        func sync(from model: ScanViewModel) {
+        /// Caller must already be on the main actor and pass copied snapshots.
+        func sync(model: ScanViewModel, thinIds: Set<UUID>,
+                  photos: [CapturedPoseSample]) {
             modelRef = model
-            thinIds = model.thinAnchorIds
-            photoSamples = model.photos
+            self.thinIds = thinIds
+            photoSamples = photos
         }
 
         func startSessionIfNeeded() {

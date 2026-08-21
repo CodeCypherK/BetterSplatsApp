@@ -1,4 +1,3 @@
-import ARKit
 import AVFoundation
 import SwiftUI
 
@@ -8,7 +7,7 @@ struct RootView: View {
     @ObservedObject private var desktop = DesktopSender.shared
 
     private var canMesh: Bool {
-        ARWorldTrackingConfiguration.supportsSceneReconstruction(.mesh)
+        UltraWideARCapture.isAvailable
     }
 
     var body: some View {
@@ -37,11 +36,10 @@ struct RootView: View {
                     }
                 } footer: {
                     if !canMesh {
-                        Text("Scanning needs a LiDAR iPhone (12 Pro or later Pro).")
+                        Text("Scanning needs an ultra-wide rear camera.")
                     } else {
-                        Text("Walk the space while ARKit meshes it. Cyan is "
-                           + "covered by photos; orange still needs shots. "
-                           + "Only images go to the desktop for Depth Anything.")
+                        Text("Ultra-wide capture keeps the best frame each "
+                           + "second. Only images go to the desktop.")
                     }
                 }
 
@@ -79,7 +77,7 @@ struct RootView: View {
                 }
 
                 Section("Device") {
-                    LabeledContent("Mesh reconstruction") {
+                    LabeledContent("World tracking") {
                         Text(canMesh ? "Available" : "Not found")
                             .foregroundStyle(canMesh ? .green : .red)
                     }

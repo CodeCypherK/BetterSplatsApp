@@ -52,8 +52,10 @@ targets:
         UIRequiredDeviceCapabilities:
           - arm64
         NSCameraUsageDescription: >-
-          BetterSplats uses the camera and LiDAR to mesh the space and capture
-          photos for 3D reconstruction on your computer.
+          BetterSplats uses the ultra-wide camera to capture photos for 3D
+          reconstruction on your computer.
+        NSMotionUsageDescription: >-
+          Motion helps place capture positions in space for the on-screen trail.
         NSMotionUsageDescription: >-
           Motion data helps the tracker follow fast camera movement. It is
           never used to compute camera poses.

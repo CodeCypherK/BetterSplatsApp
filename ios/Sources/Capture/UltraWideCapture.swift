@@ -69,6 +69,8 @@ final class UltraWideARCapture: NSObject, ARSessionDelegate {
         trackingOK = ok
         lock.unlock()
         let t = CMTime(seconds: frame.timestamp, preferredTimescale: 600)
-        onFrame?(frame.capturedImage, t, ok ? transform : nil, ok)
+        // Always pass the pose — novelty needs it. Tracking quality is still
+        // reported separately for UI if we want it later.
+        onFrame?(frame.capturedImage, t, transform, ok)
     }
 }

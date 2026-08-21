@@ -25,12 +25,12 @@ final class BestFrameGate {
 
     /// Hard ceiling: never accept twice within this interval.
     var minIntervalSeconds: Double = 1.0
-    var minSharpness: Double = 100
-    var maxOverexposed: Double = 0.10
-    var lumaRange: ClosedRange<Double> = 32...200
     /// Must move or turn enough vs the last kept photo.
-    var minMoveM: Float = 0.22
-    var minTurnRad: Float = 0.22  // ~12.5°
+    var minMoveM: Float = 0.15
+    var minTurnRad: Float = 0.18  // ~10°
+    var minSharpness: Double = 70
+    var maxOverexposed: Double = 0.12
+    var lumaRange: ClosedRange<Double> = 28...210
 
     private var windowStart: Double?
     private var best: Candidate?
@@ -49,7 +49,9 @@ final class BestFrameGate {
            let retained = copyBuffer(pixelBuffer) {
             let cand = Candidate(pixelBuffer: retained, time: time,
                                  stats: stats, score: scored, pose: pose)
-            if best == nil || cand.score > best!.score {
+            if best == nil || cand.score > best!.score
+                || (cand.pose != nil && best?.pose == nil
+                    && cand.score >= best!.score * 0.9) {
                 best = cand
             }
         }
@@ -91,9 +93,21 @@ final class BestFrameGate {
         // First keep is always allowed if it passed quality.
         guard lastAcceptedStats != nil else { return true }
 
-        // Without a pose we cannot judge viewpoint — do not spam similar frames.
+        // Got a pose now but the first keep had none — treat as new.
+        if lastAcceptedPose == nil {
+            return cand.pose != nil
+        }
+
+        // No pose on this candidate: allow only after a longer gap and a
+        // clear photometry change (avoid freezing capture when tracking dips).
         guard let pose = cand.pose, let prev = lastAcceptedPose else {
-            return false
+            guard let lastT = lastAcceptTime,
+                  let last = lastAcceptedStats else { return true }
+            let t = CMTimeGetSeconds(cand.time)
+            guard t - lastT >= minIntervalSeconds * 2 else { return false }
+            let dLap = abs(cand.stats.laplacianVariance - last.laplacianVariance)
+            let dLuma = abs(cand.stats.meanLuma - last.meanLuma)
+            return dLap > 40 || dLuma > 18
         }
 
         let p0 = SIMD3(prev.columns.3.x, prev.columns.3.y, prev.columns.3.z)
@@ -104,8 +118,7 @@ final class BestFrameGate {
         let turn = acos(min(1, max(-1, simd_dot(simd_normalize(f0),
                                                 simd_normalize(f1)))))
         // Need a meaningful new viewpoint: move OR turn enough.
-        if moved >= minMoveM || turn >= minTurnRad { return true }
-        return false
+        return moved >= minMoveM || turn >= minTurnRad
     }
 
     private func copyBuffer(_ src: CVPixelBuffer) -> CVPixelBuffer? {

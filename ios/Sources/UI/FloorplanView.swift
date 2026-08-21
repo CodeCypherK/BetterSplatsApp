@@ -155,6 +155,7 @@ struct FloorplanView: View {
                                  with: .color(.white))
                     }
                 }
+            }
             .contentShape(Rectangle())
             .onTapGesture { loc in
                 let map = PlanMap(bounds: bounds, size: geo.size)

@@ -38,16 +38,16 @@ final class UltraWideARCapture: NSObject, ARSessionDelegate {
         if let ultra = ARWorldTrackingConfiguration.supportedVideoFormats.first(
             where: { $0.captureDeviceType == .builtInUltraWideCamera }) {
             config.videoFormat = ultra
-            dimensions = (ultra.imageResolution.width,
-                          ultra.imageResolution.height)
+            dimensions = (Int(ultra.imageResolution.width),
+                          Int(ultra.imageResolution.height))
         } else if let best = ARWorldTrackingConfiguration.supportedVideoFormats
             .max(by: {
                 $0.imageResolution.width * $0.imageResolution.height
                     < $1.imageResolution.width * $1.imageResolution.height
             }) {
             config.videoFormat = best
-            dimensions = (best.imageResolution.width,
-                          best.imageResolution.height)
+            dimensions = (Int(best.imageResolution.width),
+                          Int(best.imageResolution.height))
         }
         session.delegate = self
         session.run(config, options: [.resetTracking, .removeExistingAnchors])

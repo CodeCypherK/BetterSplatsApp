@@ -1,6 +1,13 @@
 import ARKit
 import SceneKit
 import SwiftUI
+import simd
+
+struct CapturedPoseSample: Identifiable, Equatable {
+    var id: UInt32
+    var position: SIMD3<Float>
+    var transform: simd_float4x4
+}
 
 /// Camera preview from the AR session (no mesh) plus a small pose trail.
 struct ScanPreview: UIViewRepresentable {
